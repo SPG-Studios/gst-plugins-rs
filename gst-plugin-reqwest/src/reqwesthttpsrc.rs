@@ -13,8 +13,8 @@ use hyperx::header::{
     AcceptRanges, ByteRangeSpec, ContentLength, ContentRange, ContentRangeSpec, Headers, Range,
     RangeUnit, UserAgent,
 };
-use reqwest::r#async::{Client, Decoder};
-use reqwest::StatusCode;
+use reqwest::r#async::{Client, ClientBuilder, Decoder};
+use reqwest::{RedirectPolicy, StatusCode};
 use std::mem;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -50,6 +50,7 @@ struct Settings {
     user_id: Option<String>,
     user_pw: Option<String>,
     timeout: u32,
+    automatic_redirect: bool,
 }
 
 impl Default for Settings {
@@ -60,11 +61,12 @@ impl Default for Settings {
             user_id: None,
             user_pw: None,
             timeout: DEFAULT_TIMEOUT,
+            automatic_redirect: true,
         }
     }
 }
 
-static PROPERTIES: [subclass::Property; 6] = [
+static PROPERTIES: [subclass::Property; 7] = [
     subclass::Property("location", |name| {
         glib::ParamSpec::string(
             name,
@@ -121,6 +123,15 @@ static PROPERTIES: [subclass::Property; 6] = [
             glib::ParamFlags::READWRITE,
         )
     }),
+    subclass::Property("automatic-redirect", |name| {
+        glib::ParamSpec::boolean(
+            name,
+            "Automatic-redirect",
+            "Automatically follow HTTP redirects (HTTP Status Code 3xx)",
+            true,
+            glib::ParamFlags::READWRITE,
+        )
+    }),
 ];
 
 #[derive(Debug)]
@@ -146,7 +157,7 @@ impl Default for State {
 #[derive(Debug)]
 pub struct ReqwestHttpSrc {
     cat: gst::DebugCategory,
-    client: Client,
+    client_builder: ClientBuilder,
     settings: Mutex<Settings>,
     state: Mutex<State>,
     runtime: runtime::Runtime,
@@ -202,8 +213,21 @@ impl ReqwestHttpSrc {
         stop: Option<u64>,
     ) -> Result<State, gst::ErrorMessage> {
         let cat = self.cat;
-        let req = self.client.get(uri.clone());
+        // let req = self.client.get(uri.clone());
         let settings = self.settings.lock().unwrap().clone();
+
+        let req_builder = if settings.automatic_redirect {
+            self.client_builder.redirect(RedirectPolicy::none()).build()
+        } else {
+            self.client_builder.build()
+        };
+
+        let req = match req_builder {
+            Ok(client) => client,
+            Err(_err) => Client::new(),
+        };
+
+        let req = req.get(uri.clone());
 
         let mut headers = Headers::new();
 
@@ -413,6 +437,11 @@ impl ObjectImpl for ReqwestHttpSrc {
                 let timeout = value.get_some().expect("type checked upstream");
                 settings.timeout = timeout;
             }
+            subclass::Property("automatic-redirect", ..) => {
+                let mut settings = self.settings.lock().unwrap();
+                let automatic_redirect = value.get_some().expect("type checked upstream");
+                settings.automatic_redirect = automatic_redirect;
+            }
             _ => unimplemented!(),
         };
     }
@@ -445,6 +474,10 @@ impl ObjectImpl for ReqwestHttpSrc {
             subclass::Property("timeout", ..) => {
                 let settings = self.settings.lock().unwrap();
                 Ok(settings.timeout.to_value())
+            }
+            subclass::Property("automatic-redirect", ..) => {
+                let settings = self.settings.lock().unwrap();
+                Ok(settings.automatic_redirect.to_value())
             }
             _ => unimplemented!(),
         }
@@ -689,7 +722,7 @@ impl ObjectSubclass for ReqwestHttpSrc {
                 gst::DebugColorFlags::empty(),
                 Some("Rust HTTP source"),
             ),
-            client: Client::new(),
+            client_builder: ClientBuilder::new(),
             settings: Mutex::new(Default::default()),
             state: Mutex::new(Default::default()),
             runtime: runtime::Builder::new()
