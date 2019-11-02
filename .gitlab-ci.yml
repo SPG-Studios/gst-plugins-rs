@@ -8,7 +8,6 @@ stages:
     # Only stuff inside the repo directory can be cached
     # Override the CARGO_HOME variable to force its location
     CARGO_HOME: "${CI_PROJECT_DIR}/.cargo_home"
-    SODIUM_USE_PKG_CONFIG: "true"
     DEPENDENCIES: |
       curl
       file
