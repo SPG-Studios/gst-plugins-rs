@@ -41,6 +41,7 @@ plugins = {
   'gst-plugin-file': 'libgstrsfile',
   'gst-plugin-flavors': 'libgstrsflv',
   'gst-plugin-gif': 'libgstgif',
+  'gst-plugin-hvif': 'libgsthvif',
   'gst-plugin-lewton': 'libgstlewton',
   'gst-plugin-rav1e': 'libgstrav1e',
   'gst-plugin-reqwest': 'libgstreqwest',

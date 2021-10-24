@@ -64,6 +64,9 @@ You will find the following plugins in this repository:
 
     - `hsv`: Elements to work with video data in hue, saturation, value form.
 
+    - `hvif`: HVIF decoder based on the
+      [hvif](https://linkmauve.fr/dev/hvif/) library.
+
     - `png`: PNG encoder based on the
       [png](https://github.com/image-rs/image-png) library.
 
