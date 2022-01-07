@@ -1,11 +1,11 @@
-// Copyright (C) 2021 Jochen Henneberg <jh@henneberg-systemdesign.com>
+// Copyright (C) 2022 Jochen Henneberg <jh@henneberg-systemdesign.com>
 //
 // SPDX-License-Identifier: Apache-2.0 or MIT
 
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use gst::{gst_log, gst_trace};
+use gst::{gst_info, gst_log, gst_trace};
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -13,9 +13,9 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
 mod correlation;
-mod rateprobe;
-
 use correlation::Corr;
+
+mod rateprobe;
 use rateprobe::RateProbe;
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
@@ -28,31 +28,26 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 
 // Original content framerates to detect - the order matters, the
 // correlation is checked with increasing value
-#[glib::flags(name = "OcvrHintRate")]
-enum Rate {
-    #[flags_value(name = "24Hz", nick = "24")]
+#[glib::flags(name = "OcvrHintContentRate")]
+enum ContentRate {
+    #[flags_value(name = "Content rate 24Hz", nick = "24Hz")]
     HZ_24 = 0b00000001,
-    #[flags_value(name = "30Hz", nick = "30")]
+    #[flags_value(name = "Content rate 30Hz", nick = "30Hz")]
     HZ_30 = 0b00000010,
-    #[flags_VALUE(name = "60Hz", nick = "60")]
+    #[flags_value(name = "Content rate 60Hz", nick = "60Hz")]
     HZ_60 = 0b00000100,
 }
 
 // Capture framerates to check
-#[glib::flags(name = "OcvrHintProbeRate")]
-enum ProbeRate {
-    #[flags_value(name = "30Hz", nick = "30")]
-    HZ_30 = 0b00000001,
-    #[flags_value(name = "50Hz", nick = "50")]
-    HZ_50 = 0b00000010,
-    #[flags_value(name = "60Hz", nick = "60")]
-    HZ_60 = 0b00000100,
+#[glib::flags(name = "OcvrHintCaptureRate")]
+enum CaptureRate {
+    #[flags_value(name = "Capture rate 50Hz", nick = "50Hz")]
+    HZ_50 = 0b00000001,
+    #[flags_value(name = "Capture rate 60Hz", nick = "60Hz")]
+    HZ_60 = 0b00000010,
 }
 
 // Test vectors for different framerates at capture rates
-const HZ24_IN_HZ30: &[&[i64]] = &[&[1, 1], &[1, 1]];
-const HZ30_IN_HZ30: &[&[i64]] = &[&[1, 1], &[1, 1]];
-
 const HZ24_IN_HZ50: &[&[i64]] = &[&[10, 1], &[1, 10]];
 const HZ30_IN_HZ50: &[&[i64]] = &[&[10, 1], &[1, 10]];
 
@@ -63,16 +58,16 @@ const HZ60_IN_HZ60: &[&[i64]] = &[&[1, 1], &[1, 1]];
 // Default values of properties
 const DEFAULT_WINDOW_SIZE: usize = 4;
 const DEFAULT_THRESHOLD: f64 = 0.9;
-const DEFAULT_RATES: Rate = Rate::all();
-const DEFAULT_PROBE_RATES: ProbeRate = ProbeRate::all();
+const DEFAULT_CONTENT_RATES: ContentRate = ContentRate::all();
+const DEFAULT_CAPTURE_RATES: CaptureRate = CaptureRate::all();
 
 // Property value storage
 #[derive(Debug, Clone, Copy)]
 struct Settings {
     window_size: usize,
     threshold: f64,
-    rates: Rate,
-    probe_rates: ProbeRate,
+    content_rates: ContentRate,
+    capture_rates: CaptureRate,
 }
 
 impl Default for Settings {
@@ -80,8 +75,8 @@ impl Default for Settings {
         Settings {
             window_size: DEFAULT_WINDOW_SIZE,
             threshold: DEFAULT_THRESHOLD,
-            rates: DEFAULT_RATES,
-            probe_rates: DEFAULT_PROBE_RATES,
+            content_rates: DEFAULT_CONTENT_RATES,
+            capture_rates: DEFAULT_CAPTURE_RATES,
         }
     }
 }
@@ -92,16 +87,31 @@ struct Data {
     window: Vec<i64>,
     gop_count: usize,
     gop_size: Option<usize>,
-    probes: BTreeMap<Rate, RateProbe>,
-    rate: Option<ProbeRate>,
-    content_rate: Option<Rate>,
+    probes: BTreeMap<ContentRate, RateProbe>,
+    rate: Option<CaptureRate>,
+    content_rate: Option<ContentRate>,
     frame_counter: usize,
+    pause: bool,
 }
 
 impl Data {
     pub fn reset_window(&mut self) {
         self.window.clear();
         self.gop_count = 0;
+    }
+
+    pub fn set_pause(&mut self, pause: bool) {
+        if !pause {
+            self.reset_window();
+            self.gop_size = None;
+            self.probes.clear();
+            self.content_rate = None;
+            self.frame_counter = 0;
+            self.pause = false;
+        } else {
+            self.pause = true;
+            self.content_rate = None;
+        }
     }
 
     pub fn reset(&mut self) {
@@ -111,6 +121,7 @@ impl Data {
         self.rate = None;
         self.content_rate = None;
         self.frame_counter = 0;
+        self.pause = false;
     }
 }
 
@@ -124,6 +135,7 @@ impl Default for Data {
             rate: None,
             content_rate: None,
             frame_counter: 0,
+            pause: false,
         }
     }
 }
@@ -147,40 +159,42 @@ impl OcvrHint {
                     Some(c) => res.max(c),
                     None => res,
                 };
+                //println!("Threshold probe {:?} on window {:?}: {:?}", probe, window, res);
+                //println!("Correlation: {:?}", res);
                 res < threshold
             });
         }
         res > threshold
     }
 
-    fn build_probes(rate: ProbeRate, gop_size: usize, probes: &mut BTreeMap<Rate, RateProbe>) {
+    fn build_probes(
+        rate: CaptureRate,
+        gop_size: usize,
+        probes: &mut BTreeMap<ContentRate, RateProbe>,
+    ) {
         match rate {
-            ProbeRate::HZ_30 => {
-                probes.insert(Rate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ30));
-                probes.insert(Rate::HZ_30, RateProbe::new(gop_size, HZ30_IN_HZ30));
+            CaptureRate::HZ_50 => {
+                probes.insert(ContentRate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ50));
+                probes.insert(ContentRate::HZ_30, RateProbe::new(gop_size, HZ30_IN_HZ50));
             }
-            ProbeRate::HZ_50 => {
-                probes.insert(Rate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ50));
-                probes.insert(Rate::HZ_30, RateProbe::new(gop_size, HZ30_IN_HZ50));
-            }
-            ProbeRate::HZ_60 => {
-                probes.insert(Rate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ60));
-                probes.insert(Rate::HZ_30, RateProbe::new(gop_size, HZ30_IN_HZ60));
-                probes.insert(Rate::HZ_60, RateProbe::new(gop_size, HZ60_IN_HZ60));
+            CaptureRate::HZ_60 => {
+                probes.insert(ContentRate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ60));
+                probes.insert(ContentRate::HZ_30, RateProbe::new(gop_size, HZ30_IN_HZ60));
+                probes.insert(ContentRate::HZ_60, RateProbe::new(gop_size, HZ60_IN_HZ60));
             }
             _ => unimplemented!(),
         }
     }
 
-    fn rate_to_int(r: Option<Rate>) -> u32 {
+    fn rate_to_int(r: Option<ContentRate>) -> u32 {
         if r.is_none() {
             return 0;
         }
 
         match r.unwrap() {
-            Rate::HZ_24 => return 24,
-            Rate::HZ_30 => return 30,
-            Rate::HZ_60 => return 60,
+            ContentRate::HZ_24 => return 24,
+            ContentRate::HZ_30 => return 30,
+            ContentRate::HZ_60 => return 60,
             _ => unreachable!(),
         }
     }
@@ -188,29 +202,31 @@ impl OcvrHint {
     fn sink_chain(
         &self,
         pad: &gst::Pad,
-        element: &super::OcvrHint,
+        _element: &super::OcvrHint,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut data = self.data.lock().unwrap();
 
         // If this is an input data rate that we should not care about
         // just forward the buffer
-        if data.rate.is_none() {
+        if data.rate.is_none() || data.pause {
             return self.srcpad.push(buffer);
         }
 
         // If we should not check for this input rate just forward the
         // buffer
         let settings = self.settings.lock().unwrap();
-        if !settings.probe_rates.contains(data.rate.unwrap()) {
+        if !settings.capture_rates.contains(data.rate.unwrap()) {
             return self.srcpad.push(buffer);
         }
 
         // If this is not a reference frame advance the frame counter,
         // remember the buffer size and push the buffer
         if buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
-            data.window.push(buffer.size() as i64);
-            data.frame_counter += 1;
+            if data.window.len() > 0 {
+                data.window.push(buffer.size() as i64);
+                data.frame_counter += 1;
+            }
             return self.srcpad.push(buffer);
         }
 
@@ -241,7 +257,7 @@ impl OcvrHint {
         }
 
         // If the window is complete check for framerate matches
-        let mut m: Option<Rate> = None;
+        let mut m: Option<ContentRate> = None;
         if data.gop_count == settings.window_size {
             gst_trace!(
                 CAT,
@@ -252,7 +268,7 @@ impl OcvrHint {
             );
 
             for (r, p) in data.probes.iter() {
-                if !settings.rates.contains(*r) {
+                if !settings.content_rates.contains(*r) {
                     continue;
                 }
 
@@ -273,19 +289,20 @@ impl OcvrHint {
             }
 
             if m != data.content_rate {
+                data.content_rate = m;
+
+                // Send a custom upstream event with the newly detected original content rate
+                let r = Self::rate_to_int(m);
+                let s = gst::Structure::new("ocvrhint", &[("rate", &r)]);
                 gst_log!(
                     CAT,
                     obj: pad,
-                    "Original content frame rate changed to {:?}",
-                    m
+                    "Original content frame rate changed to {:?}, post event {:?}",
+                    m,
+                    s
                 );
-                data.content_rate = m;
-
-                // Now send message with newly detected original content rate
-                let r = Self::rate_to_int(m);
-                let s = gst::Structure::new("ocvr", &[("rate", &r)]);
-                let _ =
-                    element.post_message(gst::message::Element::builder(s).src(element).build());
+                self.srcpad
+                    .send_event(gst::event::CustomUpstream::builder(s).build());
             }
 
             // Correlation done, reset window
@@ -303,10 +320,11 @@ impl OcvrHint {
     }
 
     fn sink_event(&self, pad: &gst::Pad, _element: &super::OcvrHint, event: gst::Event) -> bool {
-        let mut data = self.data.lock().unwrap();
         match event.view() {
             gst::EventView::Caps(e) => {
                 gst_log!(CAT, obj: pad, "Handling event {:?}", event);
+
+                let mut data = self.data.lock().unwrap();
                 data.reset();
 
                 // Extract the framerate from caps
@@ -314,12 +332,29 @@ impl OcvrHint {
                 let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
                 if r.is_ok() {
                     data.rate = match r.unwrap().round().numer() {
-                        30 => Some(ProbeRate::HZ_30),
-                        50 => Some(ProbeRate::HZ_50),
-                        60 => Some(ProbeRate::HZ_60),
+                        50 => Some(CaptureRate::HZ_50),
+                        60 => Some(CaptureRate::HZ_60),
                         _ => None,
                     };
                     gst_log!(CAT, obj: pad, "Input framerate {:?}", data.rate);
+                }
+            }
+            gst::EventView::CustomDownstream(e) => {
+                // Extract the controller state event
+                match e.structure() {
+                    Some(s) => {
+                        if s.name() == "ocvrctrl" {
+                            let mut data = self.data.lock().unwrap();
+                            data.set_pause(s.get::<bool>("synced").unwrap());
+                            gst_info!(
+                                CAT,
+                                obj: pad,
+                                "'ocvrctrl' event found, synced {:?}",
+                                data.pause
+                            );
+                        }
+                    }
+                    None => {}
                 }
             }
             _ => (),
@@ -436,16 +471,15 @@ impl ObjectImpl for OcvrHint {
     }
 
     fn properties() -> &'static [glib::ParamSpec] {
-        // Metadata for the properties
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
             vec![
-                glib::ParamSpecUInt64::new(
+                glib::ParamSpecUInt::new(
                     "window-size",
                     "Window size",
                     "Multiple of GOP size",
-                    0,
+                    1,
                     100,
-                    DEFAULT_WINDOW_SIZE as u64,
+                    DEFAULT_WINDOW_SIZE as u32,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
                 glib::ParamSpecFloat::new(
@@ -458,19 +492,19 @@ impl ObjectImpl for OcvrHint {
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
                 glib::ParamSpecFlags::new(
-                    "rates",
-                    "Rates",
+                    "content-rates",
+                    "Content rates",
                     "Framerates to detect",
-                    Rate::static_type(),
-                    DEFAULT_RATES.bits() as u32,
+                    ContentRate::static_type(),
+                    DEFAULT_CONTENT_RATES.bits() as u32,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
                 glib::ParamSpecFlags::new(
-                    "probe-rates",
-                    "Probe rates",
+                    "capture-rates",
+                    "Capture rates",
                     "Sink pad framerates to check",
-                    ProbeRate::static_type(),
-                    DEFAULT_PROBE_RATES.bits() as u32,
+                    CaptureRate::static_type(),
+                    DEFAULT_CAPTURE_RATES.bits() as u32,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
             ]
@@ -493,16 +527,16 @@ impl ObjectImpl for OcvrHint {
                 settings.window_size = ws as usize;
             }
             "threshold" => {
-                let threshold = value.get().expect("type checked upstream");
-                settings.threshold = threshold;
+                let threshold: f32 = value.get().expect("type checked upstream");
+                settings.threshold = threshold as f64;
             }
-            "rates" => {
+            "content-rates" => {
                 let rates = value.get().expect("type checked upstream");
-                settings.rates = rates;
+                settings.content_rates = rates;
             }
-            "probe-rates" => {
-                let probe_rates = value.get().expect("type checked upstream");
-                settings.probe_rates = probe_rates;
+            "capture-rates" => {
+                let rates = value.get().expect("type checked upstream");
+                settings.capture_rates = rates;
             }
             _ => unimplemented!(),
         }
@@ -512,9 +546,9 @@ impl ObjectImpl for OcvrHint {
         let settings = self.settings.lock().unwrap();
         match pspec.name() {
             "window-size" => (settings.window_size as u32).to_value(),
-            "threshold" => settings.threshold.to_value(),
-            "rates" => settings.rates.to_value(),
-            "probe-rates" => settings.probe_rates.to_value(),
+            "threshold" => (settings.threshold as f32).to_value(),
+            "content-rates" => settings.content_rates.to_value(),
+            "capture-rates" => settings.capture_rates.to_value(),
             _ => unimplemented!(),
         }
     }

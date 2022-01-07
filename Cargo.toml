@@ -49,6 +49,7 @@ members = [
     "video/gtk4",
     "video/hsv",
     "video/png",
+    "video/ocvr",
     "video/rav1e",
     "video/videofx",
     "video/webp",

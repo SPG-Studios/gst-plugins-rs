@@ -1,4 +1,4 @@
-// Copyright (C) 2021 Jochen Henneberg <jh@henneberg-systemdesign.com>
+// Copyright (C) 2022 Jochen Henneberg <jh@henneberg-systemdesign.com>
 //
 // SPDX-License-Identifier: Apache-2.0 or MIT
 
@@ -6,7 +6,6 @@ use std::slice;
 
 #[derive(Debug)]
 pub struct RateProbe {
-    gop_size: usize,
     probes: Vec<Vec<i64>>,
 }
 
@@ -38,10 +37,7 @@ impl RateProbe {
             vs.last_mut().unwrap().append(&mut v);
         }
 
-        RateProbe {
-            gop_size: gop_size,
-            probes: vs,
-        }
+        RateProbe { probes: vs }
     }
 
     pub fn iter(&self) -> slice::Iter<Vec<i64>> {
@@ -57,7 +53,6 @@ mod tests {
     fn get_and_iterate() {
         let gop = 30;
         let probe = RateProbe::new(gop, &[&[10, 1, 10, 1, 1], &[10, 1, 1, 10, 1]]);
-        assert!(probe.gop_size == gop);
         assert!(probe.probes.len() == 6);
         for p in probe.iter() {
             assert!(p.len() == gop);
