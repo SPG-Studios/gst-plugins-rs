@@ -73,7 +73,7 @@ impl Data {
 
     pub fn can_detect_sync_loss(&self) -> bool {
         match (self.capture_rate.unwrap(), self.sync_state) {
-            (CaptureRate::HZ_60, SyncState::Hz60(_)) => false,
+            (CaptureRate::HZ_60, SyncState::Hz60(_, _)) => false,
             _ => true,
         }
     }

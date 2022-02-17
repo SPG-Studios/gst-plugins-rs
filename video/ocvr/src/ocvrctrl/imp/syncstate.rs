@@ -16,7 +16,8 @@ pub enum SyncState {
     // current frame index within period
     Hz24(u32),
     Hz30(u32),
-    Hz60(u32),
+    // current frame index within period, compare match/mismatch
+    Hz60(u32, bool),
 }
 
 macro_rules! advance_or_reset {
@@ -71,6 +72,44 @@ impl SyncState {
     // check:    ^^^
     const HZ60_60_SYNCED_PERIOD: u32 = 10 * Self::HZ60_60_PERIOD;
 
+    pub fn sync_lost(&self) -> bool {
+        match self {
+            SyncState::SyncLost(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        match self {
+            SyncState::Idle => true,
+            _ => false,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = SyncState::Idle;
+    }
+
+    pub fn is_synced(&self) -> bool {
+        match self {
+            SyncState::Hz24(_) => true,
+            SyncState::Hz30(_) => true,
+            SyncState::Hz60(_, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn resync(&mut self) {
+        *self = match self {
+            SyncState::Syncing(r, _, _) => SyncState::Syncing(*r, 0, 0),
+            SyncState::Hz24(_) => SyncState::Syncing(ContentRate::Hz24, 0, 0),
+            SyncState::Hz30(_) => SyncState::Syncing(ContentRate::Hz30, 0, 0),
+            SyncState::Hz60(_, _) => SyncState::Hz60(0, false),
+            SyncState::SyncLost(r) => SyncState::Syncing(*r, 0, 0),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn sync(rate: ContentRate) -> Self {
         match rate {
             ContentRate::Hint => SyncState::Idle,
@@ -86,8 +125,41 @@ impl SyncState {
             SyncState::Syncing(_, i, _) => *i += 1,
             SyncState::Hz24(i) => advance_or_reset!(i, Self::HZ24_60_SYNCED_PERIOD),
             SyncState::Hz30(i) => advance_or_reset!(i, Self::HZ30_60_SYNCED_PERIOD),
-            SyncState::Hz60(i) => advance_or_reset!(i, Self::HZ60_60_SYNCED_PERIOD),
+            SyncState::Hz60(i, _) => advance_or_reset!(i, Self::HZ60_60_SYNCED_PERIOD),
         };
+    }
+
+    pub fn eval_compare(&mut self, capture_rate: CaptureRate, m: &mut bool) -> bool {
+        let mut r = false;
+
+        // if we lost sync let's try to recover
+        if self.sync_lost() {
+            return r;
+        }
+
+        r = *m;
+        match capture_rate {
+            CaptureRate::HZ_50 => (),
+            CaptureRate::HZ_60 => match self {
+                SyncState::Idle => (),
+                SyncState::SyncLost(_) => (),
+                SyncState::Syncing(_, _, _) => (),
+                SyncState::Hz24(_) => (),
+                SyncState::Hz30(_) => (),
+                SyncState::Hz60(i, v) => {
+                    if *i == 1 {
+                        *v = *m; // use the current result for future comparisons
+                    }
+                    if !(*v) && self.needs_compare(capture_rate) {
+                        r = !(*m); // invert the result if we are looking for mismatch
+                    } else {
+                        r = *m;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+        !self.is_synced() || r
     }
 
     // returns true if a state change happened
@@ -129,12 +201,12 @@ impl SyncState {
                 }
                 SyncState::Syncing(ContentRate::Hz60, _, _) => {
                     ret = true;
-                    SyncState::Hz60(0)
+                    SyncState::Hz60(0, false)
                 }
                 SyncState::Syncing(r, i, m) => SyncState::Syncing(*r, *i, *m),
                 SyncState::Hz24(i) => SyncState::Hz24(*i),
                 SyncState::Hz30(i) => SyncState::Hz30(*i),
-                SyncState::Hz60(i) => SyncState::Hz60(*i),
+                SyncState::Hz60(i, m) => SyncState::Hz60(*i, *m),
             },
             _ => unreachable!(),
         };
@@ -142,56 +214,18 @@ impl SyncState {
         ret
     }
 
-    pub fn reset(&mut self) {
-        *self = SyncState::Idle;
-    }
-
-    pub fn is_idle(&self) -> bool {
-        match self {
-            SyncState::Idle => true,
-            _ => false,
-        }
-    }
-
-    pub fn is_synced(&self) -> bool {
-        match self {
-            SyncState::Hz24(_) => true,
-            SyncState::Hz30(_) => true,
-            SyncState::Hz60(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn sync_lost(&self) -> bool {
-        match self {
-            SyncState::SyncLost(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn resync(&mut self) {
-        *self = match self {
-            SyncState::Syncing(r, _, _) => SyncState::Syncing(*r, 0, 0),
-            SyncState::Hz24(_) => SyncState::Syncing(ContentRate::Hz24, 0, 0),
-            SyncState::Hz30(_) => SyncState::Syncing(ContentRate::Hz30, 0, 0),
-            SyncState::Hz60(_) => SyncState::Hz60(0),
-            SyncState::SyncLost(r) => SyncState::Syncing(*r, 0, 0),
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn needs_compare(&self, rate: CaptureRate) -> (bool, bool) {
+    pub fn needs_compare(&self, rate: CaptureRate) -> bool {
         return match rate {
-            CaptureRate::HZ_50 => (false, false),
+            CaptureRate::HZ_50 => false,
             CaptureRate::HZ_60 => match self {
-                SyncState::Idle => (false, false),
-                SyncState::SyncLost(_) => (false, false),
-                SyncState::Syncing(_, _, _) => (true, false),
-                SyncState::Hz24(i) => (*i == 2, false),
-                SyncState::Hz30(i) => (*i == 1, false),
-                SyncState::Hz60(i) => (*i == 1 || *i == 2, true),
+                SyncState::Idle => false,
+                SyncState::SyncLost(_) => false,
+                SyncState::Syncing(_, _, _) => true,
+                SyncState::Hz24(i) => *i == 2,
+                SyncState::Hz30(i) => *i == 1,
+                SyncState::Hz60(i, _) => (1..=3).contains(i),
             },
-            _ => (false, false),
+            _ => false,
         };
     }
 
@@ -204,7 +238,7 @@ impl SyncState {
                 SyncState::Syncing(_, _, _) => true,
                 SyncState::Hz24(i) => *i == 1 || *i == 2,
                 SyncState::Hz30(i) => *i == 0 || *i == 1,
-                SyncState::Hz60(i) => (0..=2).contains(i),
+                SyncState::Hz60(i, _) => (0..=3).contains(i),
             },
             _ => false,
         };
@@ -223,7 +257,7 @@ impl SyncState {
                         || *i % Self::HZ24_60_PERIOD == 4
                 }
                 SyncState::Hz30(i) => (*i).is_odd(),
-                SyncState::Hz60(i) => drop && (*i).is_odd(),
+                SyncState::Hz60(i, _) => drop && (*i).is_odd(),
             },
             _ => false,
         };

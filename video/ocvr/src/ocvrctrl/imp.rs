@@ -102,19 +102,19 @@ impl OcvrCtrl {
 
     fn compare_fuzzy(ping: &Vec<u8>, pong: &Vec<u8>, threshold: u8) -> bool {
         let it = ping.iter();
-        let mut alike = true;
+        let mut r = true;
         pong.iter().zip(it).all(|(a, b)| {
             let ax = cmp::max(a, b);
             let bx = cmp::min(a, b);
             let d = ax - bx;
             if d > threshold {
-                alike = false;
+                r = false;
             }
-            alike
+            r
         });
 
-        gst_log!(CAT, "Fuzzy frame compare: {:?}", alike);
-        alike
+        gst_log!(CAT, "Fuzzy frame compare: {:?}", r);
+        r
     }
 
     fn save_frame(&self, buffer: &gst::Buffer) {
@@ -171,31 +171,26 @@ impl OcvrCtrl {
             return Err(());
         }
 
-        let (n, i) = data.sync_state.needs_compare(data.capture_rate.unwrap());
+        let n = data.sync_state.needs_compare(data.capture_rate.unwrap());
 
         if !n {
             gst_log!(CAT, "Comparison not needed -> {:?}", data.sync_state);
             return Ok(true);
         }
 
-        let mut r;
-        match data.method {
+        let r = match data.method {
             Method::Fuzzy => {
                 gst_log!(CAT, "Compare frames 'fuzzy' -> {:?}", data.sync_state);
                 let settings = self.settings.lock().unwrap();
-                r = Self::compare_fuzzy(&data.ping_window, &data.pong_window, settings.threshold)
+                Self::compare_fuzzy(&data.ping_window, &data.pong_window, settings.threshold)
             }
             Method::Accurate | Method::Auto => {
                 gst_log!(CAT, "Compare frames 'accurate' -> {:?}", data.sync_state);
                 let crc_ping = Self::calc_checksum(&data.ping_window);
                 let crc_pong = Self::calc_checksum(&data.pong_window);
-                r = crc_ping == crc_pong
+                crc_ping == crc_pong
             }
-        }
-
-        if i {
-            r = !r;
-        }
+        };
 
         Ok(r)
     }
@@ -219,8 +214,9 @@ impl OcvrCtrl {
             data.sync_state.advance();
         }
 
+        // save the buffer and check for frame match
         self.save_frame(&buffer);
-        let alike = match self.compare_frames() {
+        let mut m = match self.compare_frames() {
             Err(_) => {
                 gst_log!(CAT, obj: element, "Need at least two frames for comparison");
                 return self.srcpad.push(buffer);
@@ -229,11 +225,12 @@ impl OcvrCtrl {
         };
 
         let mut data = self.data.lock().unwrap();
+        let r = data.capture_rate.unwrap();
         let settings = self.settings.lock().unwrap();
 
-        // if we are synced and have a frame mismatch or if we lost
+        // if we are synced and frame comparison failed or if we lost
         // sync let's try to recover
-        if data.sync_state.is_synced() && !alike || data.sync_state.sync_lost() {
+        if !data.sync_state.eval_compare(r, &mut m) {
             let s = data.on_sync_lost(settings.method, settings.retries);
             gst_info!(
                 CAT,
@@ -253,9 +250,8 @@ impl OcvrCtrl {
             return self.srcpad.push(buffer);
         }
 
-        let r = data.capture_rate.unwrap();
-        let c = data.sync_state.update(r, alike);
-        if alike {
+        let c = data.sync_state.update(r, m);
+        if m {
             gst_log!(
                 CAT,
                 obj: element,
