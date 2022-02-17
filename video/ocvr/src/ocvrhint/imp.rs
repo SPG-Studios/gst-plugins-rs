@@ -103,23 +103,23 @@ impl Data {
     pub fn set_pause(&mut self, pause: bool) {
         if !pause {
             self.reset_window();
-            self.gop_size = None;
+            self.gop_size.take();
             self.probes.clear();
-            self.content_rate = None;
+            self.content_rate.take();
             self.frame_counter = 0;
             self.pause = false;
         } else {
             self.pause = true;
-            self.content_rate = None;
+            self.content_rate.take();
         }
     }
 
     pub fn reset(&mut self) {
         self.reset_window();
-        self.gop_size = None;
+        self.gop_size.take();
         self.probes.clear();
-        self.rate = None;
-        self.content_rate = None;
+        self.rate.take();
+        self.content_rate.take();
         self.frame_counter = 0;
         self.pause = false;
     }
@@ -257,7 +257,7 @@ impl OcvrHint {
         }
 
         // If the window is complete check for framerate matches
-        let mut m: Option<ContentRate> = None;
+        let mut m: Option<ContentRate>.take();
         if data.gop_count == settings.window_size {
             gst_trace!(
                 CAT,

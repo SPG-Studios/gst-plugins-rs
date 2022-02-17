@@ -50,9 +50,9 @@ impl Default for Data {
 
 impl Data {
     pub fn reset(&mut self, method: Method, retries: u32) {
-        self.content_rate = None;
-        self.capture_rate = None;
-        self.frame_format = None;
+        self.content_rate.take();
+        self.capture_rate.take();
+        self.frame_format.take();
         self.frame_size = (0, 0);
         self.ping_window = vec![];
         self.pong_window = vec![];
@@ -92,7 +92,7 @@ impl Data {
             if self.retries == 0 {
                 // if we cannot retry we are lost
                 self.sync_state.reset();
-                self.content_rate = None;
+                self.content_rate.take();
                 self.method = method;
                 self.retries = retries;
                 ResyncSolution::None
