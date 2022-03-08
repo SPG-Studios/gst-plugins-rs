@@ -257,7 +257,7 @@ impl OcvrHint {
         }
 
         // If the window is complete check for framerate matches
-        let mut m: Option<ContentRate>.take();
+        let mut m: Option<ContentRate> = None;
         if data.gop_count == settings.window_size {
             gst_trace!(
                 CAT,
