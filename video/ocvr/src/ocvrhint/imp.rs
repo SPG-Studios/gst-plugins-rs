@@ -343,7 +343,13 @@ impl OcvrHint {
 
                     let mut data = self.data.lock().unwrap();
                     if rate != data.rate {
-                        gst_info!(CAT, obj: pad, "Input frame rate changed - {:?} -> {:?}", data.rate, rate);
+                        gst_info!(
+                            CAT,
+                            obj: pad,
+                            "Input frame rate changed - {:?} -> {:?}",
+                            data.rate,
+                            rate
+                        );
                         data.reset();
                         data.rate = rate;
                     }

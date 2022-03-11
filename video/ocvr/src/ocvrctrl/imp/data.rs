@@ -22,6 +22,7 @@ pub struct Data {
     pub sync_state: SyncState,
     pub method: Method,
     pub retries: u32,
+    pub upstream_caps: gst::caps::Caps,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +45,7 @@ impl Default for Data {
             is_ping: true,
             method: Method::Auto,
             retries: 0,
+            upstream_caps: gst::caps::Caps::new_empty(),
         }
     }
 }
@@ -60,6 +62,20 @@ impl Data {
         self.is_ping = true;
         self.method = method;
         self.retries = retries;
+    }
+
+    pub fn synced_caps(&self, drop: bool) -> gst::Caps {
+        let r = match self.content_rate.unwrap() {
+            ContentRate::Hz24 => 24,
+            ContentRate::Hz30 => 30,
+            ContentRate::Hz60 => 60 / (drop as i32 + 1),
+            _ => unreachable!(),
+        };
+
+        let mut c = self.upstream_caps.clone();
+        let s = c.make_mut().structure_mut(0).unwrap();
+        s.set::<gst::Fraction>("framerate", gst::Fraction::new(r, 1));
+        c
     }
 
     pub fn can_compare(&self) -> bool {

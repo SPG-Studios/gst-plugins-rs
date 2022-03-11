@@ -240,11 +240,16 @@ impl OcvrCtrl {
                 data.sync_state
             );
 
-            // if we are idle (no sync retries) tell ocvrhint
+            // if we are idle (no sync retries left) tell ocvrhint to
+            // start pattern matching again
             if settings.in_hint_mode() && data.sync_state.is_idle() {
+                // let downstream know about the original caps
+                let c = data.upstream_caps.copy();
+                self.srcpad.push_event(gst::event::Caps::new(&c));
+
                 let s = gst::Structure::new("ocvrctrl", &[("synced", &false)]);
-                self.sinkpad
-                    .send_event(gst::event::CustomDownstream::builder(s).build());
+                self.srcpad
+                    .push_event(gst::event::CustomDownstream::builder(s).build());
             }
 
             return self.srcpad.push(buffer);
@@ -267,16 +272,23 @@ impl OcvrCtrl {
             );
         }
 
-        // if we have switched into sync state tell the hinter that
-        // further content rate checks do not make sense
         if c && data.sync_state.is_synced() {
+            // reset sync method and retries once we are synced
             data.on_synced(settings.method, settings.retries);
             gst_info!(CAT, obj: element, "Synced -> {:?}", data.sync_state);
+            // if we receive hints and we can detect sync loss tell
+            // the hinter to stop looking for pattern matches because
+            // we start dropping frames and matching will not work
+            // anymore
             if settings.in_hint_mode() && data.can_detect_sync_loss() {
                 let s = gst::Structure::new("ocvrctrl", &[("synced", &true)]);
-                self.sinkpad
-                    .send_event(gst::event::CustomDownstream::builder(s).build());
+                self.srcpad
+                    .push_event(gst::event::CustomDownstream::builder(s).build());
             }
+
+            // let downstream know about the new caps
+            let caps = data.synced_caps(settings.drop);
+            self.srcpad.push_event(gst::event::Caps::new(&caps));
         }
 
         // check if we should drop the frame
@@ -305,6 +317,7 @@ impl OcvrCtrl {
                 let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
 
                 if r.is_ok() {
+                    data.upstream_caps = c.copy();
                     data.capture_rate = match r.unwrap().round().numer() {
                         50 => {
                             if settings.capture_rate(CaptureRate::HZ_50) {
