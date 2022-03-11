@@ -48,12 +48,12 @@ enum CaptureRate {
 }
 
 // Test vectors for different framerates at capture rates
-const HZ24_IN_HZ50: &[&[i64]] = &[&[10, 1], &[1, 10]];
-const HZ30_IN_HZ50: &[&[i64]] = &[&[10, 1], &[1, 10]];
+const HZ24_IN_HZ50: &[i64] = &[10, 1];
+const HZ30_IN_HZ50: &[i64] = &[10, 1];
 
-const HZ24_IN_HZ60: &[&[i64]] = &[&[10, 1, 10, 1, 1], &[10, 1, 1, 10, 1]];
-const HZ30_IN_HZ60: &[&[i64]] = &[&[10, 1], &[1, 10]];
-const HZ60_IN_HZ60: &[&[i64]] = &[&[1, 1], &[1, 1]];
+const HZ24_IN_HZ60: &[i64] = &[10, 1, 10, 1, 1];
+const HZ30_IN_HZ60: &[i64] = &[10, 1];
+const HZ60_IN_HZ60: &[i64] = &[1, 1];
 
 // Default values of properties
 const DEFAULT_WINDOW_SIZE: usize = 4;
@@ -154,15 +154,19 @@ impl OcvrHint {
 
         for v in probe.iter() {
             corr.set_x(v);
+            //println!("Probe {:?}", v);
             window.chunks(gop_size).all(|wc| {
                 res = match corr.corr_y(&wc) {
                     Some(c) => res.max(c),
                     None => res,
                 };
-                //println!("Threshold probe {:?} on window {:?}: {:?}", probe, window, res);
-                //println!("Correlation: {:?}", res);
+                //println!("Window {:?} -> {:?}", wc, res);
                 res < threshold
             });
+
+            if res > threshold {
+                break;
+            }
         }
         res > threshold
     }
@@ -279,6 +283,7 @@ impl OcvrHint {
                     data.gop_count,
                     r
                 );
+                gst_trace!(CAT, obj: pad, "Window: {:?}", &data.window);
                 if !Self::check_rate(&data.window, data.gop_size.unwrap(), settings.threshold, &p) {
                     continue;
                 }
@@ -301,8 +306,8 @@ impl OcvrHint {
                     m,
                     s
                 );
-                self.srcpad
-                    .send_event(gst::event::CustomUpstream::builder(s).build());
+                self.sinkpad
+                    .push_event(gst::event::CustomUpstream::builder(s).build());
             }
 
             // Correlation done, reset window
@@ -324,19 +329,24 @@ impl OcvrHint {
             gst::EventView::Caps(e) => {
                 gst_log!(CAT, obj: pad, "Handling event {:?}", event);
 
-                let mut data = self.data.lock().unwrap();
-                data.reset();
-
                 // Extract the framerate from caps
                 let c = e.caps();
                 let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
                 if r.is_ok() {
-                    data.rate = match r.unwrap().round().numer() {
+                    let n = r.unwrap().round().numer().clone();
+                    let rate = match n {
                         50 => Some(CaptureRate::HZ_50),
                         60 => Some(CaptureRate::HZ_60),
                         _ => None,
                     };
-                    gst_log!(CAT, obj: pad, "Input framerate {:?}", data.rate);
+                    gst_log!(CAT, obj: pad, "Input framerate {:?} from {:?}", rate, n);
+
+                    let mut data = self.data.lock().unwrap();
+                    if rate != data.rate {
+                        gst_info!(CAT, obj: pad, "Input frame rate changed - {:?} -> {:?}", data.rate, rate);
+                        data.reset();
+                        data.rate = rate;
+                    }
                 }
             }
             gst::EventView::CustomDownstream(e) => {

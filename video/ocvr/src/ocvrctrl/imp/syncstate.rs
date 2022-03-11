@@ -156,7 +156,7 @@ impl SyncState {
                         r = *m;
                     }
                 }
-            }
+            },
             _ => unreachable!(),
         }
         !self.is_synced() || r

@@ -10,31 +10,36 @@ pub struct RateProbe {
 }
 
 impl RateProbe {
-    const IFRAME_MULT: i64 = 5;
+    const IFRAME_SIZE: i64 = 20;
 
-    pub fn new(gop_size: usize, vecs: &[&[i64]]) -> RateProbe {
-        // we make 3 vectors from each incoming vector
-        let mut vs: Vec<Vec<i64>> = Vec::with_capacity(3 * vecs.len());
+    pub fn new(gop_size: usize, vec: &[i64]) -> RateProbe {
+        assert!(vec.len() > 1);
 
-        for p in vecs {
-            assert!(p.len() > 1);
-            let mut v: Vec<i64> = p.iter().cycle().take(gop_size).copied().collect();
+        // we rotate the input vector to get all variants and
+        // duplicate each with a leading I-frame
+        let mut vs: Vec<Vec<i64>> = Vec::with_capacity(vec.len() / 2);
 
-            // take the original vector expanded to GOP size
+        // and we copy the slice into a vector for permutation
+        let mut rv = Vec::from(vec);
+
+        for _ in (0..vec.len()).step_by(2) {
+            let mut v: Vec<i64> = rv.iter().cycle().take(gop_size).copied().collect();
+
+            // option 1: put an I-frame in front of the first frame
+            let l = v.pop().unwrap();
+            v.insert(0, Self::IFRAME_SIZE);
             vs.push(v.clone());
 
-            // The I-frame might be large and the first frame
-            let c = v[0];
-            v[0] = Self::IFRAME_MULT * c; // modify
-            vs.push(v.clone());
-            v[0] = c; // restore
+            // restore the vector
+            v.remove(0);
+            v.push(l);
 
-            // The I-frame might be large and before the first frame
-            vs.push(vec![Self::IFRAME_MULT * v[0]]);
-            // we added one at the beginning so we have to remove one
-            // from the end
-            v.pop();
-            vs.last_mut().unwrap().append(&mut v);
+            // option 2: first frame is an I-frame and thus large
+            v[0] = Self::IFRAME_SIZE;
+            vs.push(v);
+
+            // rotate
+            rv.rotate_right(2);
         }
 
         RateProbe { probes: vs }
@@ -52,7 +57,7 @@ mod tests {
     #[test]
     fn get_and_iterate() {
         let gop = 30;
-        let probe = RateProbe::new(gop, &[&[10, 1, 10, 1, 1], &[10, 1, 1, 10, 1]]);
+        let probe = RateProbe::new(gop, &[10, 1, 10, 1, 1]);
         assert!(probe.probes.len() == 6);
         for p in probe.iter() {
             assert!(p.len() == gop);
@@ -61,12 +66,15 @@ mod tests {
 
     #[test]
     fn get_and_check_vecs() {
-        let probe = RateProbe::new(30, &[&[10, 1, 10, 1, 1], &[10, 1, 1, 10, 1]]);
+        let probe = RateProbe::new(30, &[10, 1, 10, 1, 1]);
         for (i, p) in probe.iter().enumerate() {
             match i {
-                0 => assert!(p[0] == 10 && p[1] == 1),
-                1 => assert!(p[0] == RateProbe::IFRAME_MULT * 10 && p[1] == 1),
-                2 => assert!(p[0] == RateProbe::IFRAME_MULT * 10 && p[1] == 10),
+                // 50, 10,  1, 10,  1
+                0 => assert!(p[0] == RateProbe::IFRAME_SIZE && p[1] == 10),
+                // 50,  1, 10,  1,  1
+                1 => assert!(p[1] == 1 && p[2] == 10),
+                // 50,  1,  1, 10,  1
+                2 => assert!(p[3] == 10 && p[4] == 1),
                 _ => (),
             }
         }
