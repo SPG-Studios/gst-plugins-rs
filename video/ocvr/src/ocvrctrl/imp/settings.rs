@@ -11,7 +11,7 @@ use super::Tolerance;
 pub const DEFAULT_CONTENT_RATE: ContentRate = ContentRate::Hint;
 pub const DEFAULT_CAPTURE_RATES: CaptureRate = CaptureRate::all();
 pub const DEFAULT_METHOD: Method = Method::Auto;
-pub const DEFAULT_THRESHOLD: u8 = 1;
+pub const DEFAULT_THRESHOLD: u32 = 1;
 pub const DEFAULT_TOLERANCE: Tolerance = Tolerance::Strict;
 pub const DEFAULT_RETRIES: u32 = 3;
 pub const DEFAULT_ROWS: u32 = 10;
@@ -23,7 +23,7 @@ pub struct Settings {
     pub content_rate: ContentRate,
     pub capture_rates: CaptureRate,
     pub method: Method,
-    pub threshold: u8,
+    pub threshold: u32,
     pub tolerance: Tolerance,
     pub retries: u32,
     pub rows: u32,

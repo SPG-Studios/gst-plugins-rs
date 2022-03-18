@@ -100,14 +100,14 @@ impl OcvrCtrl {
         digest.finalize()
     }
 
-    fn compare_fuzzy(ping: &Vec<u8>, pong: &Vec<u8>, threshold: u8) -> bool {
+    fn compare_fuzzy(ping: &Vec<u8>, pong: &Vec<u8>, threshold: u32) -> bool {
         let it = ping.iter();
         let mut r = true;
         pong.iter().zip(it).all(|(a, b)| {
             let ax = cmp::max(a, b);
             let bx = cmp::min(a, b);
             let d = ax - bx;
-            if d > threshold {
+            if d > threshold as u8 {
                 r = false;
             }
             r
@@ -543,8 +543,8 @@ impl ObjectImpl for OcvrCtrl {
                     "Threshold",
                     "Compare threshold for method 'fuzzy'",
                     1,
-                    u32::MAX - 1,
-                    DEFAULT_THRESHOLD as u32,
+                    (u8::MAX - 1) as u32,
+                    DEFAULT_THRESHOLD,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
                 glib::ParamSpecEnum::new(
@@ -561,7 +561,7 @@ impl ObjectImpl for OcvrCtrl {
                     "Retry times for tolerance 'lazy' or 'strict'",
                     0,
                     100,
-                    DEFAULT_RETRIES as u32,
+                    DEFAULT_RETRIES,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
                 glib::ParamSpecUInt::new(
@@ -570,7 +570,7 @@ impl ObjectImpl for OcvrCtrl {
                     "Number of pixel rows considered for 'fuzzy' compare",
                     0,
                     u32::MAX - 1,
-                    DEFAULT_ROWS as u32,
+                    DEFAULT_ROWS,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
                 glib::ParamSpecBoolean::new(
@@ -639,7 +639,7 @@ impl ObjectImpl for OcvrCtrl {
             "content-rate" => settings.content_rate.to_value(),
             "capture-rates" => settings.capture_rates.to_value(),
             "method" => settings.method.to_value(),
-            "threshold" => (settings.threshold as u32).to_value(),
+            "threshold" => (settings.threshold).to_value(),
             "tolerance" => settings.tolerance.to_value(),
             "retries" => (settings.retries as u32).to_value(),
             "rows" => (settings.rows as u32).to_value(),
