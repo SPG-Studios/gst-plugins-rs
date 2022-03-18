@@ -82,19 +82,26 @@ impl Data {
         c
     }
 
+    pub fn method_overwrite(&mut self, rate: ContentRate) {
+        if self.method != Method::Auto {
+            return;
+        }
+
+        // in case of 60Hz content where fuzzy comparison might be
+        // possible we have to choose fuzzy comparison otherwise we
+        // may be stuck in the mismatch case forever
+        match rate {
+            ContentRate::Hz60 => self.method = Method::Fuzzy,
+            _ => (),
+        }
+    }
+
     pub fn can_compare(&self) -> bool {
         !self.ping_window.is_empty() && self.ping_window.len() == self.pong_window.len()
     }
 
     pub fn on_synced(&mut self, retries: u32) {
         self.retries = retries;
-    }
-
-    pub fn can_detect_sync_loss(&self) -> bool {
-        match (self.capture_rate.unwrap(), self.sync_state) {
-            (CaptureRate::HZ_60, SyncState::Hz60(_, _)) => false,
-            _ => true,
-        }
     }
 
     pub fn on_sync_lost(&mut self, method: Method, retries: u32) -> ResyncSolution {

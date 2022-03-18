@@ -276,11 +276,10 @@ impl OcvrCtrl {
             // reset sync method and retries once we are synced
             data.on_synced(settings.retries);
             gst_info!(CAT, obj: element, "Synced -> {:?}", data.sync_state);
-            // if we receive hints and we can detect sync loss tell
-            // the hinter to stop looking for pattern matches because
-            // we start dropping frames and matching will not work
-            // anymore
-            if settings.in_hint_mode() && data.can_detect_sync_loss() {
+            // if we receive hints and we are synced tell the hinter
+            // to stop looking for pattern matches because we start
+            // dropping frames and matching will not work anymore
+            if settings.in_hint_mode() {
                 let s = gst::Structure::new("ocvrctrl", &[("synced", &true)]);
                 self.srcpad
                     .push_event(gst::event::CustomDownstream::builder(s).build());
@@ -418,11 +417,13 @@ impl OcvrCtrl {
                                 "'ocvrhint' event found, rate {:?}",
                                 data.content_rate
                             );
-                            if data.content_rate.is_some()
-                                && (data.sync_state.is_idle() || !data.can_detect_sync_loss())
-                            {
-                                data.sync_state = SyncState::sync(data.content_rate.unwrap());
+                            if data.content_rate.is_some() && data.sync_state.is_idle() {
+                                let r = data.content_rate.unwrap();
+                                data.method_overwrite(r);
+                                data.sync_state = SyncState::sync(r);
                             }
+
+                            return true;
                         }
                     }
                     None => {}
