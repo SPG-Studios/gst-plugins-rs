@@ -418,9 +418,8 @@ impl OcvrCtrl {
                                 data.content_rate
                             );
                             if data.content_rate.is_some() && data.sync_state.is_idle() {
-                                let r = data.content_rate.unwrap();
-                                data.method_overwrite(r);
-                                data.sync_state = SyncState::sync(r);
+                                data.method_overwrite();
+                                data.sync_state = SyncState::sync(data.content_rate.unwrap());
                             }
 
                             return true;

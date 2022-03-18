@@ -82,7 +82,7 @@ impl Data {
         c
     }
 
-    pub fn method_overwrite(&mut self, rate: ContentRate) {
+    pub fn method_overwrite(&mut self) {
         if self.method != Method::Auto {
             return;
         }
@@ -90,7 +90,7 @@ impl Data {
         // in case of 60Hz content where fuzzy comparison might be
         // possible we have to choose fuzzy comparison otherwise we
         // may be stuck in the mismatch case forever
-        match rate {
+        match self.content_rate.unwrap() {
             ContentRate::Hz60 => self.method = Method::Fuzzy,
             _ => (),
         }
