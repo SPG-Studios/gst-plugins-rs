@@ -199,7 +199,7 @@ impl OcvrCtrl {
         &self,
         _pad: &gst::Pad,
         element: &super::OcvrCtrl,
-        buffer: gst::Buffer,
+        mut buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         {
             let mut data = self.data.lock().unwrap();
@@ -293,6 +293,24 @@ impl OcvrCtrl {
 
         // check if we should drop the frame
         let drop = data.sync_state.drop(settings.drop, r);
+
+        // adjust PTS and duration if buffer is not dropped
+        if data.sync_state.is_synced() && !drop {
+            let pts = buffer.pts();
+            let dur = buffer.duration();
+
+            let b = buffer.make_mut();
+            if data.sync_state.ts_adjust(r, &mut pts.unwrap()) {
+                b.set_pts(pts);
+            }
+
+            if data
+                .sync_state
+                .dur_adjust(r, settings.drop, &mut dur.unwrap())
+            {
+                b.set_duration(dur);
+            }
+        }
 
         if !drop {
             gst_log!(CAT, obj: element, "Fwd frame");

@@ -244,6 +244,54 @@ impl SyncState {
         };
     }
 
+    pub fn ts_adjust(&self, rate: CaptureRate, pts: &mut gst::ClockTime) -> bool {
+        return match rate {
+            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_60 => match self {
+                SyncState::Idle => false,
+                SyncState::SyncLost(_) => false,
+                SyncState::Syncing(_, _, _) => false,
+                SyncState::Hz24(i) => {
+                    if *i % Self::HZ24_60_PERIOD == 3 {
+                        *pts -= gst::ClockTime::USECOND / 120;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                SyncState::Hz30(_) => false,
+                SyncState::Hz60(_, _) => false,
+            },
+            _ => false,
+        };
+    }
+
+    pub fn dur_adjust(&self, rate: CaptureRate, drop: bool, dur: &mut gst::ClockTime) -> bool {
+        return match rate {
+            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_60 => match self {
+                SyncState::Idle => false,
+                SyncState::SyncLost(_) => false,
+                SyncState::Syncing(_, _, _) => false,
+                SyncState::Hz24(_) => {
+                    *dur = gst::ClockTime::SECOND / 24;
+                    true
+                }
+                SyncState::Hz30(_) => {
+                    *dur = gst::ClockTime::SECOND / 30;
+                    true
+                }
+                SyncState::Hz60(_, _) => {
+                    if drop {
+                        *dur = gst::ClockTime::SECOND / 30;
+                    }
+                    true
+                }
+            },
+            _ => false,
+        };
+    }
+
     pub fn drop(&self, drop: bool, rate: CaptureRate) -> bool {
         return match rate {
             CaptureRate::HZ_50 => false,
