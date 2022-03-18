@@ -5,7 +5,6 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use gst::{gst_info, gst_log, gst_trace};
 
 use std::cmp;
 use std::sync::Mutex;
@@ -113,7 +112,7 @@ impl OcvrCtrl {
             r
         });
 
-        gst_log!(CAT, "Fuzzy frame compare: {:?}", r);
+        gst::log!(CAT, "Fuzzy frame compare: {:?}", r);
         r
     }
 
@@ -121,11 +120,11 @@ impl OcvrCtrl {
         let mut data = self.data.lock().unwrap();
 
         if !data.sync_state.needs_save(data.capture_rate.unwrap()) {
-            gst_log!(CAT, "Frame save not needed -> {:?}", data.sync_state);
+            gst::log!(CAT, "Frame save not needed -> {:?}", data.sync_state);
             return;
         }
 
-        gst_log!(CAT, "Save frame -> {:?}", data.sync_state);
+        gst::log!(CAT, "Save frame -> {:?}", data.sync_state);
         let info = VideoInfo::builder(
             data.frame_format.unwrap(),
             data.frame_size.0,
@@ -152,7 +151,7 @@ impl OcvrCtrl {
             wn = "ping";
             &mut data.ping_window
         };
-        gst_log!(CAT, "Save frame to {:?}", wn);
+        gst::log!(CAT, "Save frame to {:?}", wn);
 
         win.clear();
         let settings = self.settings.lock().unwrap();
@@ -174,18 +173,18 @@ impl OcvrCtrl {
         let n = data.sync_state.needs_compare(data.capture_rate.unwrap());
 
         if !n {
-            gst_log!(CAT, "Comparison not needed -> {:?}", data.sync_state);
+            gst::log!(CAT, "Comparison not needed -> {:?}", data.sync_state);
             return Ok(true);
         }
 
         let r = match data.method {
             Method::Fuzzy => {
-                gst_log!(CAT, "Compare frames 'fuzzy' -> {:?}", data.sync_state);
+                gst::log!(CAT, "Compare frames 'fuzzy' -> {:?}", data.sync_state);
                 let settings = self.settings.lock().unwrap();
                 Self::compare_fuzzy(&data.ping_window, &data.pong_window, settings.threshold)
             }
             Method::Accurate | Method::Auto => {
-                gst_log!(CAT, "Compare frames 'accurate' -> {:?}", data.sync_state);
+                gst::log!(CAT, "Compare frames 'accurate' -> {:?}", data.sync_state);
                 let crc_ping = Self::calc_checksum(&data.ping_window);
                 let crc_pong = Self::calc_checksum(&data.pong_window);
                 crc_ping == crc_pong
@@ -206,7 +205,7 @@ impl OcvrCtrl {
 
             // if we don't have supported caps just forward the frame
             if data.capture_rate.is_none() || data.sync_state.is_idle() {
-                gst_log!(CAT, obj: element, "Passthrough");
+                gst::log!(CAT, obj: element, "Passthrough");
                 return self.srcpad.push(buffer);
             }
 
@@ -218,7 +217,7 @@ impl OcvrCtrl {
         self.save_frame(&buffer);
         let mut m = match self.compare_frames() {
             Err(_) => {
-                gst_log!(CAT, obj: element, "Need at least two frames for comparison");
+                gst::log!(CAT, obj: element, "Need at least two frames for comparison");
                 return self.srcpad.push(buffer);
             }
             Ok(v) => v,
@@ -232,7 +231,7 @@ impl OcvrCtrl {
         // sync let's try to recover
         if !data.sync_state.eval_compare(r, &mut m) {
             let s = data.on_sync_lost(settings.method, settings.retries);
-            gst_info!(
+            gst::info!(
                 CAT,
                 obj: element,
                 "Unexpected frame mismatch - lost sync (solution: {:?}) -> {:?}",
@@ -257,14 +256,14 @@ impl OcvrCtrl {
 
         let c = data.sync_state.update(r, m);
         if m {
-            gst_log!(
+            gst::log!(
                 CAT,
                 obj: element,
                 "Frames match or no check needed -> {:?}",
                 data.sync_state
             );
         } else {
-            gst_log!(
+            gst::log!(
                 CAT,
                 obj: element,
                 "Frames mismatch -> {:?}",
@@ -275,7 +274,7 @@ impl OcvrCtrl {
         if c && data.sync_state.is_synced() {
             // reset sync method and retries once we are synced
             data.on_synced(settings.retries);
-            gst_info!(CAT, obj: element, "Synced -> {:?}", data.sync_state);
+            gst::info!(CAT, obj: element, "Synced -> {:?}", data.sync_state);
             // if we receive hints and we are synced tell the hinter
             // to stop looking for pattern matches because we start
             // dropping frames and matching will not work anymore
@@ -312,10 +311,10 @@ impl OcvrCtrl {
         }
 
         if !drop {
-            gst_log!(CAT, obj: element, "Fwd frame");
+            gst::log!(CAT, obj: element, "Fwd frame");
             self.srcpad.push(buffer)
         } else {
-            gst_info!(CAT, obj: element, "Drop frame -> {:?}", data.sync_state);
+            gst::info!(CAT, obj: element, "Drop frame -> {:?}", data.sync_state);
             Ok(gst::FlowSuccess::Ok)
         }
     }
@@ -323,7 +322,7 @@ impl OcvrCtrl {
     fn sink_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
         match event.view() {
             gst::EventView::Caps(e) => {
-                gst_log!(CAT, obj: pad, "Handling event {:?}", event);
+                gst::log!(CAT, obj: pad, "Handling event {:?}", event);
 
                 let mut data = self.data.lock().unwrap();
                 let settings = self.settings.lock().unwrap();
@@ -352,7 +351,7 @@ impl OcvrCtrl {
                         }
                         _ => None,
                     };
-                    gst_log!(CAT, obj: pad, "Input framerate {:?}", data.capture_rate);
+                    gst::log!(CAT, obj: pad, "Input framerate {:?}", data.capture_rate);
                 }
 
                 // Extract the format from caps
@@ -361,7 +360,7 @@ impl OcvrCtrl {
                     Ok(f) => Some(VideoFormat::from_string(f)),
                     Err(_) => None,
                 };
-                gst_log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
+                gst::log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
 
                 // Extract the size from caps
                 let w = c.structure(0).unwrap().get::<i32>("width");
@@ -371,7 +370,7 @@ impl OcvrCtrl {
                 } else {
                     data.frame_size = (0, 0);
                 }
-                gst_log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
+                gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
             }
             _ => (),
         }
@@ -388,7 +387,7 @@ impl OcvrCtrl {
     }
 
     fn src_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
-        gst_log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
 
         match event.view() {
             gst::EventView::CustomUpstream(e) => {
@@ -411,7 +410,7 @@ impl OcvrCtrl {
                                 60 => Some(ContentRate::Hz60),
                                 _ => None,
                             };
-                            gst_info!(
+                            gst::info!(
                                 CAT,
                                 obj: pad,
                                 "'ocvrhint' event found, rate {:?}",
@@ -703,7 +702,7 @@ impl ElementImpl for OcvrCtrl {
         element: &Self::Type,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst_trace!(CAT, obj: element, "Changing state {:?}", transition);
+        gst::trace!(CAT, obj: element, "Changing state {:?}", transition);
         self.parent_change_state(element, transition)
     }
 }

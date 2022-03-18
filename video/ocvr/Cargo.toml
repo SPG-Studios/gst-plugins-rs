@@ -9,16 +9,28 @@ authors = ["Jochen Henneberg <jh@henneberg-systemdesign.com>"]
 repository = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
 license = "MIT/Apache-2.0"
 edition = "2021"
-rust-version = "1.56"
+rust-version = "1.57"
 description = "Original content video rate detector"
 
 [dependencies]
-gst = { package = "gstreamer", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
-gst-base = { package = "gstreamer-base", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
-gst-video = { package = "gstreamer-video", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 once_cell = "1.0"
 is-odd = "~1.0"
 crc = "2.1"
+
+[dependencies.gst]
+git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs"
+features = ["v1_16"]
+package="gstreamer"
+
+[dependencies.gst-base]
+git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs"
+features = ["v1_16"]
+package="gstreamer-base"
+
+[dependencies.gst-video]
+git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs"
+features = ["v1_16"]
+package="gstreamer-video"
 
 [lib]
 name = "gstocvr"

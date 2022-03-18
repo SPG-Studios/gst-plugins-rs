@@ -5,7 +5,6 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use gst::{gst_info, gst_log, gst_trace};
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -154,13 +153,13 @@ impl OcvrHint {
 
         for v in probe.iter() {
             corr.set_x(v);
-            //gst_log!(CAT, "Probe {:?}", v);
+            //gst::log!(CAT, "Probe {:?}", v);
             window.chunks(gop_size).all(|wc| {
                 res = match corr.corr_y(&wc) {
                     Some(c) => res.max(c),
                     None => res,
                 };
-                //gst_log!(CAT, "Window {:?} -> {:?}", wc, res);
+                //gst::log!(CAT, "Window {:?} -> {:?}", wc, res);
                 res < threshold
             });
 
@@ -242,7 +241,7 @@ impl OcvrHint {
         {
             let s = data.frame_counter;
             data.gop_size = Some(s);
-            gst_log!(CAT, obj: pad, "Found GOP size {:?}", s);
+            gst::log!(CAT, obj: pad, "Found GOP size {:?}", s);
 
             // Reserve enough space for the window vector
             let w = s * settings.window_size;
@@ -263,7 +262,7 @@ impl OcvrHint {
         // If the window is complete check for framerate matches
         let mut m: Option<ContentRate> = None;
         if data.gop_count == settings.window_size {
-            gst_trace!(
+            gst::trace!(
                 CAT,
                 obj: pad,
                 "Processing {:?} GOPs in data window of size {:?}",
@@ -276,14 +275,14 @@ impl OcvrHint {
                     continue;
                 }
 
-                gst_trace!(
+                gst::trace!(
                     CAT,
                     obj: pad,
                     "Correlate {:?} GOPs for rate {:?}",
                     data.gop_count,
                     r
                 );
-                gst_trace!(CAT, obj: pad, "Window: {:?}", &data.window);
+                gst::trace!(CAT, obj: pad, "Window: {:?}", &data.window);
                 if !Self::check_rate(&data.window, data.gop_size.unwrap(), settings.threshold, &p) {
                     continue;
                 }
@@ -299,7 +298,7 @@ impl OcvrHint {
                 // Send a custom upstream event with the newly detected original content rate
                 let r = Self::rate_to_int(m);
                 let s = gst::Structure::new("ocvrhint", &[("rate", &r)]);
-                gst_log!(
+                gst::log!(
                     CAT,
                     obj: pad,
                     "Original content frame rate changed to {:?}",
@@ -326,7 +325,7 @@ impl OcvrHint {
     fn sink_event(&self, pad: &gst::Pad, _element: &super::OcvrHint, event: gst::Event) -> bool {
         match event.view() {
             gst::EventView::Caps(e) => {
-                gst_log!(CAT, obj: pad, "Handling event {:?}", event);
+                gst::log!(CAT, obj: pad, "Handling event {:?}", event);
 
                 // Extract the framerate from caps
                 let c = e.caps();
@@ -338,11 +337,11 @@ impl OcvrHint {
                         60 => Some(CaptureRate::HZ_60),
                         _ => None,
                     };
-                    gst_log!(CAT, obj: pad, "Input framerate {:?} from {:?}", rate, n);
+                    gst::log!(CAT, obj: pad, "Input framerate {:?} from {:?}", rate, n);
 
                     let mut data = self.data.lock().unwrap();
                     if rate != data.rate {
-                        gst_info!(
+                        gst::info!(
                             CAT,
                             obj: pad,
                             "Input frame rate changed - {:?} -> {:?}",
@@ -361,7 +360,7 @@ impl OcvrHint {
                         if s.name() == "ocvrctrl" {
                             let mut data = self.data.lock().unwrap();
                             data.set_pause(s.get::<bool>("synced").unwrap());
-                            gst_info!(
+                            gst::info!(
                                 CAT,
                                 obj: pad,
                                 "'ocvrctrl' event found, synced {:?}",
@@ -383,9 +382,9 @@ impl OcvrHint {
         _element: &super::OcvrHint,
         query: &mut gst::QueryRef,
     ) -> bool {
-        gst_log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
         let ret = match query.view_mut() {
-            gst::QueryView::Caps(ref mut q) => {
+            gst::QueryViewMut::Caps(ref mut q) => {
                 let pad_caps = self.sinkpad.pad_template_caps();
                 let caps = q
                     .filter()
@@ -630,7 +629,7 @@ impl ElementImpl for OcvrHint {
         element: &Self::Type,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst_trace!(CAT, obj: element, "Changing state {:?}", transition);
+        gst::trace!(CAT, obj: element, "Changing state {:?}", transition);
         self.parent_change_state(element, transition)
     }
 }
