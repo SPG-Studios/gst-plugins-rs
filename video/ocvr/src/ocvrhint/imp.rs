@@ -154,13 +154,13 @@ impl OcvrHint {
 
         for v in probe.iter() {
             corr.set_x(v);
-            //println!("Probe {:?}", v);
+            //gst_log!(CAT, "Probe {:?}", v);
             window.chunks(gop_size).all(|wc| {
                 res = match corr.corr_y(&wc) {
                     Some(c) => res.max(c),
                     None => res,
                 };
-                //println!("Window {:?} -> {:?}", wc, res);
+                //gst_log!(CAT, "Window {:?} -> {:?}", wc, res);
                 res < threshold
             });
 
@@ -302,9 +302,8 @@ impl OcvrHint {
                 gst_log!(
                     CAT,
                     obj: pad,
-                    "Original content frame rate changed to {:?}, post event {:?}",
-                    m,
-                    s
+                    "Original content frame rate changed to {:?}",
+                    m
                 );
                 self.sinkpad
                     .push_event(gst::event::CustomUpstream::builder(s).build());

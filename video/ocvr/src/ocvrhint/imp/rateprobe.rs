@@ -11,13 +11,14 @@ pub struct RateProbe {
 
 impl RateProbe {
     const IFRAME_SIZE: i64 = 20;
+    const IFRAME_LARGE_SIZE: i64 = 50;
 
     pub fn new(gop_size: usize, vec: &[i64]) -> RateProbe {
         assert!(vec.len() > 1);
 
         // we rotate the input vector to get all variants and
         // duplicate each with a leading I-frame
-        let mut vs: Vec<Vec<i64>> = Vec::with_capacity(vec.len() / 2);
+        let mut vs: Vec<Vec<i64>> = Vec::with_capacity(vec.len());
 
         // and we copy the slice into a vector for permutation
         let mut rv = Vec::from(vec);
@@ -29,6 +30,8 @@ impl RateProbe {
             let l = v.pop().unwrap();
             v.insert(0, Self::IFRAME_SIZE);
             vs.push(v.clone());
+            v[0] = Self::IFRAME_LARGE_SIZE;
+            vs.push(v.clone());
 
             // restore the vector
             v.remove(0);
@@ -36,6 +39,8 @@ impl RateProbe {
 
             // option 2: first frame is an I-frame and thus large
             v[0] = Self::IFRAME_SIZE;
+            vs.push(v.clone());
+            v[0] = Self::IFRAME_LARGE_SIZE;
             vs.push(v);
 
             // rotate
