@@ -63,7 +63,7 @@ mod tests {
     fn get_and_iterate() {
         let gop = 30;
         let probe = RateProbe::new(gop, &[10, 1, 10, 1, 1]);
-        assert!(probe.probes.len() == 6);
+        assert!(probe.probes.len() == 12);
         for p in probe.iter() {
             assert!(p.len() == gop);
         }
@@ -74,12 +74,12 @@ mod tests {
         let probe = RateProbe::new(30, &[10, 1, 10, 1, 1]);
         for (i, p) in probe.iter().enumerate() {
             match i {
-                // 50, 10,  1, 10,  1
+                // 20, 10,  1, 10,  1
                 0 => assert!(p[0] == RateProbe::IFRAME_SIZE && p[1] == 10),
-                // 50,  1, 10,  1,  1
-                1 => assert!(p[1] == 1 && p[2] == 10),
-                // 50,  1,  1, 10,  1
-                2 => assert!(p[3] == 10 && p[4] == 1),
+                // 50, 10,  1, 10,  1
+                1 => assert!(p[1] == 10 && p[2] == 1),
+                // 20,  1,  1, 10,  1
+                4 => assert!(p[3] == 10 && p[4] == 1),
                 _ => (),
             }
         }
