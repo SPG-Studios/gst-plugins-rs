@@ -56,6 +56,10 @@ impl Data {
         self.capture_rate.take();
         self.frame_format.take();
         self.frame_size = (0, 0);
+        self.reset_on_hint(method, retries);
+    }
+
+    pub fn reset_on_hint(&mut self, method: Method, retries: u32) {
         self.ping_window = vec![];
         self.pong_window = vec![];
         self.sync_state.reset();
@@ -82,8 +86,7 @@ impl Data {
         !self.ping_window.is_empty() && self.ping_window.len() == self.pong_window.len()
     }
 
-    pub fn on_synced(&mut self, method: Method, retries: u32) {
-        self.method = method;
+    pub fn on_synced(&mut self, retries: u32) {
         self.retries = retries;
     }
 

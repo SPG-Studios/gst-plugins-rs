@@ -274,7 +274,7 @@ impl OcvrCtrl {
 
         if c && data.sync_state.is_synced() {
             // reset sync method and retries once we are synced
-            data.on_synced(settings.method, settings.retries);
+            data.on_synced(settings.retries);
             gst_info!(CAT, obj: element, "Synced -> {:?}", data.sync_state);
             // if we receive hints and we can detect sync loss tell
             // the hinter to stop looking for pattern matches because
@@ -404,6 +404,8 @@ impl OcvrCtrl {
                             }
 
                             let mut data = self.data.lock().unwrap();
+                            data.reset_on_hint(settings.method, settings.retries);
+
                             data.content_rate = match s.get::<u32>("rate").unwrap() {
                                 24 => Some(ContentRate::Hz24),
                                 30 => Some(ContentRate::Hz30),
