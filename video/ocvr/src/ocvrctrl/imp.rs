@@ -91,7 +91,7 @@ pub struct OcvrCtrl {
 }
 
 impl OcvrCtrl {
-    fn calc_checksum(win: &Vec<u8>) -> u32 {
+    fn calc_checksum(win: &[u8]) -> u32 {
         let crc = CASTAGNOLI;
         let mut digest = crc.digest();
 
@@ -99,7 +99,7 @@ impl OcvrCtrl {
         digest.finalize()
     }
 
-    fn compare_fuzzy(ping: &Vec<u8>, pong: &Vec<u8>, threshold: u32) -> bool {
+    fn compare_fuzzy(ping: &[u8], pong: &[u8], threshold: u32) -> bool {
         let it = ping.iter();
         let mut r = true;
         pong.iter().zip(it).all(|(a, b)| {
@@ -133,7 +133,7 @@ impl OcvrCtrl {
         .build()
         .unwrap();
         let frame =
-            VideoFrameRef::<&gst::BufferRef>::from_buffer_ref_readable(&buffer, &info).unwrap();
+            VideoFrameRef::<&gst::BufferRef>::from_buffer_ref_readable(buffer, &info).unwrap();
         let plane = match data.frame_format.unwrap() {
             VideoFormat::I420 => 0, // luma
             VideoFormat::Nv12 => 0, // luma
@@ -230,7 +230,7 @@ impl OcvrCtrl {
         // if we are synced and frame comparison failed or if we lost
         // sync let's try to recover
         if !data.sync_state.eval_compare(r, &mut m) {
-            let s = data.on_sync_lost(settings.method, settings.retries);
+            let s = data.on_sync_lost(settings.method, settings.retries, settings.tolerance);
             gst::info!(
                 CAT,
                 obj: element,
@@ -322,60 +322,58 @@ impl OcvrCtrl {
     }
 
     fn sink_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
-        match event.view() {
-            gst::EventView::Caps(e) => {
-                gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        if let gst::EventView::Caps(e) = event.view() {
+            gst::log!(CAT, obj: pad, "Handling event {:?}", e);
 
-                let mut data = self.data.lock().unwrap();
-                let settings = self.settings.lock().unwrap();
-                data.reset(settings.method, settings.retries);
+            let mut data = self.data.lock().unwrap();
+            let settings = self.settings.lock().unwrap();
+            data.reset(settings.method, settings.retries);
 
-                // Extract the framerate from caps
-                let c = e.caps();
-                let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
+            // Extract the framerate from caps
+            let c = e.caps();
+            let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
 
-                if r.is_ok() {
-                    data.upstream_caps = c.copy();
-                    data.capture_rate = match r.unwrap().round().numer() {
-                        50 => {
-                            if settings.capture_rate(CaptureRate::HZ_50) {
-                                Some(CaptureRate::HZ_50)
-                            } else {
-                                None
-                            }
+            if let Ok(rate) = r {
+                data.upstream_caps = c.copy();
+                data.capture_rate = match rate.round().numer() {
+                    50 => {
+                        if settings.capture_rate(CaptureRate::HZ_50) {
+                            Some(CaptureRate::HZ_50)
+                        } else {
+                            None
                         }
-                        60 => {
-                            if settings.capture_rate(CaptureRate::HZ_60) {
-                                Some(CaptureRate::HZ_60)
-                            } else {
-                                None
-                            }
+                    }
+                    60 => {
+                        if settings.capture_rate(CaptureRate::HZ_60) {
+                            Some(CaptureRate::HZ_60)
+                        } else {
+                            None
                         }
-                        _ => None,
-                    };
-                    gst::log!(CAT, obj: pad, "Input framerate {:?}", data.capture_rate);
-                }
-
-                // Extract the format from caps
-                let f = c.structure(0).unwrap().get::<&str>("format");
-                data.frame_format = match f {
-                    Ok(f) => Some(VideoFormat::from_string(f)),
-                    Err(_) => None,
+                    }
+                    _ => None,
                 };
-                gst::log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
-
-                // Extract the size from caps
-                let w = c.structure(0).unwrap().get::<i32>("width");
-                let h = c.structure(0).unwrap().get::<i32>("height");
-                if w.is_ok() && h.is_ok() {
-                    data.frame_size = (w.unwrap() as u32, h.unwrap() as u32);
-                } else {
-                    data.frame_size = (0, 0);
-                }
-                gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
+                gst::log!(CAT, obj: pad, "Input framerate {:?}", data.capture_rate);
             }
-            _ => (),
+
+            // Extract the format from caps
+            let f = c.structure(0).unwrap().get::<&str>("format");
+            data.frame_format = match f {
+                Ok(f) => Some(VideoFormat::from_string(f)),
+                Err(_) => None,
+            };
+            gst::log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
+
+            // Extract the size from caps
+            let w = c.structure(0).unwrap().get::<i32>("width");
+            let h = c.structure(0).unwrap().get::<i32>("height");
+            if let (Ok(width), Ok(height)) = (w, h) {
+                data.frame_size = (width as u32, height as u32);
+            } else {
+                data.frame_size = (0, 0);
+            }
+            gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
         }
+
         self.srcpad.push_event(event)
     }
 
@@ -391,47 +389,46 @@ impl OcvrCtrl {
     fn src_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
         gst::log!(CAT, obj: pad, "Handling event {:?}", event);
 
-        match event.view() {
-            gst::EventView::CustomUpstream(e) => {
-                // Extract the framerate hint
-                match e.structure() {
-                    Some(s) => {
-                        if s.name() == "ocvrhint" {
-                            // do we listen to ocvrhint
-                            let settings = self.settings.lock().unwrap();
-                            if !settings.in_hint_mode() {
-                                return self.sinkpad.push_event(event);
-                            }
-
-                            let mut data = self.data.lock().unwrap();
-                            data.reset_on_hint(settings.method, settings.retries);
-
-                            data.content_rate = match s.get::<u32>("rate").unwrap() {
-                                24 => Some(ContentRate::Hz24),
-                                30 => Some(ContentRate::Hz30),
-                                60 => Some(ContentRate::Hz60),
-                                _ => None,
-                            };
-                            gst::info!(
-                                CAT,
-                                obj: pad,
-                                "'ocvrhint' event found, rate {:?}",
-                                data.content_rate
-                            );
-                            if data.content_rate.is_some() && data.sync_state.is_idle() {
-                                data.method_overwrite();
-                                data.sync_state = SyncState::sync(data.content_rate.unwrap());
-                            }
-
-                            return true;
-                        }
-                    }
-                    None => {}
+        if let gst::EventView::CustomUpstream(e) = event.view() {
+            // Extract the framerate hint
+            if let Some(s) = e.structure() {
+                if s.name() != "ocvrhint" {
+                    return self.sinkpad.push_event(event);
                 }
+
+                // do we listen to ocvrhint
+                let settings = self.settings.lock().unwrap();
+                if !settings.in_hint_mode() {
+                    return self.sinkpad.push_event(event);
+                }
+
+                let mut data = self.data.lock().unwrap();
+                data.reset_on_hint(settings.method, settings.retries);
+
+                data.content_rate = match s.get::<u32>("rate").unwrap() {
+                    24 => Some(ContentRate::Hz24),
+                    30 => Some(ContentRate::Hz30),
+                    60 => Some(ContentRate::Hz60),
+                    _ => None,
+                };
+                gst::info!(
+                    CAT,
+                    obj: pad,
+                    "'ocvrhint' event found, rate {:?}",
+                    data.content_rate
+                );
+                if data.content_rate.is_some() && data.sync_state.is_idle() {
+                    data.method_overwrite();
+                    data.sync_state = SyncState::sync(data.content_rate.unwrap());
+                }
+
+                true
+            } else {
+                self.sinkpad.push_event(event)
             }
-            _ => (),
+        } else {
+            self.sinkpad.push_event(event)
         }
-        self.sinkpad.push_event(event)
     }
 
     fn src_query(
@@ -554,7 +551,7 @@ impl ObjectImpl for OcvrCtrl {
                     "tolerance",
                     "Check tolerance",
                     "How to handle failed comparisons",
-                    Method::static_type(),
+                    Tolerance::static_type(),
                     DEFAULT_TOLERANCE as i32,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),

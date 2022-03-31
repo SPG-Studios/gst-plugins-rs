@@ -8,6 +8,7 @@ use super::CaptureRate;
 use super::ContentRate;
 use super::Method;
 use super::SyncState;
+use super::Tolerance;
 
 // Runtime value storage
 #[derive(Debug, Clone)]
@@ -90,9 +91,8 @@ impl Data {
         // in case of 60Hz content where fuzzy comparison might be
         // possible we have to choose fuzzy comparison otherwise we
         // may be stuck in the mismatch case forever
-        match self.content_rate.unwrap() {
-            ContentRate::Hz60 => self.method = Method::Fuzzy,
-            _ => (),
+        if self.content_rate.unwrap() == ContentRate::Hz60 {
+            self.method = Method::Fuzzy
         }
     }
 
@@ -104,25 +104,37 @@ impl Data {
         self.retries = retries;
     }
 
-    pub fn on_sync_lost(&mut self, method: Method, retries: u32) -> ResyncSolution {
+    pub fn on_sync_lost(
+        &mut self,
+        method: Method,
+        retries: u32,
+        tolerance: Tolerance,
+    ) -> ResyncSolution {
         self.ping_window = vec![];
         self.pong_window = vec![];
         self.is_ping = true;
 
-        if self.method == Method::Auto {
-            // in auto mode try again with fuzzy comparison
-            self.method = Method::Fuzzy;
-            self.sync_state.resync();
-            ResyncSolution::FuzzyCompare
-        } else {
-            if self.retries == 0 {
-                // if we cannot retry we are lost
+        match (self.method, self.retries, tolerance) {
+            (Method::Auto, _, _) => {
+                // in auto mode try again with fuzzy comparison
+                self.method = Method::Fuzzy;
+                self.sync_state.resync();
+                ResyncSolution::FuzzyCompare
+            }
+            (_, _, Tolerance::Paranoid) | (_, 0, Tolerance::Strict) => {
                 self.sync_state.reset();
                 self.content_rate.take();
                 self.method = method;
                 self.retries = retries;
                 ResyncSolution::None
-            } else {
+            }
+            (_, 0, Tolerance::Lazy) => {
+                // endless retries
+                self.retries = retries;
+                self.sync_state.resync();
+                ResyncSolution::Retry(self.retries)
+            }
+            (_, _, _) => {
                 // retry
                 self.retries -= 1;
                 self.sync_state.resync();

@@ -3,20 +3,15 @@
 // SPDX-License-Identifier: Apache-2.0 or MIT
 
 struct Vector<'a> {
-    v: &'a [i64],
+    vec: &'a [i64],
     mean: i64,
     std: f64,
 }
 
+#[derive(Default)]
 pub struct Corr<'a> {
     x: Option<Vector<'a>>,
     y: Option<Vector<'a>>,
-}
-
-impl<'a> Default for Corr<'a> {
-    fn default() -> Self {
-        Corr { x: None, y: None }
-    }
 }
 
 impl<'a> Corr<'a> {
@@ -51,7 +46,7 @@ impl<'a> Corr<'a> {
         let m = Self::mean(v);
         let s = Self::std(v, m);
         Vector {
-            v: v,
+            vec: v,
             mean: m,
             std: s,
         }
@@ -61,11 +56,11 @@ impl<'a> Corr<'a> {
         let mut s = 0;
         let x = self.x.as_ref().unwrap();
         let y = self.y.as_ref().unwrap();
-        let n = x.v.len();
+        let n = x.vec.len();
 
-        assert!(n == y.v.len());
+        assert!(n == y.vec.len());
 
-        for it in x.v.iter().zip(y.v.iter()) {
+        for it in x.vec.iter().zip(y.vec.iter()) {
             let (xi, yi) = it;
             s += (xi - x.mean) * (yi - y.mean);
         }

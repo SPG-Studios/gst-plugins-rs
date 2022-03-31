@@ -81,7 +81,7 @@ impl Default for Settings {
 }
 
 // Runtime value storage
-#[derive(Debug)]
+#[derive(Default, Debug)]
 struct Data {
     window: Vec<i64>,
     gop_count: usize,
@@ -124,21 +124,6 @@ impl Data {
     }
 }
 
-impl Default for Data {
-    fn default() -> Self {
-        Data {
-            window: vec![],
-            gop_count: 0,
-            gop_size: None,
-            probes: BTreeMap::new(),
-            rate: None,
-            content_rate: None,
-            frame_counter: 0,
-            pause: false,
-        }
-    }
-}
-
 pub struct OcvrHint {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
@@ -147,7 +132,7 @@ pub struct OcvrHint {
 }
 
 impl OcvrHint {
-    fn check_rate(window: &Vec<i64>, gop_size: usize, threshold: f64, probe: &RateProbe) -> bool {
+    fn check_rate(window: &[i64], gop_size: usize, threshold: f64, probe: &RateProbe) -> bool {
         let mut res: f64 = 0.0;
         let mut corr: Corr = Default::default();
 
@@ -155,7 +140,7 @@ impl OcvrHint {
             corr.set_x(v);
             //gst::log!(CAT, "Probe {:?}", v);
             window.chunks(gop_size).all(|wc| {
-                res = match corr.corr_y(&wc) {
+                res = match corr.corr_y(wc) {
                     Some(c) => res.max(c),
                     None => res,
                 };
@@ -195,9 +180,9 @@ impl OcvrHint {
         }
 
         match r.unwrap() {
-            ContentRate::HZ_24 => return 24,
-            ContentRate::HZ_30 => return 30,
-            ContentRate::HZ_60 => return 60,
+            ContentRate::HZ_24 => 24,
+            ContentRate::HZ_30 => 30,
+            ContentRate::HZ_60 => 60,
             _ => unreachable!(),
         }
     }
@@ -226,7 +211,7 @@ impl OcvrHint {
         // If this is not a reference frame advance the frame counter,
         // remember the buffer size and push the buffer
         if buffer.flags().contains(gst::BufferFlags::DELTA_UNIT) {
-            if data.window.len() > 0 {
+            if !data.window.is_empty() {
                 data.window.push(buffer.size() as i64);
                 data.frame_counter += 1;
             }
@@ -283,7 +268,7 @@ impl OcvrHint {
                     r
                 );
                 gst::trace!(CAT, obj: pad, "Window: {:?}", &data.window);
-                if !Self::check_rate(&data.window, data.gop_size.unwrap(), settings.threshold, &p) {
+                if !Self::check_rate(&data.window, data.gop_size.unwrap(), settings.threshold, p) {
                     continue;
                 }
 
@@ -330,8 +315,8 @@ impl OcvrHint {
                 // Extract the framerate from caps
                 let c = e.caps();
                 let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
-                if r.is_ok() {
-                    let n = r.unwrap().round().numer().clone();
+                if let Ok(cr) = r {
+                    let n = *cr.round().numer();
                     let rate = match n {
                         50 => Some(CaptureRate::HZ_50),
                         60 => Some(CaptureRate::HZ_60),
@@ -355,23 +340,20 @@ impl OcvrHint {
             }
             gst::EventView::CustomDownstream(e) => {
                 // Extract the controller state event
-                match e.structure() {
-                    Some(s) => {
-                        if s.name() == "ocvrctrl" {
-                            let mut data = self.data.lock().unwrap();
-                            data.set_pause(s.get::<bool>("synced").unwrap());
-                            gst::info!(
-                                CAT,
-                                obj: pad,
-                                "'ocvrctrl' event found, synced {:?}",
-                                data.pause
-                            );
-                        }
+                if let Some(s) = e.structure() {
+                    if s.name() == "ocvrctrl" {
+                        let mut data = self.data.lock().unwrap();
+                        data.set_pause(s.get::<bool>("synced").unwrap());
+                        gst::info!(
+                            CAT,
+                            obj: pad,
+                            "'ocvrctrl' event found, synced {:?}",
+                            data.pause
+                        );
                     }
-                    None => {}
                 }
             }
-            _ => (),
+            _ => {}
         }
         self.srcpad.push_event(event)
     }

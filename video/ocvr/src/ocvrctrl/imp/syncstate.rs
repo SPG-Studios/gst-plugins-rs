@@ -79,17 +79,11 @@ impl SyncState {
     const HZ60_60_SYNCED_PERIOD: u32 = 10 * Self::HZ60_60_PERIOD;
 
     pub fn sync_lost(&self) -> bool {
-        match self {
-            SyncState::SyncLost(_) => true,
-            _ => false,
-        }
+        matches!(self, SyncState::SyncLost(_))
     }
 
     pub fn is_idle(&self) -> bool {
-        match self {
-            SyncState::Idle => true,
-            _ => false,
-        }
+        matches!(self, SyncState::Idle)
     }
 
     pub fn reset(&mut self) {
@@ -97,12 +91,10 @@ impl SyncState {
     }
 
     pub fn is_synced(&self) -> bool {
-        match self {
-            SyncState::Hz24(_) => true,
-            SyncState::Hz30(_) => true,
-            SyncState::Hz60(_, _) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            SyncState::Hz24(_) | SyncState::Hz30(_) | SyncState::Hz60(_, _)
+        )
     }
 
     pub fn resync(&mut self) {
@@ -221,7 +213,7 @@ impl SyncState {
     }
 
     pub fn needs_compare(&self, rate: CaptureRate) -> bool {
-        return match rate {
+        match rate {
             CaptureRate::HZ_50 => false,
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
@@ -232,11 +224,11 @@ impl SyncState {
                 SyncState::Hz60(i, _) => (1..=3).contains(i),
             },
             _ => false,
-        };
+        }
     }
 
     pub fn needs_save(&self, rate: CaptureRate) -> bool {
-        return match rate {
+        match rate {
             CaptureRate::HZ_50 => false,
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
@@ -247,11 +239,11 @@ impl SyncState {
                 SyncState::Hz60(i, _) => (0..=3).contains(i),
             },
             _ => false,
-        };
+        }
     }
 
     pub fn ts_adjust(&self, rate: CaptureRate, pts: &mut gst::ClockTime) -> bool {
-        return match rate {
+        match rate {
             CaptureRate::HZ_50 => false,
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
@@ -269,11 +261,11 @@ impl SyncState {
                 SyncState::Hz60(_, _) => false,
             },
             _ => false,
-        };
+        }
     }
 
     pub fn dur_adjust(&self, rate: CaptureRate, drop: bool, dur: &mut gst::ClockTime) -> bool {
-        return match rate {
+        match rate {
             CaptureRate::HZ_50 => false,
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
@@ -295,11 +287,11 @@ impl SyncState {
                 }
             },
             _ => false,
-        };
+        }
     }
 
     pub fn drop(&self, drop: bool, rate: CaptureRate) -> bool {
-        return match rate {
+        match rate {
             CaptureRate::HZ_50 => false,
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
@@ -314,6 +306,6 @@ impl SyncState {
                 SyncState::Hz60(i, _) => drop && (*i).is_odd(),
             },
             _ => false,
-        };
+        }
     }
 }
