@@ -79,7 +79,7 @@ pub enum Tolerance {
     Lazy,
     #[enum_value(name = "Strict compare and resync 'retries' times.", nick = "Strict")]
     Strict,
-    #[enum_value(name = "Like 'Strict' but ignore retriess.", nick = "Paranoid")]
+    #[enum_value(name = "Like 'Strict' but ignore retries.", nick = "Paranoid")]
     Paranoid,
 }
 
