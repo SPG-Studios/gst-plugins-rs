@@ -285,8 +285,10 @@ impl OcvrCtrl {
             }
 
             // let downstream know about the new caps
-            let caps = data.synced_caps(settings.drop);
-            self.srcpad.push_event(gst::event::Caps::new(&caps));
+            if settings.send_caps {
+                let caps = data.synced_caps(settings.drop);
+                self.srcpad.push_event(gst::event::Caps::new(&caps));
+            }
         }
 
         // check if we should drop the frame
@@ -581,6 +583,13 @@ impl ObjectImpl for OcvrCtrl {
                     DEFAULT_DROP as bool,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
                 ),
+                glib::ParamSpecBoolean::new(
+                    "send-caps",
+                    "Send caps event on rate change",
+                    "Send caps event downstream on content rate change",
+                    DEFAULT_SEND_CAPS as bool,
+                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
+                ),
             ]
         });
 
@@ -630,6 +639,10 @@ impl ObjectImpl for OcvrCtrl {
                 let drop = value.get().expect("type checked upstream");
                 settings.drop = drop;
             }
+            "send-caps" => {
+                let sc = value.get().expect("type checked upstream");
+                settings.send_caps = sc;
+            }
             _ => unimplemented!(),
         }
     }
@@ -645,6 +658,7 @@ impl ObjectImpl for OcvrCtrl {
             "retries" => (settings.retries as u32).to_value(),
             "rows" => (settings.rows as u32).to_value(),
             "drop" => settings.drop.to_value(),
+            "send-caps" => settings.send_caps.to_value(),
             _ => unimplemented!(),
         }
     }

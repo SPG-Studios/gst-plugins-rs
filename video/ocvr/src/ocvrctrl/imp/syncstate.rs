@@ -40,36 +40,42 @@ macro_rules! advance_matches {
 }
 
 impl SyncState {
+    // pattern matching explanation
+    // 0: changed frame
+    // x: repeated frame
+    // _: frame to save
+    // ^: frame to compare with previous frame
+
     // pattern: OxxOx|OxxOx|Oxx...
     const HZ24_60_PERIOD: u32 = 5;
     // pattern: |OxxOxOxxOxOxxOx|Oxx...
-    // check:    ^^^
+    // check:     -^
     const HZ24_60_SYNCED_PERIOD: u32 = 3 * Self::HZ24_60_PERIOD;
     // index to start with after sync
     const HZ24_60_SYNCED_START: u32 = 2;
     // pattern: OxxOxOxxOx
-    //           ____^^^_
+    //          _^^
     const HZ24_60_SYNC_PERIOD: u32 = 8;
-    // 2 consecutive matches -> 3 consecutive identcal frames
+    // 2 consecutive matches -> 3 consecutive identical frames
     const HZ24_60_SYNC_MATCHES: u32 = 2;
 
     // pattern: OxOx|OxOx|Ox...
     const HZ30_60_PERIOD: u32 = 2;
     // pattern: |OxOxOxOxOxOx|Ox...
-    // check:    ^^
+    // check:    _^
     const HZ30_60_SYNCED_PERIOD: u32 = 6 * Self::HZ30_60_PERIOD;
     // index to start with after sync
     const HZ30_60_SYNCED_START: u32 = 0;
     // pattern: OxOxOxOxOxOxOx
-    //           _^^^^^^^_
-    const HZ30_60_SYNC_PERIOD: u32 = 9;
+    //          _^_^_^_^
+    const HZ30_60_SYNC_PERIOD: u32 = 8;
     // match - mismatch - match - mismatch - match - mismatch
     const HZ30_60_SYNC_MATCHES: u32 = 6;
 
     // pattern: O|O|O|O|O...
     const HZ60_60_PERIOD: u32 = 1;
     // pattern: |OOOOOOOOOO|O0...
-    // check:    ^^^
+    // check :   _^^^
     const HZ60_60_SYNCED_PERIOD: u32 = 10 * Self::HZ60_60_PERIOD;
 
     pub fn sync_lost(&self) -> bool {

@@ -16,6 +16,7 @@ pub const DEFAULT_TOLERANCE: Tolerance = Tolerance::Strict;
 pub const DEFAULT_RETRIES: u32 = 3;
 pub const DEFAULT_ROWS: u32 = 10;
 pub const DEFAULT_DROP: bool = false;
+pub const DEFAULT_SEND_CAPS: bool = true;
 
 // Property value storage
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +29,7 @@ pub struct Settings {
     pub retries: u32,
     pub rows: u32,
     pub drop: bool,
+    pub send_caps: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             retries: DEFAULT_RETRIES,
             rows: DEFAULT_ROWS,
             drop: DEFAULT_DROP,
+            send_caps: DEFAULT_SEND_CAPS,
         }
     }
 }
