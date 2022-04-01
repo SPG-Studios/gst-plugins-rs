@@ -185,6 +185,7 @@ plugins = {
   },
   # gtk4 is added below
   'hsv': {'library': 'libgsthsv'},
+  'ocvr': {'library': 'libgstocvr'},
   'png': {
     'library': 'libgstrspng',
     'examples': ['pngenc'],
