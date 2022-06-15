@@ -52,8 +52,11 @@ impl Default for Data {
 }
 
 impl Data {
-    pub fn reset(&mut self, method: Method, retries: u32) {
-        self.content_rate.take();
+    pub fn reset(&mut self, rate: ContentRate, method: Method, retries: u32) {
+        self.content_rate = match rate {
+            ContentRate::Hint => None,
+            _ => Some(rate),
+        };
         self.capture_rate.take();
         self.frame_format.take();
         self.frame_size = (0, 0);
@@ -63,7 +66,13 @@ impl Data {
     pub fn reset_on_hint(&mut self, method: Method, retries: u32) {
         self.ping_window = vec![];
         self.pong_window = vec![];
-        self.sync_state.reset();
+        match self.content_rate {
+            None => self.sync_state.reset(),
+            Some(r) => {
+                self.method_overwrite();
+                self.sync_state = SyncState::sync(r);
+            }
+        }
         self.is_ping = true;
         self.method = method;
         self.retries = retries;

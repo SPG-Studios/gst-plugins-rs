@@ -41,7 +41,7 @@ macro_rules! advance_matches {
 
 impl SyncState {
     // pattern matching explanation
-    // 0: changed frame
+    // 0: new frame
     // x: repeated frame
     // _: frame to save
     // ^: frame to compare with previous frame
@@ -166,11 +166,13 @@ impl SyncState {
 
         // first handle the comparison result during syncing
         match self {
-            SyncState::Syncing(ContentRate::Hz30, _, m) => match m {
-                0 | 2 | 4 => advance_matches!(m, alike),
-                1 | 3 | 5 => advance_matches!(m, !alike),
-                _ => unreachable!(),
-            },
+            SyncState::Syncing(ContentRate::Hz30, _, m) => {
+                if m.is_odd() {
+                    advance_matches!(m, !alike);
+                } else {
+                    advance_matches!(m, alike);
+                }
+            }
             SyncState::Syncing(_, _, m) => advance_matches!(m, alike),
             _ => (),
         };

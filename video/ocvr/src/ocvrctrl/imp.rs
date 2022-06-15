@@ -327,7 +327,7 @@ impl OcvrCtrl {
 
             let mut data = self.data.lock().unwrap();
             let settings = self.settings.lock().unwrap();
-            data.reset(settings.method, settings.retries);
+            data.reset(settings.content_rate, settings.method, settings.retries);
 
             // Extract the framerate from caps
             let c = e.caps();
