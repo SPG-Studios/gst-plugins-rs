@@ -4,33 +4,23 @@
 
 [package]
 name = "gst-plugin-ocvr"
-version = "0.0.0"
+version = "0.9.0"
 authors = ["Jochen Henneberg <jh@henneberg-systemdesign.com>"]
 repository = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
-license = "MIT/Apache-2.0"
+license = "MIT or Apache-2.0"
+description = "Original content video rate detector"
 edition = "2021"
 rust-version = "1.57"
-description = "Original content video rate detector"
 
 [dependencies]
+gst = { package = "gstreamer", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
+gst-video = { package = "gstreamer-video", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 once_cell = "1.0"
 is-odd = "~1.0"
 crc = "2.1"
 
-[dependencies.gst]
-git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs"
-features = ["v1_16"]
-package="gstreamer"
-
-[dependencies.gst-base]
-git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs"
-features = ["v1_16"]
-package="gstreamer-base"
-
-[dependencies.gst-video]
-git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs"
-features = ["v1_16"]
-package="gstreamer-video"
+[dev-dependencies]
+gst-check = { package = "gstreamer-check", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 
 [lib]
 name = "gstocvr"
@@ -41,8 +31,7 @@ path = "src/lib.rs"
 gst-plugin-version-helper = { path="../../version-helper" }
 
 [features]
-# GStreamer 1.18 is required for static linking
-static = ["gst/v1_18"]
+static = []
 capi = []
 
 [package.metadata.capi]
@@ -56,4 +45,4 @@ install_subdir = "gstreamer-1.0"
 versioning = false
 
 [package.metadata.capi.pkg_config]
-requires_private = "gstreamer-1.0, gstreamer-base-1.0, gstreamer-video-1.0, gobject-2.0, glib-2.0"
+requires_private = "gstreamer-1.0, gstreamer-video-1.0, gobject-2.0, glib-2.0"
