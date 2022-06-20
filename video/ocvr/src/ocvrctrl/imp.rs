@@ -137,7 +137,7 @@ impl OcvrCtrl {
         let plane = match data.frame_format.unwrap() {
             VideoFormat::I420 => 0, // luma
             VideoFormat::Nv12 => 0, // luma
-            _ => unreachable!(),
+            _ => 0, // FIXME: select most important plane for other formats
         };
         let frame_data = frame.plane_data(plane).unwrap();
         let width = frame.width() as usize;
