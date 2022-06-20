@@ -137,7 +137,7 @@ impl SyncState {
 
         r = *m;
         match capture_rate {
-            CaptureRate::HZ_50 => (),
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => (),
                 SyncState::SyncLost(_) => (),
@@ -179,7 +179,7 @@ impl SyncState {
 
         // next update the current state if necessary
         *self = match capture_rate {
-            CaptureRate::HZ_50 => SyncState::Idle,
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => SyncState::Idle,
                 SyncState::SyncLost(r) => SyncState::SyncLost(*r),
@@ -216,7 +216,7 @@ impl SyncState {
 
     pub fn needs_compare(&self, rate: CaptureRate) -> bool {
         match rate {
-            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
                 SyncState::SyncLost(_) => false,
@@ -231,7 +231,7 @@ impl SyncState {
 
     pub fn needs_save(&self, rate: CaptureRate) -> bool {
         match rate {
-            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
                 SyncState::SyncLost(_) => false,
@@ -246,7 +246,7 @@ impl SyncState {
 
     pub fn ts_adjust(&self, rate: CaptureRate, pts: &mut gst::ClockTime) -> bool {
         match rate {
-            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
                 SyncState::SyncLost(_) => false,
@@ -268,7 +268,7 @@ impl SyncState {
 
     pub fn dur_adjust(&self, rate: CaptureRate, drop: bool, dur: &mut gst::ClockTime) -> bool {
         match rate {
-            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
                 SyncState::SyncLost(_) => false,
@@ -294,7 +294,7 @@ impl SyncState {
 
     pub fn drop(&self, drop: bool, rate: CaptureRate) -> bool {
         match rate {
-            CaptureRate::HZ_50 => false,
+            CaptureRate::HZ_50 => unimplemented!(),
             CaptureRate::HZ_60 => match self {
                 SyncState::Idle => false,
                 SyncState::SyncLost(_) => false,
