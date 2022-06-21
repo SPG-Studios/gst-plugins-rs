@@ -96,7 +96,7 @@ You will find the following plugins in this repository:
 
     - `png`: PNG encoder based on the [png](https://github.com/image-rs/image-png) library.
 
-    - `ocvr`: Elements for original content rate detection within captured stream.
+    - `ocvr`: Elements for original content rate detection within captured video stream.
 
     - `rav1e`: AV1 encoder based on the [rav1e](https://github.com/xiph/rav1e) library.
 
