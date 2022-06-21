@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or MIT
 
+// The test videos can be generated with the script
+// test-video-generator.sh.
+
 use gst::prelude::*;
 
 use std::path::PathBuf;
