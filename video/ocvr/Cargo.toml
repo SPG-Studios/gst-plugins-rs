@@ -17,6 +17,7 @@ gst = { package = "gstreamer", git = "https://gitlab.freedesktop.org/gstreamer/g
 gst-video = { package = "gstreamer-video", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 once_cell = "1.0"
 is-odd = "~1.0"
+is-even = "~1.0"
 crc = "2.1"
 
 [dev-dependencies]

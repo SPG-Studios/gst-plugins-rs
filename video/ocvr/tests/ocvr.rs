@@ -18,52 +18,143 @@ enum RateMatch {
 
 struct TestSetup<'a> {
     pub frames: usize,
-    pub dups: [usize; 2],
-    pub rate: i32,
+    pub dups: [usize; 3],
+    pub content_rate: i32,
+    pub capture_rate: i32,
     pub prop: &'a str,
 }
 
-const HZ24_IN_60: TestSetup = TestSetup {
-    frames: 2 * 60 / (2 + 3), // we make 5 frames out of 2
-    dups: [2, 3],
-    rate: 24,
-    prop: "24Hz",
-};
+#[test]
+fn ctrl_25_in_50() {
+    run_ctrl_test(TestSetup {
+        frames: 50 / 2, // we make 2 frames out of 1
+        dups: [2, 2, 2],
+        content_rate: 25,
+        capture_rate: 50,
+        prop: "25Hz",
+    });
+}
 
-const HZ24_AUTO_IN_60: TestSetup = TestSetup {
-    frames: 2 * 60 / (2 + 3), // we make 5 frames out of 2
-    dups: [2, 3],
-    rate: 24,
-    prop: "Auto",
-};
+#[test]
+fn ctrl_25_auto_in_50() {
+    run_ctrl_test(TestSetup {
+        frames: 50 / 2, // we make 2 frames out of 1
+        dups: [2, 2, 2],
+        content_rate: 25,
+        capture_rate: 50,
+        prop: "Auto",
+    });
+}
 
-const HZ30_IN_60: TestSetup = TestSetup {
-    frames: 60 / 2, // we make 2 frames out of 1
-    dups: [2, 2],
-    rate: 30,
-    prop: "30Hz",
-};
+#[test]
+fn ctrl_30_in_50() {
+    run_ctrl_test(TestSetup {
+        frames: 3 * 50 / (2 + 2 + 1), // we make 5 frames out of 3
+        dups: [2, 2, 1],
+        content_rate: 30,
+        capture_rate: 50,
+        prop: "30Hz",
+    });
+}
 
-const HZ30_AUTO_IN_60: TestSetup = TestSetup {
-    frames: 60 / 2, // we make 2 frames out of 1
-    dups: [2, 2],
-    rate: 30,
-    prop: "Auto",
-};
+#[test]
+fn ctrl_30_auto_in_50() {
+    run_ctrl_test(TestSetup {
+        frames: 3 * 50 / (2 + 2 + 1), // we make 5 frames out of 3
+        dups: [2, 2, 1],
+        content_rate: 30,
+        capture_rate: 50,
+        prop: "Auto",
+    });
+}
 
-const HZ60_IN_60: TestSetup = TestSetup {
-    frames: 60, // no frame duplication
-    dups: [1, 1],
-    rate: 60,
-    prop: "60Hz",
-};
+#[test]
+fn ctrl_50_in_50() {
+    run_ctrl_test(TestSetup {
+        frames: 50, // no frame duplication
+        dups: [1, 1, 1],
+        content_rate: 50,
+        capture_rate: 50,
+        prop: "50Hz",
+    });
+}
 
-const HZ60_AUTO_IN_60: TestSetup = TestSetup {
-    frames: 60, // no frame duplication
-    dups: [1, 1],
-    rate: 60,
-    prop: "Auto",
-};
+#[test]
+fn ctrl_50_auto_in_50() {
+    run_ctrl_test(TestSetup {
+        frames: 50, // no frame duplication
+        dups: [1, 1, 1],
+        content_rate: 50,
+        capture_rate: 50,
+        prop: "Auto",
+    });
+}
+
+#[test]
+fn ctrl_24_in_60() {
+    run_ctrl_test(TestSetup {
+        frames: (2 + 1) * 60 / (3 + 2), // we make 5 frames out of 2 (+1 dropped)
+        dups: [2, 3, 0],
+        content_rate: 24,
+        capture_rate: 60,
+        prop: "24Hz",
+    });
+}
+
+#[test]
+fn ctrl_24_auto_in_60() {
+    run_ctrl_test(TestSetup {
+        frames: (2 + 1) * 60 / (3 + 2), // we make 5 frames out of 2 (+1 dropped)
+        dups: [2, 3, 0],
+        content_rate: 24,
+        capture_rate: 60,
+        prop: "Auto",
+    });
+}
+
+#[test]
+fn ctrl_30_in_60() {
+    run_ctrl_test(TestSetup {
+        frames: 60 / 2, // we make 2 frames out of 1
+        dups: [2, 2, 2],
+        content_rate: 30,
+        capture_rate: 60,
+        prop: "30Hz",
+    });
+}
+
+#[test]
+fn ctrl_30_auto_in_60() {
+    run_ctrl_test(TestSetup {
+        frames: 60 / 2, // we make 2 frames out of 1
+        dups: [2, 2, 2],
+        content_rate: 30,
+        capture_rate: 60,
+        prop: "Auto",
+    });
+}
+
+#[test]
+fn ctrl_60_in_60() {
+    run_ctrl_test(TestSetup {
+        frames: 60, // no frame duplication
+        dups: [1, 1, 1],
+        content_rate: 60,
+        capture_rate: 60,
+        prop: "60Hz",
+    });
+}
+
+#[test]
+fn ctrl_60_auto_in_60() {
+    run_ctrl_test(TestSetup {
+        frames: 60, // no frame duplication
+        dups: [1, 1, 1],
+        content_rate: 60,
+        capture_rate: 60,
+        prop: "Auto",
+    });
+}
 
 fn init() {
     use std::sync::Once;
@@ -76,36 +167,6 @@ fn init() {
 }
 
 #[test]
-fn ctrl_24_in_60() {
-    run_ctrl_test(HZ24_IN_60);
-}
-
-#[test]
-fn ctrl_24_auto_in_60() {
-    run_ctrl_test(HZ24_AUTO_IN_60);
-}
-
-#[test]
-fn ctrl_30_in_60() {
-    run_ctrl_test(HZ30_IN_60);
-}
-
-#[test]
-fn ctrl_30_auto_in_60() {
-    run_ctrl_test(HZ30_AUTO_IN_60);
-}
-
-#[test]
-fn ctrl_60_in_60() {
-    run_ctrl_test(HZ60_IN_60);
-}
-
-#[test]
-fn ctrl_60_auto_in_60() {
-    run_ctrl_test(HZ60_AUTO_IN_60);
-}
-
-#[test]
 fn hint() {
     run_hint_test();
 }
@@ -113,8 +174,10 @@ fn hint() {
 fn run_ctrl_test(setup: TestSetup) {
     init();
 
+    // we need motion=sweep otherwise we will get duplicate frames
+    // when ball debounces from wall which causes false positives
     let bin = gst::parse_bin_from_description(
-        &format!("videotestsrc pattern=ball num-buffers={:?} ! capsfilter name=filter caps=\"video/x-raw,width=(int)800,height=(int)480,format=(string)NV12,framerate=(fraction)60/1,interlace-mode=(string)progressive\"", setup.frames), false).unwrap();
+        &format!("videotestsrc pattern=ball motion=sweep num-buffers={:?} ! capsfilter name=filter caps=\"video/x-raw,width=(int)800,height=(int)480,format=(string)NV12,framerate=(fraction){:?}/1,interlace-mode=(string)progressive\"", setup.frames, setup.capture_rate), false).unwrap();
 
     let srcpad = bin.by_name("filter").unwrap().static_pad("src").unwrap();
     let _ = bin.add_pad(&gst::GhostPad::with_target(Some("src"), &srcpad).unwrap());
@@ -132,25 +195,20 @@ fn run_ctrl_test(setup: TestSetup) {
 
     h.play();
     let video_info = gst_video::VideoInfo::builder(gst_video::VideoFormat::Nv12, 800, 480)
-        .fps((60, 1))
+        .fps((setup.capture_rate, 1))
         .build()
         .unwrap();
     h.set_src_caps(video_info.to_caps().unwrap());
 
     for i in 0..setup.frames {
         let buf = g.pull().unwrap();
-        if (i % 2) != 0 {
-            for _ in 0..setup.dups[0] {
-                h.push(buf.copy()).expect("failed to read buffer");
-            }
-        } else {
-            for _ in 0..setup.dups[1] {
-                h.push(buf.copy()).unwrap();
-            }
+        for _ in 0..setup.dups[i % 3] {
+            h.push(buf.copy()).expect("failed to read buffer");
         }
     }
 
-    loop {
+    let mut target_rate_found = false;
+    while !target_rate_found {
         match h.try_pull_event() {
             Some(e) => {
                 if let gst::EventView::Caps(e) = e.view() {
@@ -161,15 +219,21 @@ fn run_ctrl_test(setup: TestSetup) {
                         .get::<gst::Fraction>("framerate")
                         .unwrap();
                     // if we find our expected output framerate we are done
-                    if *r.round().numer() == setup.rate && *r.round().denom() == 1i32 {
+                    let numer = *r.round().numer();
+                    assert!(*r.round().denom() == 1i32);
+                    if numer == setup.content_rate {
+                        target_rate_found = true;
                         break;
                     }
+                    assert!(numer == setup.capture_rate);
                 }
             }
-            None => unreachable!(),
+            None => break,
         }
     }
     h.push_event(gst::event::Eos::new());
+
+    assert!(target_rate_found);
 }
 
 fn run_hint_test() {

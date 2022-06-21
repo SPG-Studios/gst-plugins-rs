@@ -40,11 +40,15 @@ const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 pub enum ContentRate {
     #[enum_value(name = "Search for matching rate", nick = "Auto")]
     Auto,
-    #[enum_value(name = "Content rate 24Hz", nick = "24Hz")]
+    #[enum_value(name = "Content rate 24Hz (for 60Hz capture rate only)", nick = "24Hz")]
     Hz24,
+    #[enum_value(name = "Content rate 25Hz (for 50Hz capture rate only)", nick = "25Hz")]
+    Hz25,
     #[enum_value(name = "Content rate 30Hz", nick = "30Hz")]
     Hz30,
-    #[enum_value(name = "Content rate 60Hz", nick = "60Hz")]
+    #[enum_value(name = "Content rate 50Hz (for 50Hz capture rate only)", nick = "50Hz")]
+    Hz50,
+    #[enum_value(name = "Content rate 60Hz (for 60Hz capture rate only)", nick = "60Hz")]
     Hz60,
     #[enum_value(name = "From 'ocvrhint'", nick = "Hint")]
     Hint,
@@ -53,7 +57,12 @@ pub enum ContentRate {
 impl ContentRate {
     pub fn next(&self, rate: CaptureRate) -> ContentRate {
         match rate {
-            CaptureRate::HZ_50 => unimplemented!(),
+            CaptureRate::HZ_50 => match self {
+                ContentRate::Hz25 => ContentRate::Hz30,
+                ContentRate::Hz30 => ContentRate::Hz50,
+                ContentRate::Hz50 => ContentRate::Hz25,
+                _ => unreachable!(),
+            },
             CaptureRate::HZ_60 => match self {
                 ContentRate::Hz24 => ContentRate::Hz30,
                 ContentRate::Hz30 => ContentRate::Hz60,
@@ -66,7 +75,7 @@ impl ContentRate {
 
     pub fn first(rate: CaptureRate) -> ContentRate {
         match rate {
-            CaptureRate::HZ_50 => unimplemented!(),
+            CaptureRate::HZ_50 => ContentRate::Hz25,
             CaptureRate::HZ_60 => ContentRate::Hz24,
             _ => unreachable!(),
         }
@@ -235,7 +244,10 @@ impl OcvrCtrl {
             }
 
             // otherwise advance the frame counter
-            data.sync_state.advance();
+            if data.capture_rate.is_some() {
+                let r = data.capture_rate.unwrap();
+                data.sync_state.advance(r);
+            }
         }
 
         // save the buffer and check for frame match

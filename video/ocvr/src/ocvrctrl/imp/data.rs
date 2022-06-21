@@ -97,7 +97,9 @@ impl Data {
     pub fn synced_caps(&self, drop: bool) -> gst::Caps {
         let r = match self.content_rate.unwrap() {
             ContentRate::Hz24 => 24,
+            ContentRate::Hz25 => 25,
             ContentRate::Hz30 => 30,
+            ContentRate::Hz50 => 50 / (drop as i32 + 1),
             ContentRate::Hz60 => 60 / (drop as i32 + 1),
             _ => unreachable!(),
         };
