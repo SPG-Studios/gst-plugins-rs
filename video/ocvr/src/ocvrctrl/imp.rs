@@ -38,6 +38,8 @@ const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 #[repr(u32)]
 #[enum_type(name = "GstOcvrCtrlContentRate")]
 pub enum ContentRate {
+    #[enum_value(name = "Search for matching rate", nick = "Auto")]
+    Auto,
     #[enum_value(name = "Content rate 24Hz", nick = "24Hz")]
     Hz24,
     #[enum_value(name = "Content rate 30Hz", nick = "30Hz")]
@@ -46,6 +48,29 @@ pub enum ContentRate {
     Hz60,
     #[enum_value(name = "From 'ocvrhint'", nick = "Hint")]
     Hint,
+}
+
+impl ContentRate {
+    pub fn next(&self, rate: CaptureRate) -> ContentRate {
+        match rate {
+            CaptureRate::HZ_50 => unimplemented!(),
+            CaptureRate::HZ_60 => match self {
+                ContentRate::Hz24 => ContentRate::Hz30,
+                ContentRate::Hz30 => ContentRate::Hz60,
+                ContentRate::Hz60 => ContentRate::Hz24,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn first(rate: CaptureRate) -> ContentRate {
+        match rate {
+            CaptureRate::HZ_50 => unimplemented!(),
+            CaptureRate::HZ_60 => ContentRate::Hz24,
+            _ => unreachable!(),
+        }
+    }
 }
 
 // Capture framerates to check, used in syncstate child module and
@@ -137,7 +162,7 @@ impl OcvrCtrl {
         let plane = match data.frame_format.unwrap() {
             VideoFormat::I420 => 0, // luma
             VideoFormat::Nv12 => 0, // luma
-            _ => 0, // FIXME: select most important plane for other formats
+            _ => 0,                 // FIXME: select most important plane for other formats
         };
         let frame_data = frame.plane_data(plane).unwrap();
         let width = frame.width() as usize;
@@ -230,7 +255,12 @@ impl OcvrCtrl {
         // if we are synced and frame comparison failed or if we lost
         // sync let's try to recover
         if !data.sync_state.eval_compare(r, &mut m) {
-            let s = data.on_sync_lost(settings.method, settings.retries, settings.tolerance);
+            let s = data.on_sync_lost(
+                settings.method,
+                settings.retries,
+                settings.tolerance,
+                settings.content_rate,
+            );
             gst::info!(
                 CAT,
                 obj: element,
@@ -372,6 +402,10 @@ impl OcvrCtrl {
                 data.frame_size = (0, 0);
             }
             gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
+
+            // we may have to update the content rate from the capture rate
+            data.reset_content_rate(settings.content_rate);
+            gst::log!(CAT, obj: pad, "{:?}", data);
         }
 
         self.srcpad.push_event(event)

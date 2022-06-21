@@ -53,14 +53,30 @@ impl Default for Data {
 
 impl Data {
     pub fn reset(&mut self, rate: ContentRate, method: Method, retries: u32) {
-        self.content_rate = match rate {
-            ContentRate::Hint => None,
-            _ => Some(rate),
-        };
         self.capture_rate.take();
+        // must be called after capture rate has been reset
+        self.reset_content_rate(rate);
         self.frame_format.take();
         self.frame_size = (0, 0);
         self.reset_on_hint(method, retries);
+    }
+
+    pub fn reset_content_rate(&mut self, rate: ContentRate) {
+        self.content_rate = match rate {
+            ContentRate::Auto => match self.capture_rate {
+                Some(r) => match self.content_rate {
+                    Some(_) => Some(self.content_rate.unwrap().next(r)),
+                    None => Some(ContentRate::first(r)),
+                },
+                None => None,
+            },
+            ContentRate::Hint => None,
+            _ => Some(rate),
+        };
+
+        if self.content_rate.is_some() {
+            self.sync_state = SyncState::sync(self.content_rate.unwrap());
+        }
     }
 
     pub fn reset_on_hint(&mut self, method: Method, retries: u32) {
@@ -118,6 +134,7 @@ impl Data {
         method: Method,
         retries: u32,
         tolerance: Tolerance,
+        rate: ContentRate,
     ) -> ResyncSolution {
         self.ping_window = vec![];
         self.pong_window = vec![];
@@ -145,6 +162,11 @@ impl Data {
             }
             (_, _, _) => {
                 // retry
+                if matches!(rate, ContentRate::Auto) {
+                    self.content_rate =
+                        Some(self.content_rate.unwrap().next(self.capture_rate.unwrap()));
+                    self.sync_state = SyncState::sync(self.content_rate.unwrap());
+                }
                 self.retries -= 1;
                 self.sync_state.resync();
                 ResyncSolution::Retry(self.retries)
