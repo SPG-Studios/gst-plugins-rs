@@ -65,12 +65,12 @@ impl SyncState {
     // check:    _^
     const HZ30_60_SYNCED_PERIOD: u32 = 6 * Self::HZ30_60_PERIOD;
     // index to start with after sync
-    const HZ30_60_SYNCED_START: u32 = 0;
+    const HZ30_60_SYNCED_START: u32 = 1;
     // pattern: OxOxOxOxOxOxOx
     //          _^_^_^_^
     const HZ30_60_SYNC_PERIOD: u32 = 8;
-    // match - mismatch - match - mismatch - match - mismatch
-    const HZ30_60_SYNC_MATCHES: u32 = 6;
+    // match - mismatch - match - mismatch - match
+    const HZ30_60_SYNC_MATCHES: u32 = 5;
 
     // pattern: O|O|O|O|O...
     const HZ60_60_PERIOD: u32 = 1;
@@ -167,7 +167,9 @@ impl SyncState {
         // first handle the comparison result during syncing
         match self {
             SyncState::Syncing(ContentRate::Hz30, _, m) => {
-                if m.is_odd() {
+                if *m == 0 {
+                    advance_matches!(m, alike);
+                } else if m.is_odd() {
                     advance_matches!(m, !alike);
                 } else {
                     advance_matches!(m, alike);
