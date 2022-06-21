@@ -11,9 +11,14 @@ use std::sync::Mutex;
 #[derive(PartialEq)]
 enum RateMatch {
     None,
+    // for 60hz capture rate
     Hz24,
     Hz24_30,
     Hz24_30_60,
+    // for 50Hz capture rate
+    Hz25,
+    Hz25_30,
+    Hz25_30_50,
 }
 
 struct TestSetup<'a> {
@@ -22,6 +27,16 @@ struct TestSetup<'a> {
     pub content_rate: i32,
     pub capture_rate: i32,
     pub prop: &'a str,
+}
+
+fn init() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        gst::init().unwrap();
+        gstocvr::plugin_register_static().expect("ocvr test");
+    });
 }
 
 #[test]
@@ -156,19 +171,14 @@ fn ctrl_60_auto_in_60() {
     });
 }
 
-fn init() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-
-    INIT.call_once(|| {
-        gst::init().unwrap();
-        gstocvr::plugin_register_static().expect("ocvr test");
-    });
+#[test]
+fn hint_60() {
+    run_hint_test("24-30-60_in_60", RateMatch::Hz24_30_60);
 }
 
 #[test]
-fn hint() {
-    run_hint_test();
+fn hint_50() {
+    run_hint_test("25-30-50_in_50", RateMatch::Hz25_30_50);
 }
 
 fn run_ctrl_test(setup: TestSetup) {
@@ -236,14 +246,17 @@ fn run_ctrl_test(setup: TestSetup) {
     assert!(target_rate_found);
 }
 
-fn run_hint_test() {
+fn run_hint_test(f: &str, rate_match: RateMatch) {
     init();
 
+    // the test file shall contain video material with changing
+    // content framerates, for 60Hz video we should have 24Hz, 30Hz
+    // and 60Hz and for 50Hz video we should have 25Hz, 30Hz and 50Hz
     let input_path = {
         let mut r = PathBuf::new();
         r.push(env!("CARGO_MANIFEST_DIR"));
         r.push("tests");
-        r.push("24-30-60_in_60");
+        r.push(f);
         r.set_extension("mkv");
         r
     };
@@ -275,11 +288,25 @@ fn run_hint_test() {
                             }
                             gst::PadProbeReturn::Drop
                         }
+                        25 => {
+                            if *rm == RateMatch::None {
+                                *rm = RateMatch::Hz25;
+                            }
+                            gst::PadProbeReturn::Drop
+                        }
                         30 => {
                             if *rm == RateMatch::Hz24 {
                                 *rm = RateMatch::Hz24_30;
+                            } else if *rm == RateMatch::Hz25 {
+                                *rm = RateMatch::Hz25_30;
                             }
                             gst::PadProbeReturn::Drop
+                        }
+                        50 => {
+                            if *rm == RateMatch::Hz25_30 {
+                                *rm = RateMatch::Hz25_30_50;
+                            }
+                            gst::PadProbeReturn::Remove
                         }
                         60 => {
                             if *rm == RateMatch::Hz24_30 {
@@ -312,5 +339,5 @@ fn run_hint_test() {
         .set_state(gst::State::Null)
         .expect("Unable to set the pipeline to the `Null` state");
 
-    assert!(*rm.lock().unwrap() == RateMatch::Hz24_30_60);
+    assert!(*rm.lock().unwrap() == rate_match);
 }

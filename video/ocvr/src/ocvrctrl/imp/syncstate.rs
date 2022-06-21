@@ -157,8 +157,8 @@ impl SyncState {
     }
 
     // will never change the state but just its parameters
-    pub fn advance(&mut self, capture_rate: CaptureRate) {
-        match capture_rate {
+    pub fn advance(&mut self, rate: CaptureRate) {
+        match rate {
             CaptureRate::HZ_50 => match self {
                 SyncState::Idle => (),
                 SyncState::SyncLost(_) => (),
@@ -181,7 +181,7 @@ impl SyncState {
         };
     }
 
-    pub fn eval_compare(&mut self, capture_rate: CaptureRate, m: &mut bool) -> bool {
+    pub fn eval_compare(&mut self, rate: CaptureRate, m: &mut bool) -> bool {
         let mut r = false;
 
         // if we lost sync let's try to recover
@@ -190,7 +190,7 @@ impl SyncState {
         }
 
         r = *m;
-        match capture_rate {
+        match rate {
             CaptureRate::HZ_50 => match self {
                 SyncState::Idle => (),
                 SyncState::SyncLost(_) => (),
@@ -201,7 +201,7 @@ impl SyncState {
                     if *i == 1 {
                         *v = *m; // use the current result for future comparisons
                     }
-                    if !(*v) && self.needs_compare(capture_rate) {
+                    if !(*v) && self.needs_compare(rate) {
                         r = !(*m); // invert the result if we are looking for mismatch
                     } else {
                         r = *m;
@@ -219,7 +219,7 @@ impl SyncState {
                     if *i == 1 {
                         *v = *m; // use the current result for future comparisons
                     }
-                    if !(*v) && self.needs_compare(capture_rate) {
+                    if !(*v) && self.needs_compare(rate) {
                         r = !(*m); // invert the result if we are looking for mismatch
                     } else {
                         r = *m;
@@ -233,11 +233,11 @@ impl SyncState {
     }
 
     // returns true if a state change happened
-    pub fn update(&mut self, capture_rate: CaptureRate, alike: bool) -> bool {
+    pub fn update(&mut self, rate: CaptureRate, alike: bool) -> bool {
         let mut ret: bool = false;
 
         // first handle the comparison result during syncing
-        match capture_rate {
+        match rate {
             CaptureRate::HZ_50 => match self {
                 SyncState::Syncing(ContentRate::Hz25, _, m) => {
                     if m.is_even() {
@@ -271,7 +271,7 @@ impl SyncState {
         };
 
         // next update the current state if necessary
-        *self = match capture_rate {
+        *self = match rate {
             CaptureRate::HZ_50 => match self {
                 SyncState::Idle => SyncState::Idle,
                 SyncState::SyncLost(r) => SyncState::SyncLost(*r),

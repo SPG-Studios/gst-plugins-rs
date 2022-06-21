@@ -29,12 +29,16 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 // correlation is checked with increasing value
 #[glib::flags(name = "OcvrHintContentRate")]
 enum ContentRate {
-    #[flags_value(name = "Content rate 24Hz", nick = "24Hz")]
+    #[flags_value(name = "Content rate 24Hz (60Hz capture rate only)", nick = "24Hz")]
     HZ_24 = 0b00000001,
+    #[flags_value(name = "Content rate 25Hz (50Hz capture rate only)", nick = "25Hz")]
+    HZ_25 = 0b00000010,
     #[flags_value(name = "Content rate 30Hz", nick = "30Hz")]
-    HZ_30 = 0b00000010,
-    #[flags_value(name = "Content rate 60Hz", nick = "60Hz")]
-    HZ_60 = 0b00000100,
+    HZ_30 = 0b00000100,
+    #[flags_value(name = "Content rate 50Hz (50Hz capture rate only)", nick = "50Hz")]
+    HZ_50 = 0b00001000,
+    #[flags_value(name = "Content rate 60Hz (60Hz capture rate only)", nick = "60Hz")]
+    HZ_60 = 0b00010000,
 }
 
 // Capture framerates to check
@@ -47,8 +51,9 @@ enum CaptureRate {
 }
 
 // Test vectors for different framerates at capture rates
-const HZ24_IN_HZ50: &[i64] = &[10, 1];
-const HZ30_IN_HZ50: &[i64] = &[10, 1];
+const HZ25_IN_HZ50: &[i64] = &[10, 1];
+const HZ30_IN_HZ50: &[i64] = &[10, 1, 10, 1, 10];
+const HZ50_IN_HZ50: &[i64] = &[1, 1];
 
 const HZ24_IN_HZ60: &[i64] = &[10, 1, 10, 1, 1];
 const HZ30_IN_HZ60: &[i64] = &[10, 1];
@@ -162,8 +167,9 @@ impl OcvrHint {
     ) {
         match rate {
             CaptureRate::HZ_50 => {
-                probes.insert(ContentRate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ50));
+                probes.insert(ContentRate::HZ_25, RateProbe::new(gop_size, HZ25_IN_HZ50));
                 probes.insert(ContentRate::HZ_30, RateProbe::new(gop_size, HZ30_IN_HZ50));
+                probes.insert(ContentRate::HZ_50, RateProbe::new(gop_size, HZ50_IN_HZ50));
             }
             CaptureRate::HZ_60 => {
                 probes.insert(ContentRate::HZ_24, RateProbe::new(gop_size, HZ24_IN_HZ60));
@@ -181,7 +187,9 @@ impl OcvrHint {
 
         match r.unwrap() {
             ContentRate::HZ_24 => 24,
+            ContentRate::HZ_25 => 25,
             ContentRate::HZ_30 => 30,
+            ContentRate::HZ_50 => 50,
             ContentRate::HZ_60 => 60,
             _ => unreachable!(),
         }
