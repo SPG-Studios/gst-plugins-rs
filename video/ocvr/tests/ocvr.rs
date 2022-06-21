@@ -8,19 +8,19 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-struct TestSetup<'a> {
-    pub frames: usize,
-    pub dups: [usize; 2],
-    pub rate: i32,
-    pub prop: &'a str,
-}
-
 #[derive(PartialEq)]
 enum RateMatch {
     None,
     Hz24,
     Hz24_30,
     Hz24_30_60,
+}
+
+struct TestSetup<'a> {
+    pub frames: usize,
+    pub dups: [usize; 2],
+    pub rate: i32,
+    pub prop: &'a str,
 }
 
 const HZ24_IN_60: TestSetup = TestSetup {
@@ -30,11 +30,39 @@ const HZ24_IN_60: TestSetup = TestSetup {
     prop: "24Hz",
 };
 
+const HZ24_AUTO_IN_60: TestSetup = TestSetup {
+    frames: 2 * 60 / (2 + 3), // we make 5 frames out of 2
+    dups: [2, 3],
+    rate: 24,
+    prop: "Auto",
+};
+
 const HZ30_IN_60: TestSetup = TestSetup {
     frames: 60 / 2, // we make 2 frames out of 1
     dups: [2, 2],
     rate: 30,
     prop: "30Hz",
+};
+
+const HZ30_AUTO_IN_60: TestSetup = TestSetup {
+    frames: 60 / 2, // we make 2 frames out of 1
+    dups: [2, 2],
+    rate: 30,
+    prop: "Auto",
+};
+
+const HZ60_IN_60: TestSetup = TestSetup {
+    frames: 60, // no frame duplication
+    dups: [1, 1],
+    rate: 60,
+    prop: "60Hz",
+};
+
+const HZ60_AUTO_IN_60: TestSetup = TestSetup {
+    frames: 60, // no frame duplication
+    dups: [1, 1],
+    rate: 60,
+    prop: "Auto",
 };
 
 fn init() {
@@ -48,17 +76,37 @@ fn init() {
 }
 
 #[test]
-fn test_detect_24_in_60() {
+fn ctrl_24_in_60() {
     run_ctrl_test(HZ24_IN_60);
 }
 
 #[test]
-fn test_detect_30_in_60() {
+fn ctrl_24_auto_in_60() {
+    run_ctrl_test(HZ24_AUTO_IN_60);
+}
+
+#[test]
+fn ctrl_30_in_60() {
     run_ctrl_test(HZ30_IN_60);
 }
 
 #[test]
-fn test_hint() {
+fn ctrl_30_auto_in_60() {
+    run_ctrl_test(HZ30_AUTO_IN_60);
+}
+
+#[test]
+fn ctrl_60_in_60() {
+    run_ctrl_test(HZ60_IN_60);
+}
+
+#[test]
+fn ctrl_60_auto_in_60() {
+    run_ctrl_test(HZ60_AUTO_IN_60);
+}
+
+#[test]
+fn hint() {
     run_hint_test();
 }
 
@@ -78,6 +126,8 @@ fn run_ctrl_test(setup: TestSetup) {
     {
         let ctrl = h.element().unwrap();
         ctrl.set_property_from_str("content-rate", setup.prop);
+        ctrl.set_property_from_str("tolerance", "Lazy");
+        ctrl.set_property_from_str("method", "Accurate");
     }
 
     h.play();
