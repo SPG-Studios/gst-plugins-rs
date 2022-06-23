@@ -1,6 +1,6 @@
 // Copyright (C) 2022 Jochen Henneberg <jh@henneberg-systemdesign.com>
 //
-// SPDX-License-Identifier: Apache-2.0 or MIT
+// SPDX-License-Identifier: MPL-2.0
 
 use super::CaptureRate;
 use super::ContentRate;
