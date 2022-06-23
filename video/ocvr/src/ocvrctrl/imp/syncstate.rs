@@ -240,14 +240,14 @@ impl SyncState {
         match rate {
             CaptureRate::HZ_50 => match self {
                 SyncState::Syncing(ContentRate::Hz25, _, m) => {
-                    if m.is_even() {
+                    if *m & 1 == 0 {
                         advance_matches!(m, alike);
                     } else {
                         advance_matches!(m, !alike);
                     }
                 }
                 SyncState::Syncing(ContentRate::Hz30, _, m) => {
-                    if m.is_odd() || *m == 4 {
+                    if *m & 1 != 0 || *m == 4 {
                         advance_matches!(m, !alike);
                     } else {
                         advance_matches!(m, alike);
@@ -258,7 +258,7 @@ impl SyncState {
             },
             CaptureRate::HZ_60 => match self {
                 SyncState::Syncing(ContentRate::Hz30, _, m) => {
-                    if m.is_even() {
+                    if *m & 1 == 0 {
                         advance_matches!(m, alike);
                     } else {
                         advance_matches!(m, !alike);
@@ -477,11 +477,11 @@ impl SyncState {
                 SyncState::Idle => false,
                 SyncState::SyncLost(_) => false,
                 SyncState::Syncing(_, _, _) => false,
-                SyncState::Hz25(i) => (*i).is_odd(),
+                SyncState::Hz25(i) => *i & 1 != 0,
                 SyncState::Hz30(i) => {
                     *i % Self::HZ30_50_PERIOD == 1 || *i % Self::HZ30_50_PERIOD == 3
                 }
-                SyncState::Hz50(i, _) => drop && (*i).is_odd(),
+                SyncState::Hz50(i, _) => drop && *i & 1 != 0,
                 _ => unimplemented!(),
             },
             CaptureRate::HZ_60 => match self {
@@ -493,8 +493,8 @@ impl SyncState {
                         || *i % Self::HZ24_60_PERIOD == 2
                         || *i % Self::HZ24_60_PERIOD == 4
                 }
-                SyncState::Hz30(i) => (*i).is_odd(),
-                SyncState::Hz60(i, _) => drop && (*i).is_odd(),
+                SyncState::Hz30(i) => *i & 1 != 0,
+                SyncState::Hz60(i, _) => drop && *i & 1 != 0,
                 _ => unimplemented!(),
             },
             _ => unreachable!(),
