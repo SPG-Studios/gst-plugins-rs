@@ -14,6 +14,8 @@ use std::u64;
 use futures::future;
 use futures::prelude::*;
 use reqwest::{Client, Response, StatusCode};
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
+use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use tokio::runtime;
 use url::Url;
 
@@ -35,6 +37,7 @@ const DEFAULT_USER_AGENT: &str = concat!(
 );
 const DEFAULT_IS_LIVE: bool = false;
 const DEFAULT_TIMEOUT: u32 = 15;
+const DEFAULT_MAX_RETRIES: u32 = 0;
 const DEFAULT_COMPRESS: bool = false;
 const DEFAULT_IRADIO_MODE: bool = true;
 const DEFAULT_KEEP_ALIVE: bool = true;
@@ -46,6 +49,7 @@ struct Settings {
     user_id: Option<String>,
     user_pw: Option<String>,
     timeout: u32,
+    max_retries: u32,
     compress: bool,
     extra_headers: Option<gst::Structure>,
     cookies: Vec<String>,
@@ -70,6 +74,7 @@ impl Default for Settings {
             user_id: None,
             user_pw: None,
             timeout: DEFAULT_TIMEOUT,
+            max_retries: DEFAULT_MAX_RETRIES,
             compress: DEFAULT_COMPRESS,
             extra_headers: None,
             cookies: Vec::new(),
@@ -119,7 +124,7 @@ struct ClientContext(Arc<ClientContextInner>);
 
 #[derive(Debug)]
 struct ClientContextInner {
-    client: Client,
+    client: ClientWithMiddleware,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -255,6 +260,7 @@ impl ReqwestHttpSrc {
         proxy: Option<String>,
         proxy_id: Option<String>,
         proxy_pw: Option<String>,
+        max_retries: u32,
     ) -> Result<ClientContext, gst::ErrorMessage> {
         let mut client_guard = self.client.lock().unwrap();
         if let Some(ref client) = *client_guard {
@@ -302,14 +308,21 @@ impl ReqwestHttpSrc {
             builder = builder.proxy(p);
         }
 
+        let reqwest_client = builder.build().map_err(|err| {
+            gst::error_msg!(
+                gst::ResourceError::OpenRead,
+                ["Failed to create Client: {}", err]
+            )
+        })?;
+
+        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(max_retries);
+        let middleware_client = ClientBuilder::new(reqwest_client)
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
+
         gst::debug!(CAT, obj: src, "Creating new client");
         let client = ClientContext(Arc::new(ClientContextInner {
-            client: builder.build().map_err(|err| {
-                gst::error_msg!(
-                    gst::ResourceError::OpenRead,
-                    ["Failed to create Client: {}", err]
-                )
-            })?,
+            client: middleware_client,
         }));
 
         // Share created client with other elements, unless using proxy. Shared client never uses proxy.
@@ -347,7 +360,13 @@ impl ReqwestHttpSrc {
         let settings = self.settings.lock().unwrap().clone();
 
         let req = self
-            .ensure_client(src, settings.proxy, settings.proxy_id, settings.proxy_pw)?
+            .ensure_client(
+                src,
+                settings.proxy,
+                settings.proxy_id,
+                settings.proxy_pw,
+                settings.max_retries,
+            )?
             .0
             .client
             .get(uri.clone());
@@ -715,6 +734,15 @@ impl ObjectImpl for ReqwestHttpSrc {
                     DEFAULT_TIMEOUT,
                     glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY,
                 ),
+                glib::ParamSpecUInt::new(
+                    "max-retries",
+                    "Max Retries",
+                    "Retry failed HTTP requests",
+                    0,
+                    u32::MAX,
+                    DEFAULT_MAX_RETRIES,
+                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY,
+                ),
                 glib::ParamSpecBoolean::new(
                     "compress",
                     "Compress",
@@ -821,6 +849,12 @@ impl ObjectImpl for ReqwestHttpSrc {
                 settings.timeout = timeout;
                 Ok(())
             }
+            "max-retries" => {
+                let mut settings = self.settings.lock().unwrap();
+                let max_retries = value.get().expect("type checked upstream");
+                settings.max_retries = max_retries;
+                Ok(())
+            }
             "compress" => {
                 let mut settings = self.settings.lock().unwrap();
                 let compress = value.get().expect("type checked upstream");
@@ -916,6 +950,10 @@ impl ObjectImpl for ReqwestHttpSrc {
             "timeout" => {
                 let settings = self.settings.lock().unwrap();
                 settings.timeout.to_value()
+            }
+            "max-retries" => {
+                let settings = self.settings.lock().unwrap();
+                settings.max_retries.to_value()
             }
             "compress" => {
                 let settings = self.settings.lock().unwrap();
