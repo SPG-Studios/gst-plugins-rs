@@ -5,7 +5,7 @@
 use super::CaptureRate;
 use super::ContentRate;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum SyncState {
     Idle,
     // rate, frame counter, consecutive matching frames
