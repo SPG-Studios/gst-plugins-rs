@@ -477,40 +477,38 @@ impl ObjectImpl for OcvrHint {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
             vec![
-                glib::ParamSpecUInt::new(
-                    "window-size",
-                    "Window size",
-                    "Multiple of GOP size",
-                    1,
-                    100,
-                    DEFAULT_WINDOW_SIZE as u32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecFloat::new(
-                    "threshold",
-                    "Threshold",
-                    "Framerate detect threshold",
-                    0.0,
-                    1.0,
-                    DEFAULT_THRESHOLD as f32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecFlags::new(
-                    "content-rates",
-                    "Content rates",
-                    "Framerates to detect",
-                    ContentRate::static_type(),
-                    DEFAULT_CONTENT_RATES.bits() as u32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecFlags::new(
-                    "capture-rates",
-                    "Capture rates",
-                    "Sink pad framerates to check",
-                    CaptureRate::static_type(),
-                    DEFAULT_CAPTURE_RATES.bits() as u32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
+                glib::ParamSpecUInt::builder("window-size")
+                    .nick("Window size")
+                    .blurb("Multiple of GOP size")
+                    .minimum(1)
+                    .maximum(100)
+                    .default_value(DEFAULT_WINDOW_SIZE as u32)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecFloat::builder("threshold")
+                    .nick("Threshold")
+                    .blurb("Framerate detect threshold")
+                    .minimum(0.0)
+                    .maximum(1.0)
+                    .default_value(DEFAULT_THRESHOLD as f32)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecFlags::builder::<ContentRate>("content-rates")
+                    .nick("Content rates")
+                    .blurb("Framerates to detect")
+                    .default_value(ContentRate {
+                        bits: DEFAULT_CONTENT_RATES.bits(),
+                    })
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecFlags::builder::<CaptureRate>("capture-rates")
+                    .nick("Capture rates")
+                    .blurb("Sink pad framerates to check")
+                    .default_value(CaptureRate {
+                        bits: DEFAULT_CAPTURE_RATES.bits(),
+                    })
+                    .mutable_playing()
+                    .build(),
             ]
         });
 

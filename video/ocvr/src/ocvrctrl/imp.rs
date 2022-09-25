@@ -567,79 +567,65 @@ impl ObjectImpl for OcvrCtrl {
         // Metadata for the properties
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
             vec![
-                glib::ParamSpecEnum::new(
-                    "content-rate",
-                    "Content rate",
-                    "Framerate to detect",
-                    ContentRate::static_type(),
-                    DEFAULT_CONTENT_RATE as i32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecFlags::new(
-                    "capture-rates",
-                    "Capture rates",
-                    "Sink pad framerates to check",
-                    CaptureRate::static_type(),
-                    DEFAULT_CAPTURE_RATES.bits() as u32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecEnum::new(
-                    "method",
-                    "Check method",
-                    "Method to check for duplicate frames",
-                    Method::static_type(),
-                    DEFAULT_METHOD as i32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecUInt::new(
-                    "threshold",
-                    "Threshold",
-                    "Compare threshold for method 'fuzzy'",
-                    1,
-                    (u8::MAX - 1) as u32,
-                    DEFAULT_THRESHOLD,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecEnum::new(
-                    "tolerance",
-                    "Check tolerance",
-                    "How to handle failed comparisons",
-                    Tolerance::static_type(),
-                    DEFAULT_TOLERANCE as i32,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecUInt::new(
-                    "retries",
-                    "Times to retries check",
-                    "Retry times for tolerance 'lazy' or 'strict'",
-                    0,
-                    100,
-                    DEFAULT_RETRIES,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecUInt::new(
-                    "rows",
-                    "Rows to consider",
-                    "Number of pixel rows considered for 'fuzzy' compare",
-                    0,
-                    u32::MAX - 1,
-                    DEFAULT_ROWS,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecBoolean::new(
-                    "drop",
-                    "Make 30Hz from 60Hz",
-                    "Change 60Hz capture rate to 30Hz always",
-                    DEFAULT_DROP as bool,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
-                glib::ParamSpecBoolean::new(
-                    "send-caps",
-                    "Send caps event on rate change",
-                    "Send caps event downstream on content rate change",
-                    DEFAULT_SEND_CAPS as bool,
-                    glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_PLAYING,
-                ),
+                glib::ParamSpecEnum::builder::<ContentRate>("content-rate", DEFAULT_CONTENT_RATE)
+                    .nick("Content rate")
+                    .blurb("Framerate to detect")
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecFlags::builder::<CaptureRate>("capture-rates")
+                    .nick("Capture rates")
+                    .blurb("Sink pad framerates to check")
+                    .default_value(CaptureRate {
+                        bits: DEFAULT_CAPTURE_RATES.bits(),
+                    })
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecEnum::builder::<Method>("method", DEFAULT_METHOD)
+                    .nick("Check method")
+                    .blurb("Method to check for duplicate frames")
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("threshold")
+                    .nick("Threshold")
+                    .blurb("Compare threshold for method 'fuzzy'")
+                    .minimum(1)
+                    .maximum((u8::MAX - 1) as u32)
+                    .default_value(DEFAULT_THRESHOLD)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecEnum::builder::<Tolerance>("tolerance", DEFAULT_TOLERANCE)
+                    .nick("Check tolerance")
+                    .blurb("How to handle failed comparisons")
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("retries")
+                    .nick("Times to retries check")
+                    .blurb("Retry times for tolerance 'lazy' or 'strict'")
+                    .minimum(0)
+                    .maximum(100)
+                    .default_value(DEFAULT_RETRIES)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("rows")
+                    .nick("Rows to consider")
+                    .blurb("Number of pixel rows considered for 'fuzzy' compare")
+                    .minimum(0)
+                    .maximum(u32::MAX - 1)
+                    .default_value(DEFAULT_ROWS)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecBoolean::builder("drop")
+                    .nick("Make 30Hz from 60Hz")
+                    .blurb("Change 60Hz capture rate to 30Hz always")
+                    .default_value(DEFAULT_DROP)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecBoolean::builder("send-caps")
+                    .nick("Send caps event on rate change")
+                    .blurb("Send caps event downstream on content rate change")
+                    .default_value(DEFAULT_SEND_CAPS)
+                    .mutable_playing()
+                    .build(),
             ]
         });
 
