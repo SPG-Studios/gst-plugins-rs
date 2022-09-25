@@ -4,7 +4,7 @@
 
 [package]
 name = "gst-plugin-ocvr"
-version = "0.9.0"
+version = "0.13.0"
 authors = ["Jochen Henneberg <jh@henneberg-systemdesign.com>"]
 repository = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
 license = "MPL-2.0"
