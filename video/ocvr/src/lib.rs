@@ -2,6 +2,11 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+/**
+ * plugin-ocvr
+ *
+ * Since: plugins-rs-0.13.0
+ */
 use gst::glib;
 
 mod ocvrctrl;
