@@ -28,7 +28,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 // Original content framerates to detect - the order matters, the
 // correlation is checked with increasing value
 #[glib::flags(name = "OcvrHintContentRate")]
-enum ContentRate {
+pub enum ContentRate {
     #[flags_value(name = "Content rate 24Hz (60Hz capture rate only)", nick = "24Hz")]
     HZ_24 = 0b00000001,
     #[flags_value(name = "Content rate 25Hz (50Hz capture rate only)", nick = "25Hz")]
@@ -43,7 +43,7 @@ enum ContentRate {
 
 // Capture framerates to check
 #[glib::flags(name = "OcvrHintCaptureRate")]
-enum CaptureRate {
+pub enum CaptureRate {
     #[flags_value(name = "Capture rate 50Hz", nick = "50Hz")]
     HZ_50 = 0b00000001,
     #[flags_value(name = "Capture rate 60Hz", nick = "60Hz")]
