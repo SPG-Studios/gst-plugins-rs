@@ -15,6 +15,15 @@ unsafe impl Send for OcvrCtrl {}
 unsafe impl Sync for OcvrCtrl {}
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    #[cfg(feature = "doc")]
+    imp::ContentRate::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+    #[cfg(feature = "doc")]
+    imp::CaptureRate::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+    #[cfg(feature = "doc")]
+    imp::Method::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+    #[cfg(feature = "doc")]
+    imp::Tolerance::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+
     gst::Element::register(
         Some(plugin),
         "ocvrctrl",
