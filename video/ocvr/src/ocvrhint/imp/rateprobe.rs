@@ -22,7 +22,12 @@ impl RateProbe {
         let mut rv = Vec::from(vec);
 
         for _ in (0..vec.len()).step_by(2) {
-            let mut v: Vec<i64> = rv.iter().cycle().take(gop_size).copied().collect();
+            let mut v = rv
+                .iter()
+                .cycle()
+                .take(gop_size)
+                .copied()
+                .collect::<Vec<_>>();
 
             // option 1: put an I-frame in front of the first frame
             let l = v.pop().unwrap();
