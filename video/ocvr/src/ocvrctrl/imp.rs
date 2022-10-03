@@ -342,19 +342,15 @@ impl OcvrCtrl {
 
         // adjust PTS and duration if buffer is not dropped
         if data.sync_state.is_synced() && !drop {
-            let pts = buffer.pts();
-            let dur = buffer.duration();
+            if let (Some(mut pts), Some(mut dur)) = (buffer.pts(), buffer.duration()) {
+                let b = buffer.make_mut();
+                if data.sync_state.ts_adjust(r, &mut pts) {
+                    b.set_pts(pts);
+                }
 
-            let b = buffer.make_mut();
-            if data.sync_state.ts_adjust(r, &mut pts.unwrap()) {
-                b.set_pts(pts);
-            }
-
-            if data
-                .sync_state
-                .dur_adjust(r, settings.drop, &mut dur.unwrap())
-            {
-                b.set_duration(dur);
+                if data.sync_state.dur_adjust(r, settings.drop, &mut dur) {
+                    b.set_duration(dur);
+                }
             }
         }
 
