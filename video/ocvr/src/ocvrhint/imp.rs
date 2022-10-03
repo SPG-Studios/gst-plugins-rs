@@ -390,19 +390,6 @@ impl OcvrHint {
         };
         ret
     }
-
-    fn src_event(&self, _pad: &gst::Pad, _element: &super::OcvrHint, event: gst::Event) -> bool {
-        self.sinkpad.push_event(event)
-    }
-
-    fn src_query(
-        &self,
-        _pad: &gst::Pad,
-        _element: &super::OcvrHint,
-        query: &mut gst::QueryRef,
-    ) -> bool {
-        self.sinkpad.peer_query(query)
-    }
 }
 
 #[glib::object_subclass]
@@ -438,22 +425,7 @@ impl ObjectSubclass for OcvrHint {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
-            .event_function(|pad, parent, event| {
-                OcvrHint::catch_panic_pad_function(
-                    parent,
-                    || false,
-                    |ocvr_hint, element| ocvr_hint.src_event(pad, element, event),
-                )
-            })
-            .query_function(|pad, parent, query| {
-                OcvrHint::catch_panic_pad_function(
-                    parent,
-                    || false,
-                    |ocvr_hint, element| ocvr_hint.src_query(pad, element, query),
-                )
-            })
-            .build();
+        let srcpad = gst::Pad::builder_with_template(&templ, Some("src")).build();
 
         let settings: Mutex<Settings> = Default::default();
         let data = Mutex::<Data>::default();
