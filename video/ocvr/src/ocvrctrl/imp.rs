@@ -55,7 +55,7 @@ pub enum ContentRate {
 }
 
 impl ContentRate {
-    pub fn next(&self, rate: CaptureRate) -> ContentRate {
+    pub fn next(self, rate: CaptureRate) -> ContentRate {
         match rate {
             CaptureRate::HZ_50 => match self {
                 ContentRate::Hz25 => ContentRate::Hz30,
@@ -192,7 +192,7 @@ impl OcvrCtrl {
             wn = "ping";
             &mut data.ping_window
         };
-        gst::log!(CAT, "Save frame to {:?}", wn);
+        gst::log!(CAT, "Save frame to {}", wn);
 
         win.clear();
         let settings = self.settings.lock().unwrap();
@@ -496,7 +496,7 @@ impl OcvrCtrl {
 
 #[glib::object_subclass]
 impl ObjectSubclass for OcvrCtrl {
-    const NAME: &'static str = "OcvrCtrl";
+    const NAME: &'static str = "GstOcvrCtrl";
     type Type = super::OcvrCtrl;
     type ParentType = gst::Element;
 

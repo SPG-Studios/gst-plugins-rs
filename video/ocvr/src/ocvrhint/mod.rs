@@ -11,8 +11,6 @@ glib::wrapper! {
     pub struct OcvrHint(ObjectSubclass<imp::OcvrHint>) @extends gst::Element, gst::Object;
 }
 
-unsafe impl Send for OcvrHint {}
-unsafe impl Sync for OcvrHint {}
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "doc")]

@@ -139,7 +139,7 @@ pub struct OcvrHint {
 impl OcvrHint {
     fn check_rate(window: &[i64], gop_size: usize, threshold: f64, probe: &RateProbe) -> bool {
         let mut res: f64 = 0.0;
-        let mut corr: Corr = Default::default();
+        let mut corr = Corr::default();
 
         for v in probe.iter() {
             corr.set_x(v);
@@ -407,7 +407,7 @@ impl OcvrHint {
 
 #[glib::object_subclass]
 impl ObjectSubclass for OcvrHint {
-    const NAME: &'static str = "OcvrHint";
+    const NAME: &'static str = "GstOcvrHint";
     type Type = super::OcvrHint;
     type ParentType = gst::Element;
 
@@ -456,7 +456,7 @@ impl ObjectSubclass for OcvrHint {
             .build();
 
         let settings: Mutex<Settings> = Default::default();
-        let data: Mutex<Data> = Default::default();
+        let data = Mutex::<Data>::default();
 
         Self {
             srcpad,

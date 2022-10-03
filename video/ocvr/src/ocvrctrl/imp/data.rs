@@ -23,10 +23,10 @@ pub struct Data {
     pub sync_state: SyncState,
     pub method: Method,
     pub retries: u32,
-    pub upstream_caps: gst::caps::Caps,
+    pub upstream_caps: gst::Caps,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum ResyncSolution {
     FuzzyCompare,
     Retry(u32),
@@ -46,7 +46,7 @@ impl Default for Data {
             is_ping: true,
             method: Method::Auto,
             retries: 0,
-            upstream_caps: gst::caps::Caps::new_empty(),
+            upstream_caps: gst::Caps::new_empty(),
         }
     }
 }

@@ -5,7 +5,7 @@
 /**
  * plugin-ocvr
  *
- * Since: plugins-rs-0.13.0
+ * Since: plugins-rs-0.9.0
  */
 use gst::glib;
 

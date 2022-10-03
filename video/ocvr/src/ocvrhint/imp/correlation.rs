@@ -60,7 +60,7 @@ impl<'a> Corr<'a> {
 
         assert!(n == y.vec.len());
 
-        for it in x.vec.iter().zip(y.vec.iter()) {
+        for it in Iterator::zip(x.vec.iter(), y.vec.iter()) {
             let (xi, yi) = it;
             s += (xi - x.mean) * (yi - y.mean);
         }
