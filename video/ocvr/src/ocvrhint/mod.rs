@@ -11,7 +11,6 @@ glib::wrapper! {
     pub struct OcvrHint(ObjectSubclass<imp::OcvrHint>) @extends gst::Element, gst::Object;
 }
 
-
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "doc")]
     imp::ContentRate::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());

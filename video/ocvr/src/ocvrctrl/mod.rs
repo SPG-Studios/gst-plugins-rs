@@ -11,9 +11,6 @@ glib::wrapper! {
     pub struct OcvrCtrl(ObjectSubclass<imp::OcvrCtrl>) @extends gst::Element, gst::Object;
 }
 
-unsafe impl Send for OcvrCtrl {}
-unsafe impl Sync for OcvrCtrl {}
-
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "doc")]
     imp::ContentRate::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
