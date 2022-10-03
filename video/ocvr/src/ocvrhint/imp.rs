@@ -583,13 +583,4 @@ impl ElementImpl for OcvrHint {
 
         PAD_TEMPLATES.as_ref()
     }
-
-    fn change_state(
-        &self,
-        element: &Self::Type,
-        transition: gst::StateChange,
-    ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, obj: element, "Changing state {:?}", transition);
-        self.parent_change_state(element, transition)
-    }
 }
