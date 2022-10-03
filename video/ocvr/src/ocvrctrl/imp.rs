@@ -371,13 +371,9 @@ impl OcvrCtrl {
             let settings = self.settings.lock().unwrap();
             data.reset(settings.content_rate, settings.method, settings.retries);
 
-            // Extract the framerate from caps
-            let c = e.caps();
-            let r = c.structure(0).unwrap().get::<gst::Fraction>("framerate");
-
-            if let Ok(rate) = r {
-                data.upstream_caps = c.copy();
-                data.capture_rate = match rate.round().numer() {
+            if let Ok(info) = VideoInfo::from_caps(e.caps()) {
+                data.upstream_caps = e.caps().copy();
+                data.capture_rate = match info.fps().round().numer() {
                     50 => {
                         if settings.capture_rate(CaptureRate::HZ_50) {
                             Some(CaptureRate::HZ_50)
@@ -395,25 +391,16 @@ impl OcvrCtrl {
                     _ => None,
                 };
                 gst::log!(CAT, obj: pad, "Input framerate {:?}", data.capture_rate);
-            }
 
-            // Extract the format from caps
-            let f = c.structure(0).unwrap().get::<&str>("format");
-            data.frame_format = match f {
-                Ok(f) => Some(VideoFormat::from_string(f)),
-                Err(_) => None,
-            };
-            gst::log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
-
-            // Extract the size from caps
-            let w = c.structure(0).unwrap().get::<i32>("width");
-            let h = c.structure(0).unwrap().get::<i32>("height");
-            if let (Ok(width), Ok(height)) = (w, h) {
-                data.frame_size = (width as u32, height as u32);
+                // Remember format and size
+                data.frame_format = Some(info.format());
+                data.frame_size = (info.width(), info.height());
+                gst::log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
+                gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
             } else {
+                data.frame_format = None;
                 data.frame_size = (0, 0);
             }
-            gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
 
             // we may have to update the content rate from the capture rate
             data.reset_content_rate(settings.content_rate);
