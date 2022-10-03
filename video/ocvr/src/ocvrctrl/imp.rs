@@ -168,14 +168,16 @@ impl OcvrCtrl {
         .unwrap();
         let frame =
             VideoFrameRef::<&gst::BufferRef>::from_buffer_ref_readable(buffer, &info).unwrap();
-        let plane = match data.frame_format.unwrap() {
+        let plane: u32 = match data.frame_format.unwrap() {
             VideoFormat::I420 => 0, // luma
             VideoFormat::Nv12 => 0, // luma
             _ => unimplemented!(),
         };
         let frame_data = frame.plane_data(plane).unwrap();
-        let width = frame.width() as usize;
-        let height = frame.height() as usize;
+        let info = frame.info();
+        let width = info.width() as usize;
+        let height = info.height() as usize;
+        let stride = info.stride()[plane as usize] as usize;
 
         let wn: &str;
         let win = if data.is_ping {
@@ -189,9 +191,11 @@ impl OcvrCtrl {
 
         win.clear();
         let settings = self.settings.lock().unwrap();
-        for height in (0..height).step_by(height / settings.rows as usize) {
-            let offset = height * width;
-            win.extend_from_slice(&frame_data[offset..offset + width]);
+        for line in frame_data
+            .chunks_exact(stride)
+            .step_by(height / settings.rows as usize)
+        {
+            win.extend_from_slice(&line[..width]);
         }
 
         data.is_ping = !data.is_ping;
