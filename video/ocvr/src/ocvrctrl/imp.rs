@@ -410,15 +410,6 @@ impl OcvrCtrl {
         self.srcpad.push_event(event)
     }
 
-    fn sink_query(
-        &self,
-        _pad: &gst::Pad,
-        _element: &super::OcvrCtrl,
-        query: &mut gst::QueryRef,
-    ) -> bool {
-        self.srcpad.peer_query(query)
-    }
-
     fn src_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
         gst::log!(CAT, obj: pad, "Handling event {:?}", event);
 
@@ -463,15 +454,6 @@ impl OcvrCtrl {
             self.sinkpad.push_event(event)
         }
     }
-
-    fn src_query(
-        &self,
-        _pad: &gst::Pad,
-        _element: &super::OcvrCtrl,
-        query: &mut gst::QueryRef,
-    ) -> bool {
-        self.sinkpad.peer_query(query)
-    }
 }
 
 #[glib::object_subclass]
@@ -497,13 +479,6 @@ impl ObjectSubclass for OcvrCtrl {
                     |ocvr_monitor, element| ocvr_monitor.sink_event(pad, element, event),
                 )
             })
-            .query_function(|pad, parent, query| {
-                OcvrCtrl::catch_panic_pad_function(
-                    parent,
-                    || false,
-                    |ocvr_monitor, element| ocvr_monitor.sink_query(pad, element, query),
-                )
-            })
             .build();
 
         let templ = klass.pad_template("src").unwrap();
@@ -513,13 +488,6 @@ impl ObjectSubclass for OcvrCtrl {
                     parent,
                     || false,
                     |ocvr_monitor, element| ocvr_monitor.src_event(pad, element, event),
-                )
-            })
-            .query_function(|pad, parent, query| {
-                OcvrCtrl::catch_panic_pad_function(
-                    parent,
-                    || false,
-                    |ocvr_monitor, element| ocvr_monitor.src_query(pad, element, query),
                 )
             })
             .build();
@@ -725,14 +693,5 @@ impl ElementImpl for OcvrCtrl {
         });
 
         PAD_TEMPLATES.as_ref()
-    }
-
-    fn change_state(
-        &self,
-        element: &Self::Type,
-        transition: gst::StateChange,
-    ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, obj: element, "Changing state {:?}", transition);
-        self.parent_change_state(element, transition)
     }
 }
