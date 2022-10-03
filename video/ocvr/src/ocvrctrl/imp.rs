@@ -171,14 +171,7 @@ impl OcvrCtrl {
         let plane = match data.frame_format.unwrap() {
             VideoFormat::I420 => 0, // luma
             VideoFormat::Nv12 => 0, // luma
-            f => {
-                gst::fixme!(
-                    CAT,
-                    "Use default plane 0 for {:?}, this may not be the best choice",
-                    f,
-                );
-                0
-            }
+            _ => unimplemented!(),
         };
         let frame_data = frame.plane_data(plane).unwrap();
         let width = frame.width() as usize;
