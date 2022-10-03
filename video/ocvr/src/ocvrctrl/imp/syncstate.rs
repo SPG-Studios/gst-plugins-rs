@@ -390,10 +390,10 @@ impl SyncState {
                 SyncState::Hz25(_) => false,
                 SyncState::Hz30(i) => {
                     if *i % Self::HZ30_50_PERIOD == 2 {
-                        *pts -= 7 * gst::ClockTime::MSECOND;
+                        *pts = pts.checked_sub(gst::ClockTime::from_mseconds(7)).unwrap();
                         true
                     } else if *i % Self::HZ30_50_PERIOD == 4 {
-                        *pts -= 14 * gst::ClockTime::MSECOND;
+                        *pts = pts.checked_sub(gst::ClockTime::from_mseconds(14)).unwrap();
                         true
                     } else {
                         false
@@ -408,7 +408,7 @@ impl SyncState {
                 SyncState::Syncing(_, _, _) => false,
                 SyncState::Hz24(i) => {
                     if *i % Self::HZ24_60_PERIOD == 3 {
-                        *pts -= 6 * gst::ClockTime::MSECOND;
+                        *pts = pts.checked_sub(gst::ClockTime::from_mseconds(6)).unwrap();
                         true
                     } else {
                         false
