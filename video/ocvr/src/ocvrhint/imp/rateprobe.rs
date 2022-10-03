@@ -53,7 +53,7 @@ impl RateProbe {
         RateProbe { probes: vs }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item=&Vec<i64>> {
+    pub fn iter(&self) -> impl Iterator<Item = &Vec<i64>> {
         self.probes.iter()
     }
 }
