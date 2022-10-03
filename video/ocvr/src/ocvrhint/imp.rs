@@ -117,16 +117,6 @@ impl Data {
             self.content_rate.take();
         }
     }
-
-    pub fn reset(&mut self) {
-        self.reset_window();
-        self.gop_size.take();
-        self.probes.clear();
-        self.rate.take();
-        self.content_rate.take();
-        self.frame_counter = 0;
-        self.pause = false;
-    }
 }
 
 pub struct OcvrHint {
@@ -341,7 +331,7 @@ impl OcvrHint {
                             data.rate,
                             rate
                         );
-                        data.reset();
+                        *data = Data::default();
                         data.rate = rate;
                     }
                 }
