@@ -196,6 +196,7 @@ impl OcvrHint {
         // If this is an input data rate that we should not care about
         // just forward the buffer
         if data.rate.is_none() || data.pause {
+            drop(data);
             return self.srcpad.push(buffer);
         }
 
@@ -203,6 +204,8 @@ impl OcvrHint {
         // buffer
         let settings = self.settings.lock().unwrap();
         if !settings.capture_rates.contains(data.rate.unwrap()) {
+            drop(data);
+            drop(settings);
             return self.srcpad.push(buffer);
         }
 
@@ -213,6 +216,8 @@ impl OcvrHint {
                 data.window.push(buffer.size() as i64);
                 data.frame_counter += 1;
             }
+            drop(data);
+            drop(settings);
             return self.srcpad.push(buffer);
         }
 
@@ -244,6 +249,7 @@ impl OcvrHint {
 
         // If the window is complete check for framerate matches
         let mut m: Option<ContentRate> = None;
+        let mut hint = None;
         if data.gop_count == settings.window_size {
             gst::trace!(
                 CAT,
@@ -280,15 +286,13 @@ impl OcvrHint {
 
                 // Send a custom upstream event with the newly detected original content rate
                 let r = Self::rate_to_int(m);
-                let s = gst::Structure::new("ocvrhint", &[("rate", &r)]);
+                hint = Some(gst::Structure::new("ocvrhint", &[("rate", &r)]));
                 gst::log!(
                     CAT,
                     obj: pad,
                     "Original content frame rate changed to {:?}",
                     m
                 );
-                self.sinkpad
-                    .push_event(gst::event::CustomUpstream::builder(s).build());
             }
 
             // Correlation done, reset window
@@ -302,6 +306,12 @@ impl OcvrHint {
         // Remember the buffer size
         data.window.push(buffer.size() as i64);
 
+        drop(data);
+        drop(settings);
+        if let Some(s) = hint {
+            self.sinkpad
+                .push_event(gst::event::CustomUpstream::builder(s).build());
+        }
         self.srcpad.push(buffer)
     }
 

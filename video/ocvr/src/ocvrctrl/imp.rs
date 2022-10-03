@@ -244,6 +244,7 @@ impl OcvrCtrl {
             // if we don't have supported caps just forward the frame
             if data.capture_rate.is_none() || data.sync_state.is_idle() {
                 gst::log!(CAT, obj: element, "Passthrough");
+                drop(data);
                 return self.srcpad.push(buffer);
             }
 
@@ -287,16 +288,22 @@ impl OcvrCtrl {
 
             // if we are idle (no sync retries left) tell ocvrhint to
             // start pattern matching again
+            let mut hint = None;
+            let mut caps = None;
             if settings.in_hint_mode() && data.sync_state.is_idle() {
                 // let downstream know about the original caps
-                let c = data.upstream_caps.copy();
-                self.srcpad.push_event(gst::event::Caps::new(&c));
+                caps = Some(data.upstream_caps.copy());
+                hint = Some(gst::Structure::new("ocvrctrl", &[("synced", &false)]));
+            }
 
-                let s = gst::Structure::new("ocvrctrl", &[("synced", &false)]);
+            drop(settings);
+            drop(data);
+            if let Some(s) = hint {
+                self.srcpad
+                    .push_event(gst::event::Caps::new(&caps.unwrap()));
                 self.srcpad
                     .push_event(gst::event::CustomDownstream::builder(s).build());
             }
-
             return self.srcpad.push(buffer);
         }
 
@@ -317,6 +324,8 @@ impl OcvrCtrl {
             );
         }
 
+        let mut hint = None;
+        let mut caps = None;
         if c && data.sync_state.is_synced() {
             // reset sync method and retries once we are synced
             data.on_synced(settings.retries);
@@ -325,23 +334,20 @@ impl OcvrCtrl {
             // to stop looking for pattern matches because we start
             // dropping frames and matching will not work anymore
             if settings.in_hint_mode() {
-                let s = gst::Structure::new("ocvrctrl", &[("synced", &true)]);
-                self.srcpad
-                    .push_event(gst::event::CustomDownstream::builder(s).build());
+                hint = Some(gst::Structure::new("ocvrctrl", &[("synced", &true)]));
             }
 
             // let downstream know about the new caps
             if settings.send_caps {
-                let caps = data.synced_caps(settings.drop);
-                self.srcpad.push_event(gst::event::Caps::new(&caps));
+                caps = Some(data.synced_caps(settings.drop));
             }
         }
 
         // check if we should drop the frame
-        let drop = data.sync_state.drop(settings.drop, r);
+        let d = data.sync_state.drop(settings.drop, r);
 
         // adjust PTS and duration if buffer is not dropped
-        if data.sync_state.is_synced() && !drop {
+        if data.sync_state.is_synced() && !d {
             if let (Some(mut pts), Some(mut dur)) = (buffer.pts(), buffer.duration()) {
                 let b = buffer.make_mut();
                 if data.sync_state.ts_adjust(r, &mut pts) {
@@ -354,11 +360,27 @@ impl OcvrCtrl {
             }
         }
 
-        if !drop {
+        if d {
+            gst::info!(CAT, obj: element, "Drop frame -> {:?}", data.sync_state);
+        } else {
             gst::log!(CAT, obj: element, "Fwd frame");
+        }
+
+        drop(settings);
+        drop(data);
+
+        if let Some(h) = hint {
+            self.srcpad
+                .push_event(gst::event::CustomDownstream::builder(h).build());
+        }
+
+        if let Some(c) = caps {
+            self.srcpad.push_event(gst::event::Caps::new(&c));
+        }
+
+        if !d {
             self.srcpad.push(buffer)
         } else {
-            gst::info!(CAT, obj: element, "Drop frame -> {:?}", data.sync_state);
             Ok(gst::FlowSuccess::Ok)
         }
     }
@@ -423,6 +445,7 @@ impl OcvrCtrl {
                 // do we listen to ocvrhint
                 let settings = self.settings.lock().unwrap();
                 if !settings.in_hint_mode() {
+                    drop(settings);
                     return self.sinkpad.push_event(event);
                 }
 
