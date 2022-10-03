@@ -58,7 +58,7 @@ impl<'a> Corr<'a> {
         let y = self.y.as_ref().unwrap();
         let n = x.vec.len();
 
-        assert!(n == y.vec.len());
+        assert_eq!(x.vec.len(), y.vec.len());
 
         for it in Iterator::zip(x.vec.iter(), y.vec.iter()) {
             let (xi, yi) = it;
@@ -68,9 +68,9 @@ impl<'a> Corr<'a> {
     }
 
     fn mean(x: &[i64]) -> i64 {
+        assert!(!x.is_empty());
         let s: i64 = x.iter().sum();
         let n = x.len() as f64;
-        assert!(n > 0.0);
 
         ((s as f64) / n) as i64
     }
