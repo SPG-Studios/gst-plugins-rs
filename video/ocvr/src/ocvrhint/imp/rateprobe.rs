@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use std::slice;
-
 #[derive(Debug)]
 pub struct RateProbe {
     probes: Vec<Vec<i64>>,
@@ -50,7 +48,7 @@ impl RateProbe {
         RateProbe { probes: vs }
     }
 
-    pub fn iter(&self) -> slice::Iter<Vec<i64>> {
+    pub fn iter(&self) -> impl Iterator<Item=&Vec<i64>> {
         self.probes.iter()
     }
 }
