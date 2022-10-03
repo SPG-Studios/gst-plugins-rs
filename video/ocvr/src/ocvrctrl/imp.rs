@@ -259,7 +259,7 @@ impl OcvrCtrl {
 
         // save the buffer and check for frame match
         self.save_frame(&buffer);
-        let mut m = match self.compare_frames() {
+        let m = match self.compare_frames() {
             Err(_) => {
                 gst::log!(CAT, obj: element, "Need at least two frames for comparison");
                 return self.srcpad.push(buffer);
@@ -273,7 +273,7 @@ impl OcvrCtrl {
 
         // if we are synced and frame comparison failed or if we lost
         // sync let's try to recover
-        if !data.sync_state.eval_compare(r, &mut m) {
+        if !data.sync_state.eval_compare(r, m) {
             let s = data.on_sync_lost(
                 settings.method,
                 settings.retries,
