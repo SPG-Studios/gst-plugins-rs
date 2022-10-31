@@ -188,7 +188,6 @@ impl OcvrHint {
     fn sink_chain(
         &self,
         pad: &gst::Pad,
-        _element: &super::OcvrHint,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut data = self.data.lock().unwrap();
@@ -315,7 +314,7 @@ impl OcvrHint {
         self.srcpad.push(buffer)
     }
 
-    fn sink_event(&self, pad: &gst::Pad, _element: &super::OcvrHint, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         match event.view() {
             gst::EventView::Caps(e) => {
                 gst::log!(CAT, obj: pad, "Handling event {:?}", event);
@@ -369,7 +368,6 @@ impl OcvrHint {
     fn sink_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::OcvrHint,
         query: &mut gst::QueryRef,
     ) -> bool {
         gst::log!(CAT, obj: pad, "Handling query {:?}", query);
@@ -405,21 +403,21 @@ impl ObjectSubclass for OcvrHint {
                 OcvrHint::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |ocvr_hint, element| ocvr_hint.sink_chain(pad, element, buffer),
+                    |ocvr_hint| ocvr_hint.sink_chain(pad, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
                 OcvrHint::catch_panic_pad_function(
                     parent,
                     || false,
-                    |ocvr_hint, element| ocvr_hint.sink_event(pad, element, event),
+                    |ocvr_hint| ocvr_hint.sink_event(pad, event),
                 )
             })
             .query_function(|pad, parent, query| {
                 OcvrHint::catch_panic_pad_function(
                     parent,
                     || false,
-                    |ocvr_hint, element| ocvr_hint.sink_query(pad, element, query),
+                    |ocvr_hint| ocvr_hint.sink_query(pad, query),
                 )
             })
             .build();
@@ -440,8 +438,10 @@ impl ObjectSubclass for OcvrHint {
 }
 
 impl ObjectImpl for OcvrHint {
-    fn constructed(&self, obj: &Self::Type) {
-        self.parent_constructed(obj);
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        let obj = self.obj();
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.srcpad).unwrap();
     }
@@ -489,7 +489,6 @@ impl ObjectImpl for OcvrHint {
 
     fn set_property(
         &self,
-        _obj: &Self::Type,
         _id: usize,
         value: &glib::Value,
         pspec: &glib::ParamSpec,
@@ -516,7 +515,7 @@ impl ObjectImpl for OcvrHint {
         }
     }
 
-    fn property(&self, _obj: &Self::Type, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
         let settings = self.settings.lock().unwrap();
         match pspec.name() {
             "window-size" => (settings.window_size as u32).to_value(),

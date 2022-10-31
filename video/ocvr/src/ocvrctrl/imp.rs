@@ -234,8 +234,7 @@ impl OcvrCtrl {
 
     fn sink_chain(
         &self,
-        _pad: &gst::Pad,
-        element: &super::OcvrCtrl,
+        pad: &gst::Pad,
         mut buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         {
@@ -243,7 +242,7 @@ impl OcvrCtrl {
 
             // if we don't have supported caps just forward the frame
             if data.capture_rate.is_none() || data.sync_state.is_idle() {
-                gst::log!(CAT, obj: element, "Passthrough");
+                gst::log!(CAT, obj: pad, "Passthrough");
                 drop(data);
                 return self.srcpad.push(buffer);
             }
@@ -259,7 +258,7 @@ impl OcvrCtrl {
         self.save_frame(&buffer);
         let m = match self.compare_frames() {
             Err(_) => {
-                gst::log!(CAT, obj: element, "Need at least two frames for comparison");
+                gst::log!(CAT, obj: pad, "Need at least two frames for comparison");
                 return self.srcpad.push(buffer);
             }
             Ok(v) => v,
@@ -280,7 +279,7 @@ impl OcvrCtrl {
             );
             gst::info!(
                 CAT,
-                obj: element,
+                obj: pad,
                 "Unexpected frame mismatch - lost sync (solution: {:?}) -> {:?}",
                 s,
                 data.sync_state
@@ -311,14 +310,14 @@ impl OcvrCtrl {
         if m {
             gst::log!(
                 CAT,
-                obj: element,
+                obj: pad,
                 "Frames match or no check needed -> {:?}",
                 data.sync_state
             );
         } else {
             gst::log!(
                 CAT,
-                obj: element,
+                obj: pad,
                 "Frames mismatch -> {:?}",
                 data.sync_state
             );
@@ -329,7 +328,7 @@ impl OcvrCtrl {
         if c && data.sync_state.is_synced() {
             // reset sync method and retries once we are synced
             data.on_synced(settings.retries);
-            gst::info!(CAT, obj: element, "Synced -> {:?}", data.sync_state);
+            gst::info!(CAT, obj: pad, "Synced -> {:?}", data.sync_state);
             // if we receive hints and we are synced tell the hinter
             // to stop looking for pattern matches because we start
             // dropping frames and matching will not work anymore
@@ -361,9 +360,9 @@ impl OcvrCtrl {
         }
 
         if d {
-            gst::info!(CAT, obj: element, "Drop frame -> {:?}", data.sync_state);
+            gst::info!(CAT, obj: pad, "Drop frame -> {:?}", data.sync_state);
         } else {
-            gst::log!(CAT, obj: element, "Fwd frame");
+            gst::log!(CAT, obj: pad, "Fwd frame");
         }
 
         drop(settings);
@@ -385,7 +384,7 @@ impl OcvrCtrl {
         }
     }
 
-    fn sink_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         if let gst::EventView::Caps(e) = event.view() {
             gst::log!(CAT, obj: pad, "Handling event {:?}", e);
 
@@ -432,7 +431,7 @@ impl OcvrCtrl {
         self.srcpad.push_event(event)
     }
 
-    fn src_event(&self, pad: &gst::Pad, _element: &super::OcvrCtrl, event: gst::Event) -> bool {
+    fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         gst::log!(CAT, obj: pad, "Handling event {:?}", event);
 
         if let gst::EventView::CustomUpstream(e) = event.view() {
@@ -492,14 +491,14 @@ impl ObjectSubclass for OcvrCtrl {
                 OcvrCtrl::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |ocvr_monitor, element| ocvr_monitor.sink_chain(pad, element, buffer),
+                    |ocvr_monitor| ocvr_monitor.sink_chain(pad, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
                 OcvrCtrl::catch_panic_pad_function(
                     parent,
                     || false,
-                    |ocvr_monitor, element| ocvr_monitor.sink_event(pad, element, event),
+                    |ocvr_monitor| ocvr_monitor.sink_event(pad, event),
                 )
             })
             .build();
@@ -510,7 +509,7 @@ impl ObjectSubclass for OcvrCtrl {
                 OcvrCtrl::catch_panic_pad_function(
                     parent,
                     || false,
-                    |ocvr_monitor, element| ocvr_monitor.src_event(pad, element, event),
+                    |ocvr_monitor| ocvr_monitor.src_event(pad, event),
                 )
             })
             .build();
@@ -528,8 +527,10 @@ impl ObjectSubclass for OcvrCtrl {
 }
 
 impl ObjectImpl for OcvrCtrl {
-    fn constructed(&self, obj: &Self::Type) {
-        self.parent_constructed(obj);
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        let obj = self.obj();
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.srcpad).unwrap();
     }
@@ -605,7 +606,6 @@ impl ObjectImpl for OcvrCtrl {
 
     fn set_property(
         &self,
-        _obj: &Self::Type,
         _id: usize,
         value: &glib::Value,
         pspec: &glib::ParamSpec,
@@ -654,7 +654,7 @@ impl ObjectImpl for OcvrCtrl {
         }
     }
 
-    fn property(&self, _obj: &Self::Type, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
         let settings = self.settings.lock().unwrap();
         match pspec.name() {
             "content-rate" => settings.content_rate.to_value(),
