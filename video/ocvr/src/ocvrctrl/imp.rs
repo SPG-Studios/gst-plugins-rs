@@ -315,12 +315,7 @@ impl OcvrCtrl {
                 data.sync_state
             );
         } else {
-            gst::log!(
-                CAT,
-                obj: pad,
-                "Frames mismatch -> {:?}",
-                data.sync_state
-            );
+            gst::log!(CAT, obj: pad, "Frames mismatch -> {:?}", data.sync_state);
         }
 
         let mut hint = None;
@@ -604,12 +599,7 @@ impl ObjectImpl for OcvrCtrl {
         PROPERTIES.as_ref()
     }
 
-    fn set_property(
-        &self,
-        _id: usize,
-        value: &glib::Value,
-        pspec: &glib::ParamSpec,
-    ) {
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
         let mut settings = self.settings.lock().unwrap();
         match pspec.name() {
             "content-rate" => {

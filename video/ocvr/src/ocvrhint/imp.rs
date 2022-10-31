@@ -365,11 +365,7 @@ impl OcvrHint {
         self.srcpad.push_event(event)
     }
 
-    fn sink_query(
-        &self,
-        pad: &gst::Pad,
-        query: &mut gst::QueryRef,
-    ) -> bool {
+    fn sink_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         gst::log!(CAT, obj: pad, "Handling query {:?}", query);
         let ret = match query.view_mut() {
             gst::QueryViewMut::Caps(ref mut q) => {
@@ -487,12 +483,7 @@ impl ObjectImpl for OcvrHint {
         PROPERTIES.as_ref()
     }
 
-    fn set_property(
-        &self,
-        _id: usize,
-        value: &glib::Value,
-        pspec: &glib::ParamSpec,
-    ) {
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
         let mut settings = self.settings.lock().unwrap();
         match pspec.name() {
             "window-size" => {
