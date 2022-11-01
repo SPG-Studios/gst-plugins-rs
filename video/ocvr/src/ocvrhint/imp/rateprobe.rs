@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use std::collections::VecDeque;
+
 #[derive(Debug)]
 pub struct RateProbe {
     probes: Vec<Vec<i64>>,
@@ -27,24 +29,22 @@ impl RateProbe {
                 .cycle()
                 .take(gop_size)
                 .copied()
-                .collect::<Vec<_>>();
+                .collect::<VecDeque<_>>();
 
-            // option 1: put an I-frame in front of the first frame
-            let l = v.pop().unwrap();
-            v.insert(0, Self::IFRAME_SIZE);
-            vs.push(v.clone());
-            v[0] = Self::IFRAME_LARGE_SIZE;
-            vs.push(v.clone());
-
-            // restore the vector
-            v.remove(0);
-            v.push(l);
-
-            // option 2: first frame is an I-frame and thus large
+            // option 1: first frame is an I-frame and thus large
+            let l = v[0];
             v[0] = Self::IFRAME_SIZE;
-            vs.push(v.clone());
+            vs.push(Vec::from(v.clone()));
             v[0] = Self::IFRAME_LARGE_SIZE;
-            vs.push(v);
+            vs.push(Vec::from(v.clone()));
+            v[0] = l; // restore original vector
+
+            // option 2: put an I-frame in front of the first frame
+            v.pop_back();
+            v.push_front(Self::IFRAME_SIZE);
+            vs.push(Vec::from(v.clone()));
+            v[0] = Self::IFRAME_LARGE_SIZE;
+            vs.push(Vec::from(v.clone()));
 
             // rotate
             rv.rotate_right(2);
@@ -77,12 +77,10 @@ mod tests {
         let probe = RateProbe::new(30, &[10, 1, 10, 1, 1]);
         for (i, p) in probe.iter().enumerate() {
             match i {
-                // 20, 10,  1, 10,  1
-                0 => assert!(p[0] == RateProbe::IFRAME_SIZE && p[1] == 10),
-                // 50, 10,  1, 10,  1
-                1 => assert!(p[1] == 10 && p[2] == 1),
-                // 20,  1,  1, 10,  1
-                4 => assert!(p[3] == 10 && p[4] == 1),
+                0 => assert_eq!(&p[..=4], &[RateProbe::IFRAME_SIZE, 1, 10, 1, 1]),
+                1 => assert_eq!(&p[..=4], &[RateProbe::IFRAME_LARGE_SIZE, 1, 10, 1, 1]),
+                2 => assert_eq!(&p[..=4], &[RateProbe::IFRAME_SIZE, 10, 1, 10, 1]),
+                3 => assert_eq!(&p[..=4], &[RateProbe::IFRAME_LARGE_SIZE, 10, 1, 10, 1]),
                 _ => (),
             }
         }
