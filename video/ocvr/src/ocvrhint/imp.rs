@@ -364,26 +364,6 @@ impl OcvrHint {
         }
         self.srcpad.push_event(event)
     }
-
-    fn sink_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
-        let ret = match query.view_mut() {
-            gst::QueryViewMut::Caps(ref mut q) => {
-                let pad_caps = self.sinkpad.pad_template_caps();
-                let caps = q
-                    .filter()
-                    .map(|f| {
-                        f.intersect_with_mode(pad_caps.as_ref(), gst::CapsIntersectMode::First)
-                    })
-                    .unwrap_or_else(|| pad_caps.clone());
-
-                q.set_result(&caps);
-                true
-            }
-            _ => self.srcpad.peer_query(query),
-        };
-        ret
-    }
 }
 
 #[glib::object_subclass]
@@ -407,13 +387,6 @@ impl ObjectSubclass for OcvrHint {
                     parent,
                     || false,
                     |ocvr_hint| ocvr_hint.sink_event(pad, event),
-                )
-            })
-            .query_function(|pad, parent, query| {
-                OcvrHint::catch_panic_pad_function(
-                    parent,
-                    || false,
-                    |ocvr_hint| ocvr_hint.sink_query(pad, query),
                 )
             })
             .build();
