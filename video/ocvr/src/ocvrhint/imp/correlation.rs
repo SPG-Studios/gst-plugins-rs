@@ -76,7 +76,7 @@ impl<'a> Corr<'a> {
 
     fn std(v: &[i64], v_m: i64) -> f64 {
         let mut s = v.iter().map(|vi| (vi - v_m).pow(2)).sum::<i64>();
-        s /= (v.len() as i64) - 1;
+        s /= v.len() as i64 - 1;
         (s as f64).sqrt()
     }
 }
