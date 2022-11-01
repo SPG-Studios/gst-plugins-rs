@@ -224,7 +224,7 @@ impl OcvrHint {
 
         // If the GOP size changed or we didn't have one set it
         if data.frame_counter > 0
-            && (data.gop_size.is_none() || data.gop_size.unwrap() != data.frame_counter)
+            && (data.gop_size.map_or(true, |gop_size| gop_size != data.frame_counter)
         {
             let s = data.frame_counter;
             data.gop_size = Some(s);

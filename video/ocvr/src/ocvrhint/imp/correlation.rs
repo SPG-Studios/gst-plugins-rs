@@ -68,7 +68,7 @@ impl<'a> Corr<'a> {
 
     fn mean(x: &[i64]) -> i64 {
         assert!(!x.is_empty());
-        let s: i64 = x.iter().sum();
+        let s = x.iter().sum::<i64>();
         let n = x.len() as f64;
 
         ((s as f64) / n) as i64
