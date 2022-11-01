@@ -53,18 +53,17 @@ impl<'a> Corr<'a> {
     }
 
     fn cov(&self) -> f64 {
-        let mut s = 0;
+        let mut s: f64 = 0.0;
         let x = self.x.as_ref().unwrap();
         let y = self.y.as_ref().unwrap();
-        let n = x.vec.len();
 
         assert_eq!(x.vec.len(), y.vec.len());
 
         for it in Iterator::zip(x.vec.iter(), y.vec.iter()) {
             let (xi, yi) = it;
-            s += (xi - x.mean) * (yi - y.mean);
+            s += (xi - x.mean) as f64 * (yi - y.mean) as f64;
         }
-        (s as f64) / ((n - 1) as f64)
+        s / ((x.vec.len() - 1) as f64)
     }
 
     fn mean(x: &[i64]) -> i64 {
