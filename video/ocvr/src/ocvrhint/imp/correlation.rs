@@ -87,22 +87,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_corr() {
+    fn check_corr_equal() {
         let x: Vec<i64> = vec![10, 1, 10, 1, 10, 1];
         let y: Vec<i64> = vec![10, 1, 10, 1, 10, 1];
         let mut corr = Corr { x: None, y: None };
 
         corr.set_x(&x);
         corr.set_y(&y);
-        let mut c = corr.corr();
+        let c = corr.corr();
         assert!(c.is_some());
         println!("Correlation of {:?} with {:?} is {}", x, y, c.unwrap());
         assert!(1.0 == c.unwrap());
+    }
 
-        let y1 = vec![1, 10, 1, 10, 1, 10];
-        c = corr.corr_y(&y1);
+    #[test]
+    fn check_corr_inverse() {
+        let x: Vec<i64> = vec![10, 1, 10, 1, 10, 1];
+        let y: Vec<i64> = vec![1, 10, 1, 10, 1, 10];
+        let mut corr = Corr { x: None, y: None };
+
+        corr.set_x(&x);
+        corr.set_y(&y);
+        let c = corr.corr();
         assert!(c.is_some());
-        println!("Correlation of {:?} with {:?} is {}", x, y1, c.unwrap());
         assert!(-1.0 == c.unwrap());
+    }
+
+    #[test]
+    fn check_corr_scaled_equal() {
+        let x: Vec<i64> = vec![10, 1, 10, 1, 10, 1];
+        let y: Vec<i64> = vec![100, 10, 100, 10, 100, 10];
+        let mut corr = Corr { x: None, y: None };
+
+        corr.set_x(&x);
+        corr.set_y(&y);
+        let c = corr.corr();
+        assert!(c.is_some());
+        assert!(1.0 == c.unwrap());
+    }
+
+    #[test]
+    fn check_corr_similar() {
+        let x: Vec<i64> = vec![10, 1, 10, 1, 10, 1];
+        let y: Vec<i64> = vec![10, 2, 8, 3, 9, 5];
+        let mut corr = Corr { x: None, y: None };
+
+        corr.set_x(&x);
+        corr.set_y(&y);
+        let c = corr.corr();
+        assert!(c.is_some());
+        println!("{:?}", c.unwrap());
+        assert!(0.9 < c.unwrap());
     }
 }
