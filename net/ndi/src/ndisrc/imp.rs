@@ -109,6 +109,13 @@ impl ObjectSubclass for NdiSrc {
 impl ObjectImpl for NdiSrc {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+            let receiver = glib::ParamSpecString::builder("receiver-ndi-name")
+                .nick("Receiver NDI Name")
+                .blurb("NDI stream name of this receiver");
+            #[cfg(feature = "doc")]
+            let receiver = receiver.doc_show_default();
+            let receiver = receiver.build();
+
             vec![
                 glib::ParamSpecString::builder("ndi-name")
                     .nick("NDI Name")
@@ -118,11 +125,7 @@ impl ObjectImpl for NdiSrc {
                     .nick("URL/Address")
                     .blurb("URL/address and port of the sender, e.g. 127.0.0.1:5961")
                     .build(),
-                glib::ParamSpecString::builder("receiver-ndi-name")
-                    .nick("Receiver NDI Name")
-                    .blurb("NDI stream name of this receiver")
-                    .doc_show_default()
-                    .build(),
+                receiver,
                 glib::ParamSpecUInt::builder("connect-timeout")
                     .nick("Connect Timeout")
                     .blurb("Connection timeout in ms")
