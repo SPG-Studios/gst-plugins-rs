@@ -25,11 +25,11 @@ enum RateMatch {
 }
 
 struct TestSetup<'a> {
-    pub frames: usize,
-    pub dups: [usize; 3],
+    pub dups: Vec<usize>,
     pub content_rate: i32,
     pub capture_rate: i32,
     pub prop: &'a str,
+    pub frames: usize,
 }
 
 fn init() {
@@ -42,135 +42,173 @@ fn init() {
     });
 }
 
+// fix rounding error or odd/even drop offset
+const FIX: i32 = -1;
+
 #[test]
 fn ctrl_25_in_50() {
+    const SYNC_IN_PERIOD: i32 = 5 + 1;
+    const CAPTURE_RATE: i32 = 50;
+    const CONTENT_RATE: i32 = CAPTURE_RATE / 2;
     run_ctrl_test(TestSetup {
-        frames: 50 / 2, // we make 2 frames out of 1
-        dups: [2, 2, 2],
-        content_rate: 25,
-        capture_rate: 50,
+        dups: vec![2, 2, 2],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "25Hz",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) / 2 + FIX) as usize,
     });
 }
 
 #[test]
 fn ctrl_25_auto_in_50() {
+    // 5 matches + 1 initial reference frame
+    const SYNC_IN_PERIOD: i32 = 5 + 1;
+    const CAPTURE_RATE: i32 = 50;
+    const CONTENT_RATE: i32 = CAPTURE_RATE / 2;
     run_ctrl_test(TestSetup {
-        frames: 50 / 2, // we make 2 frames out of 1
-        dups: [2, 2, 2],
-        content_rate: 25,
-        capture_rate: 50,
+        dups: vec![2, 2, 2],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "Auto",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) / 2 + FIX) as usize,
     });
 }
 
 #[test]
 fn ctrl_30_in_50() {
+    // 5 matches + 1 initial reference frame
+    const SYNC_IN_PERIOD: i32 = 5 + 1;
+    const CAPTURE_RATE: i32 = 50;
+    const CONTENT_RATE: i32 = 30;
     run_ctrl_test(TestSetup {
-        frames: 3 * 50 / (2 + 2 + 1), // we make 5 frames out of 3
-        dups: [2, 2, 1],
-        content_rate: 30,
-        capture_rate: 50,
+        dups: vec![2, 2, 1],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "30Hz",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) * 3 / 5) as usize,
     });
 }
 
 #[test]
 fn ctrl_30_auto_in_50() {
+    // first try 25Hz then 30Hz
+    const SYNC_IN_PERIOD: i32 = 8 + 1 + 5 + 1;
+    const CAPTURE_RATE: i32 = 50;
+    const CONTENT_RATE: i32 = 30;
     run_ctrl_test(TestSetup {
-        frames: 3 * 50 / (2 + 2 + 1), // we make 5 frames out of 3
-        dups: [2, 2, 1],
-        content_rate: 30,
-        capture_rate: 50,
+        dups: vec![2, 2, 1],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "Auto",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) * 3 / 5) as usize,
     });
 }
 
 #[test]
 fn ctrl_50_in_50() {
+    const CAPTURE_RATE: i32 = 50;
     run_ctrl_test(TestSetup {
-        frames: 50, // no frame duplication
-        dups: [1, 1, 1],
-        content_rate: 50,
-        capture_rate: 50,
+        dups: vec![1, 1, 1],
+        content_rate: CAPTURE_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "50Hz",
+        frames: CAPTURE_RATE as usize,
     });
 }
 
 #[test]
 fn ctrl_50_auto_in_50() {
+    const CAPTURE_RATE: i32 = 50;
     run_ctrl_test(TestSetup {
-        frames: 50, // no frame duplication
-        dups: [1, 1, 1],
-        content_rate: 50,
-        capture_rate: 50,
+        dups: vec![1, 1, 1],
+        content_rate: CAPTURE_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "Auto",
+        frames: CAPTURE_RATE as usize,
     });
 }
 
 #[test]
 fn ctrl_24_in_60() {
+    // 2 matches + 1 initial reference frame
+    const SYNC_IN_PERIOD: i32 = 2 + 1;
+    const CAPTURE_RATE: i32 = 60;
+    const CONTENT_RATE: i32 = 24;
     run_ctrl_test(TestSetup {
-        frames: (2 + 1) * 60 / (3 + 2), // we make 5 frames out of 2 (+1 dropped)
-        dups: [2, 3, 0],
-        content_rate: 24,
-        capture_rate: 60,
+        dups: vec![3, 2],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "24Hz",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) * 2 / 5) as usize,
     });
 }
 
 #[test]
 fn ctrl_24_auto_in_60() {
+    // 2 matches + 1 initial reference frame
+    const SYNC_IN_PERIOD: i32 = 2 + 1;
+    const CAPTURE_RATE: i32 = 60;
+    const CONTENT_RATE: i32 = 24;
     run_ctrl_test(TestSetup {
-        frames: (2 + 1) * 60 / (3 + 2), // we make 5 frames out of 2 (+1 dropped)
-        dups: [2, 3, 0],
-        content_rate: 24,
-        capture_rate: 60,
+        dups: vec![3, 2],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "Auto",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) * 2 / 5) as usize,
     });
 }
 
 #[test]
 fn ctrl_30_in_60() {
+    // 5 matches + 1 initial reference frame
+    const SYNC_IN_PERIOD: i32 = 5 + 1;
+    const CAPTURE_RATE: i32 = 60;
+    const CONTENT_RATE: i32 = CAPTURE_RATE / 2;
     run_ctrl_test(TestSetup {
-        frames: 60 / 2, // we make 2 frames out of 1
-        dups: [2, 2, 2],
-        content_rate: 30,
-        capture_rate: 60,
+        dups: vec![2, 2, 2],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "30Hz",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) / 2 + FIX) as usize,
     });
 }
 
 #[test]
 fn ctrl_30_auto_in_60() {
+    // first try 24Hz then 30Hz with offset 1
+    const SYNC_IN_PERIOD: i32 = 8 + 1 + 5 + 1 + 1;
+    const CAPTURE_RATE: i32 = 60;
+    const CONTENT_RATE: i32 = CAPTURE_RATE / 2;
     run_ctrl_test(TestSetup {
-        frames: 60 / 2, // we make 2 frames out of 1
-        dups: [2, 2, 2],
-        content_rate: 30,
-        capture_rate: 60,
+        dups: vec![2, 2, 2],
+        content_rate: CONTENT_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "Auto",
+        frames: (SYNC_IN_PERIOD + (CAPTURE_RATE - SYNC_IN_PERIOD) / 2 + FIX) as usize,
     });
 }
 
 #[test]
 fn ctrl_60_in_60() {
+    const CAPTURE_RATE: i32 = 60;
     run_ctrl_test(TestSetup {
-        frames: 60, // no frame duplication
-        dups: [1, 1, 1],
-        content_rate: 60,
-        capture_rate: 60,
+        dups: vec![1, 1, 1],
+        content_rate: CAPTURE_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "60Hz",
+        frames: CAPTURE_RATE as usize,
     });
 }
 
 #[test]
 fn ctrl_60_auto_in_60() {
+    const CAPTURE_RATE: i32 = 60;
     run_ctrl_test(TestSetup {
-        frames: 60, // no frame duplication
-        dups: [1, 1, 1],
-        content_rate: 60,
-        capture_rate: 60,
+        dups: vec![1, 1, 1],
+        content_rate: CAPTURE_RATE,
+        capture_rate: CAPTURE_RATE,
         prop: "Auto",
+        frames: CAPTURE_RATE as usize,
     });
 }
 
@@ -190,7 +228,7 @@ fn run_ctrl_test(setup: TestSetup) {
     // we need motion=sweep otherwise we will get duplicate frames
     // when ball debounces from wall which causes false positives
     let bin = gst::parse_bin_from_description(
-        &format!("videotestsrc pattern=ball motion=sweep num-buffers={:?} ! capsfilter name=filter caps=\"video/x-raw,width=(int)800,height=(int)480,format=(string)NV12,framerate=(fraction){:?}/1,interlace-mode=(string)progressive\"", setup.frames, setup.capture_rate), false).unwrap();
+        &format!("videotestsrc pattern=ball motion=sweep num-buffers={:?} ! capsfilter name=filter caps=\"video/x-raw,width=(int)800,height=(int)480,format=(string)NV12,framerate=(fraction){:?}/1,interlace-mode=(string)progressive\"", setup.capture_rate, setup.capture_rate), false).unwrap();
 
     let srcpad = bin.by_name("filter").unwrap().static_pad("src").unwrap();
     let _ = bin.add_pad(&gst::GhostPad::with_target(Some("src"), &srcpad).unwrap());
@@ -213,12 +251,19 @@ fn run_ctrl_test(setup: TestSetup) {
         .unwrap();
     h.set_src_caps(video_info.to_caps().unwrap());
 
-    for i in 0..setup.frames {
+    for i in 0..setup.content_rate {
         let buf = g.pull().unwrap();
-        for _ in 0..setup.dups[i % 3] {
+        for _ in 0..setup.dups[i as usize % setup.dups.len()] {
             h.push(buf.copy()).expect("failed to read buffer");
         }
     }
+
+    let mut frames_found = 0;
+    while h.try_pull().is_some() {
+        frames_found += 1;
+    }
+    println!(">= {} out of {} frames found", frames_found, setup.frames);
+    assert!(frames_found == setup.frames);
 
     let mut target_rate_found = false;
     while !target_rate_found {
