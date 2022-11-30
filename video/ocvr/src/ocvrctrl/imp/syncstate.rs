@@ -46,6 +46,15 @@ impl SyncState {
     // _: frame to save
     // ^: frame to compare with previous frame
 
+    // naming scheme explanation
+    // HZxx_yy_PERIOD:        the number of frames in a pattern
+    // HZxx_yy_SYNC_PERIOD:   max. number of frames to process while sync'ing
+    // HZxx_yy_SYNC_MATCHES:  required number of subsequent matches/mismatches
+    //                        for successful sync
+    // HZxx_yy_SYNCED_PERIOD: observation period when sync'ed
+    // HZxx_yy_SYNCED_START:  position within period when getting into
+    //                        sync'ed state
+
     // pattern: OxOx|OxOx|Ox...
     const HZ25_50_PERIOD: u32 = 2;
     // pattern: |OxOxOxOxOxOx|Ox...
@@ -54,7 +63,7 @@ impl SyncState {
     // index to start with after sync
     const HZ25_50_SYNCED_START: u32 = 1;
     // pattern: OxOxOxOxOxOxOx
-    //          _^_^_^_^
+    //          _^_^_^
     const HZ25_50_SYNC_PERIOD: u32 = 8;
     // match - mismatch - match - mismatch - match
     const HZ25_50_SYNC_MATCHES: u32 = 5;
@@ -99,7 +108,7 @@ impl SyncState {
     // index to start with after sync
     const HZ30_60_SYNCED_START: u32 = 1;
     // pattern: OxOxOxOxOxOxOx
-    //          _^_^_^_^
+    //          _^_^_^
     const HZ30_60_SYNC_PERIOD: u32 = 8;
     // match - mismatch - match - mismatch - match
     const HZ30_60_SYNC_MATCHES: u32 = 5;
