@@ -72,9 +72,9 @@ impl SyncState {
     const HZ30_50_PERIOD: u32 = 5;
     // pattern: |OxOxOOxOxO|0x...
     // check:    _^   _^
-    const HZ30_50_SYNCED_PERIOD: u32 = 3 * Self::HZ30_50_PERIOD;
+    const HZ30_50_SYNCED_PERIOD: u32 = 2 * Self::HZ30_50_PERIOD;
     // index to start with after sync
-    const HZ30_50_SYNCED_START: u32 = 5;
+    const HZ30_50_SYNCED_START: u32 = 0;
     // pattern: OxOxO0xOx
     //          _^_^_^
     const HZ30_50_SYNC_PERIOD: u32 = 3 * Self::HZ30_50_PERIOD;
@@ -247,10 +247,10 @@ impl SyncState {
                     }
                 }
                 SyncState::Syncing(ContentRate::Hz30, _, m) => {
-                    if *m & 1 != 0 || *m == 4 {
-                        advance_matches!(m, !alike);
-                    } else {
+                    if *m == 0 || *m == 2 {
                         advance_matches!(m, alike);
+                    } else {
+                        advance_matches!(m, !alike);
                     }
                 }
                 SyncState::Syncing(_, _, m) => advance_matches!(m, alike),
@@ -367,7 +367,7 @@ impl SyncState {
                 SyncState::SyncLost(_) => false,
                 SyncState::Syncing(_, _, _) => true,
                 SyncState::Hz25(i) => *i == 0 || *i == 1,
-                SyncState::Hz30(i) => *i == 0 || *i == 5,
+                SyncState::Hz30(i) => *i == 0 || *i == 1 || *i == 5 || *i == 6,
                 SyncState::Hz50(i, _) => (0..=3).contains(i),
                 _ => unimplemented!(),
             },
