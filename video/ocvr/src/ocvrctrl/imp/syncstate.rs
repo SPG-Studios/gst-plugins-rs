@@ -188,14 +188,12 @@ impl SyncState {
     }
 
     pub fn eval_compare(&mut self, rate: CaptureRate, m: bool) -> bool {
-        let mut r = false;
-
         // if we lost sync let's try to recover
         if self.sync_lost() {
-            return r;
+            return false;
         }
 
-        r = m;
+        let mut r = m;
         match rate {
             CaptureRate::HZ_50 => match self {
                 SyncState::Idle => (),
@@ -209,8 +207,6 @@ impl SyncState {
                     }
                     if !(*v) && self.needs_compare(rate) {
                         r = !m; // invert the result if we are looking for mismatch
-                    } else {
-                        r = m;
                     }
                 }
                 _ => unimplemented!(),
@@ -227,8 +223,6 @@ impl SyncState {
                     }
                     if !(*v) && self.needs_compare(rate) {
                         r = !m; // invert the result if we are looking for mismatch
-                    } else {
-                        r = m;
                     }
                 }
                 _ => unimplemented!(),
