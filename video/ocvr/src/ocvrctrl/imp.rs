@@ -154,7 +154,7 @@ impl OcvrCtrl {
         let mut data = self.data.lock().unwrap();
 
         if !data.sync_state.needs_save(data.capture_rate.unwrap()) {
-            gst::log!(CAT, "Frame save not needed -> {:?}", data.sync_state);
+            gst::log!(CAT, "Save frame not needed -> {:?}", data.sync_state);
             return;
         }
 
