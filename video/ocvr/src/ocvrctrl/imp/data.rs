@@ -106,7 +106,7 @@ impl Data {
 
         let mut c = self.upstream_caps.clone();
         let s = c.make_mut().structure_mut(0).unwrap();
-        s.set::<gst::Fraction>("framerate", gst::Fraction::new(r, 1));
+        s.set("framerate", gst::Fraction::new(r, 1));
         c
     }
 
