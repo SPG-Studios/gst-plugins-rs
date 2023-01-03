@@ -95,7 +95,6 @@ mod tests {
         corr.set_y(&y);
         let c = corr.corr();
         assert!(c.is_some());
-        println!("Correlation of {:?} with {:?} is {}", x, y, c.unwrap());
         assert!(1.0 == c.unwrap());
     }
 
@@ -135,7 +134,6 @@ mod tests {
         corr.set_y(&y);
         let c = corr.corr();
         assert!(c.is_some());
-        println!("{:?}", c.unwrap());
         assert!(0.9 < c.unwrap());
     }
 }
