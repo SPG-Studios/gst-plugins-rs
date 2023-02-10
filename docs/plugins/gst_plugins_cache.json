@@ -671,6 +671,18 @@
                         "type": "guint",
                         "writable": true
                     },
+                    "post-packet-messages": {
+                        "blurb": "Whether to post message on the bus for each response packet",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
                     "results-stability": {
                         "blurb": "Defines how fast results should stabilize",
                         "conditionally-available": false,
