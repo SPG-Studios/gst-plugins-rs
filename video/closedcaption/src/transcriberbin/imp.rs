@@ -377,7 +377,7 @@ impl TranscriberBin {
         state: &mut State,
         old_transcriber: &gst::Element,
     ) -> Result<(), Error> {
-        gst::error!(
+        gst::debug!(
             CAT,
             imp: self,
             "Relinking transcriber, old: {:?}, new: {:?}",

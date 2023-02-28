@@ -116,6 +116,7 @@ const DEFAULT_STABILITY: AwsTranscriberResultStability = AwsTranscriberResultSta
 const DEFAULT_VOCABULARY_FILTER_METHOD: AwsTranscriberVocabularyFilterMethod =
     AwsTranscriberVocabularyFilterMethod::Mask;
 const GRANULARITY: gst::ClockTime = gst::ClockTime::from_mseconds(100);
+const DEFAULT_POST_PKT_MESSAGES: bool = false;
 
 #[derive(Debug, Clone)]
 struct Settings {
@@ -130,6 +131,7 @@ struct Settings {
     session_token: Option<String>,
     vocabulary_filter: Option<String>,
     vocabulary_filter_method: AwsTranscriberVocabularyFilterMethod,
+    post_pkt_msg: bool,
 }
 
 impl Default for Settings {
@@ -146,6 +148,7 @@ impl Default for Settings {
             session_token: None,
             vocabulary_filter: None,
             vocabulary_filter_method: DEFAULT_VOCABULARY_FILTER_METHOD,
+            post_pkt_msg: DEFAULT_POST_PKT_MESSAGES,
         }
     }
 }
@@ -494,6 +497,29 @@ impl Transcriber {
                     })?;
 
                     let payload = std::str::from_utf8(pkt.payload).unwrap();
+
+                    let settings = self.settings.lock().unwrap();
+                    let pkt_msg = if settings.post_pkt_msg {
+                        let mut headers = gst::Structure::builder("headers").build();
+                        for h in &pkt.headers {
+                            headers.set(h.name.as_ref(), h.value.as_ref());
+                        }
+
+                        let s = gst::Structure::builder("aws-transcriber-packet")
+                            .field("headers", headers)
+                            .field("payload", payload)
+                            .build();
+
+                        let pkt_msg = gst::message::Element::builder(s).src(&*self.obj()).build();
+                        Some(pkt_msg)
+                    } else {
+                        None
+                    };
+                    drop(settings);
+
+                    if let Some(pkt_msg) = pkt_msg {
+                        let _ = self.obj().post_message(pkt_msg);
+                    }
 
                     if packet_is_exception(&pkt) {
                         let message: ExceptionMessage =
@@ -1192,6 +1218,13 @@ impl ObjectImpl for Transcriber {
                     .blurb("Defines how filtered words will be edited, has no effect when vocabulary-filter-name isn't set")
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecBoolean::builder("post-packet-messages")
+                    .nick("Post Packet Messages")
+                    .blurb("Whether to post message on the bus for each response packet")
+                    .default_value(DEFAULT_POST_PKT_MESSAGES)
+                    .mutable_playing()
+                    .build(),
+
             ]
         });
 
@@ -1261,6 +1294,10 @@ impl ObjectImpl for Transcriber {
                     .get::<AwsTranscriberVocabularyFilterMethod>()
                     .expect("type checked upstream");
             }
+            "post-packet-messages" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.post_pkt_msg = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -1310,6 +1347,10 @@ impl ObjectImpl for Transcriber {
             "vocabulary-filter-method" => {
                 let settings = self.settings.lock().unwrap();
                 settings.vocabulary_filter_method.to_value()
+            }
+            "post-packet-messages" => {
+                let settings = self.settings.lock().unwrap();
+                settings.post_pkt_msg.to_value()
             }
             _ => unimplemented!(),
         }

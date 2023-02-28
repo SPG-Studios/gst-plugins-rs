@@ -35,7 +35,7 @@ pub struct Header {
 pub struct Packet<'a> {
     #[allow(dead_code)]
     prelude: Prelude,
-    headers: Vec<Header>,
+    pub headers: Vec<Header>,
     pub payload: &'a [u8],
     #[allow(dead_code)]
     msg_crc: u32,
