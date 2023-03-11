@@ -148,6 +148,7 @@ const DEFAULT_CHUNK_DURATION: Option<gst::ClockTime> = gst::ClockTime::NONE;
 const DEFAULT_HEADER_UPDATE_MODE: HeaderUpdateMode = HeaderUpdateMode::None;
 const DEFAULT_WRITE_MFRA: bool = false;
 const DEFAULT_WRITE_MEHD: bool = false;
+const DEFAULT_WRITE_SIDX: bool = false;
 const DEFAULT_INTERLEAVE_BYTES: Option<u64> = None;
 const DEFAULT_INTERLEAVE_TIME: Option<gst::ClockTime> = Some(gst::ClockTime::from_mseconds(250));
 const DEFAULT_WRITE_EDTS_MODE: WriteEdtsMode = WriteEdtsMode::Auto;
@@ -166,6 +167,7 @@ struct Settings {
     header_update_mode: HeaderUpdateMode,
     write_mfra: bool,
     write_mehd: bool,
+    write_sidx: bool,
     interleave_bytes: Option<u64>,
     interleave_time: Option<gst::ClockTime>,
     movie_timescale: u32,
@@ -187,6 +189,7 @@ impl Default for Settings {
             header_update_mode: DEFAULT_HEADER_UPDATE_MODE,
             write_mfra: DEFAULT_WRITE_MFRA,
             write_mehd: DEFAULT_WRITE_MEHD,
+            write_sidx: DEFAULT_WRITE_SIDX,
             interleave_bytes: DEFAULT_INTERLEAVE_BYTES,
             interleave_time: DEFAULT_INTERLEAVE_TIME,
             movie_timescale: 0,
@@ -3438,7 +3441,7 @@ impl FMP4Mux {
             state.sent_headers = true;
         }
 
-        // TODO: Write sidx boxes before moof and rewrite once offsets are known
+        // TODO: Write prft boxes before moof
 
         let add_keyframe_meta = state.streams.len() == 1 && settings.enable_keyframe_meta;
         let sequence_number = state.sequence_number;
@@ -3456,6 +3459,7 @@ impl FMP4Mux {
                 streams: streams.as_slice(),
                 buffers: interleaved_buffers.as_slice(),
                 last_fragment: at_eos,
+                write_sidx: settings.write_sidx,
             })
             .map_err(|err| {
                 gst::error!(
@@ -4360,6 +4364,12 @@ impl ObjectImpl for FMP4Mux {
                     .default_value(DEFAULT_WRITE_MEHD)
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecBoolean::builder("write-sidx")
+                    .nick("Write sidx boxes")
+                    .blurb("Write segment index boxes with track buffers details and references before moof (not supported in chunked mode)")
+                    .default_value(DEFAULT_WRITE_SIDX)
+                    .mutable_ready()
+                    .build(),
                 glib::ParamSpecUInt64::builder("interleave-bytes")
                     .nick("Interleave Bytes")
                     .blurb("Interleave between streams in bytes")
@@ -4545,6 +4555,11 @@ impl ObjectImpl for FMP4Mux {
                 settings.write_mehd = value.get().expect("type checked upstream");
             }
 
+            "write-sidx" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.write_sidx = value.get().expect("type checked upstream");
+            }
+
             "interleave-bytes" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.interleave_bytes = match value.get().expect("type checked upstream") {
@@ -4623,6 +4638,11 @@ impl ObjectImpl for FMP4Mux {
             "write-mehd" => {
                 let settings = self.settings.lock().unwrap();
                 settings.write_mehd.to_value()
+            }
+
+            "write-sidx" => {
+                let settings = self.settings.lock().unwrap();
+                settings.write_sidx.to_value()
             }
 
             "interleave-bytes" => {
@@ -5077,7 +5097,17 @@ impl AggregatorImpl for FMP4Mux {
         }
 
         let mut state = self.state.lock().unwrap();
-        let settings = self.settings.lock().unwrap();
+        let mut settings = self.settings.lock().unwrap();
+
+        if settings.write_sidx && get_chunk_strategy(&settings).is_chunk_mode() {
+            gst::element_warning!(
+                self.obj(),
+                gst::CoreError::Negotiation,
+                ["sidx boxes are not supported in chunked mode, disabling write-sidx"]
+            );
+            settings.write_sidx = false;
+        }
+
         *state = State {
             sequence_number: settings.start_fragment_sequence_number,
             ..Default::default()

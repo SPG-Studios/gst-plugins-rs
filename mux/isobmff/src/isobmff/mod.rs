@@ -613,6 +613,9 @@ pub(crate) struct FragmentHeaderConfiguration<'a> {
 
     /// If this is for the last fragment.
     pub(crate) last_fragment: bool,
+
+    /// If sidx boxes should be written before moof
+    pub(crate) write_sidx: bool,
 }
 
 #[derive(Debug)]
