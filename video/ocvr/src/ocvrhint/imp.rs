@@ -287,7 +287,7 @@ impl OcvrHint {
 
                 // Send a custom upstream event with the newly detected original content rate
                 let r = Self::rate_to_int(m);
-                hint = Some(gst::Structure::new("ocvrhint", &[("rate", &r)]));
+                hint = Some(gst::Structure::builder("ocvrhint").field("rate", r).build());
                 gst::log!(
                     CAT,
                     obj: pad,

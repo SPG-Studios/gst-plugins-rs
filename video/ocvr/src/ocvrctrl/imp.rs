@@ -310,7 +310,7 @@ impl OcvrCtrl {
             if settings.in_hint_mode() && data.sync_state.is_idle() {
                 // let downstream know about the original caps
                 caps = Some(data.upstream_caps.copy());
-                hint = Some(gst::Structure::new("ocvrctrl", &[("synced", &false)]));
+                hint = Some(gst::Structure::builder("ocvrctrl").field("synced", false).build());
             }
 
             drop(settings);
@@ -346,7 +346,7 @@ impl OcvrCtrl {
             // to stop looking for pattern matches because we start
             // dropping frames and matching will not work anymore
             if settings.in_hint_mode() {
-                hint = Some(gst::Structure::new("ocvrctrl", &[("synced", &true)]));
+                hint = Some(gst::Structure::builder("ocvrctrl").field("synced", true).build());
             }
 
             // let downstream know about the new caps
