@@ -8,11 +8,8 @@ use super::Method;
 use super::Tolerance;
 
 // Default values of properties
-pub const DEFAULT_CONTENT_RATE: ContentRate = ContentRate::Hint;
 pub const DEFAULT_CAPTURE_RATES: CaptureRate = CaptureRate::all();
-pub const DEFAULT_METHOD: Method = Method::Auto;
 pub const DEFAULT_THRESHOLD: u32 = 1;
-pub const DEFAULT_TOLERANCE: Tolerance = Tolerance::Strict;
 pub const DEFAULT_RETRIES: u32 = 3;
 pub const DEFAULT_ROWS: u32 = 10;
 pub const DEFAULT_DROP: bool = false;
@@ -35,11 +32,11 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            content_rate: DEFAULT_CONTENT_RATE,
+            content_rate: ContentRate::default(),
             capture_rates: DEFAULT_CAPTURE_RATES,
-            method: DEFAULT_METHOD,
+            method: Method::default(),
             threshold: DEFAULT_THRESHOLD,
-            tolerance: DEFAULT_TOLERANCE,
+            tolerance: Tolerance::default(),
             retries: DEFAULT_RETRIES,
             rows: DEFAULT_ROWS,
             drop: DEFAULT_DROP,

@@ -54,6 +54,12 @@ pub enum ContentRate {
     Hint,
 }
 
+impl Default for ContentRate {
+    fn default() -> Self {
+        ContentRate::Hint
+    }
+}
+
 impl ContentRate {
     pub fn next(self, rate: CaptureRate) -> ContentRate {
         match rate {
@@ -105,6 +111,12 @@ pub enum Method {
     Fuzzy,
 }
 
+impl Default for Method {
+    fn default() -> Self {
+        Method::Auto
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstOcvrCtrlTolerance")]
@@ -115,6 +127,12 @@ pub enum Tolerance {
     Strict,
     #[enum_value(name = "Like 'Strict' but ignore retries.", nick = "Paranoid")]
     Paranoid,
+}
+
+impl Default for Tolerance {
+    fn default() -> Self {
+        Tolerance::Strict
+    }
 }
 
 pub struct OcvrCtrl {
@@ -534,7 +552,7 @@ impl ObjectImpl for OcvrCtrl {
         // Metadata for the properties
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
             vec![
-                glib::ParamSpecEnum::builder::<ContentRate>("content-rate", DEFAULT_CONTENT_RATE)
+                glib::ParamSpecEnum::builder::<ContentRate>("content-rate")
                     .nick("Content rate")
                     .blurb("Framerate to detect")
                     .mutable_playing()
@@ -547,7 +565,7 @@ impl ObjectImpl for OcvrCtrl {
                     })
                     .mutable_playing()
                     .build(),
-                glib::ParamSpecEnum::builder::<Method>("method", DEFAULT_METHOD)
+                glib::ParamSpecEnum::builder::<Method>("method")
                     .nick("Check method")
                     .blurb("Method to check for duplicate frames")
                     .mutable_playing()
@@ -560,7 +578,7 @@ impl ObjectImpl for OcvrCtrl {
                     .default_value(DEFAULT_THRESHOLD)
                     .mutable_playing()
                     .build(),
-                glib::ParamSpecEnum::builder::<Tolerance>("tolerance", DEFAULT_TOLERANCE)
+                glib::ParamSpecEnum::builder::<Tolerance>("tolerance")
                     .nick("Check tolerance")
                     .blurb("How to handle failed comparisons")
                     .mutable_playing()
