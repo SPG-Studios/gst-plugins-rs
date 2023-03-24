@@ -47,6 +47,8 @@ struct State {
     tttocea608: gst::Element,
     cccapsfilter: gst::Element,
     transcription_valve: gst::Element,
+    text_tee: gst::Element,
+    text_queue: gst::Element,
 }
 
 struct Settings {
@@ -79,6 +81,7 @@ pub struct TranscriberBin {
     video_srcpad: gst::GhostPad,
     audio_sinkpad: gst::GhostPad,
     video_sinkpad: gst::GhostPad,
+    text_srcpad: gst::GhostPad,
 
     state: Mutex<Option<State>>,
     settings: Mutex<Settings>,
@@ -101,6 +104,7 @@ impl TranscriberBin {
             &aqueue_transcription,
             &state.transcriber_aconv,
             &state.transcriber,
+            &state.text_tee,
             &state.transcriber_queue,
             &state.textwrap,
             &state.tttocea608,
@@ -113,6 +117,7 @@ impl TranscriberBin {
             &aqueue_transcription,
             &state.transcriber_aconv,
             &state.transcriber,
+            &state.text_tee,
             &state.transcriber_queue,
             &state.textwrap,
             &state.tttocea608,
@@ -130,12 +135,18 @@ impl TranscriberBin {
             &state.transcription_valve.static_pad("src").unwrap(),
         )?;
 
+        let text_pad = state.text_tee.request_pad_simple("src_%u").unwrap();
+        let transcription_text_srcpad = gst::GhostPad::with_target(Some("src_text"), &text_pad)?;
+
         state
             .transcription_bin
             .add_pad(&transcription_audio_sinkpad)?;
         state
             .transcription_bin
             .add_pad(&transcription_audio_srcpad)?;
+        state
+            .transcription_bin
+            .add_pad(&transcription_text_srcpad)?;
 
         state
             .transcriber_queue
@@ -145,6 +156,8 @@ impl TranscriberBin {
         state.internal_bin.add(&state.transcription_bin)?;
 
         state.textwrap.set_property("lines", 2u32);
+
+        transcription_text_srcpad.link(&state.text_queue.static_pad("sink").unwrap())?;
 
         state.transcription_bin.set_locked_state(true);
 
@@ -163,6 +176,7 @@ impl TranscriberBin {
             &vclocksync,
             &state.video_queue,
             &state.cccombiner,
+            &state.text_queue,
         ])?;
 
         aclocksync.link(&state.audio_tee)?;
@@ -191,10 +205,16 @@ impl TranscriberBin {
             &state.cccombiner.static_pad("src").unwrap(),
         )?;
 
+        let internal_text_srcpad = gst::GhostPad::with_target(
+            Some("text_src"),
+            &state.text_queue.static_pad("src").unwrap(),
+        )?;
+
         state.internal_bin.add_pad(&internal_audio_sinkpad)?;
         state.internal_bin.add_pad(&internal_audio_srcpad)?;
         state.internal_bin.add_pad(&internal_video_sinkpad)?;
         state.internal_bin.add_pad(&internal_video_srcpad)?;
+        state.internal_bin.add_pad(&internal_text_srcpad)?;
 
         let imp_weak = self.downgrade();
         let comp_sinkpad = &state.cccombiner.static_pad("sink").unwrap();
@@ -232,6 +252,8 @@ impl TranscriberBin {
             .set_target(Some(&state.internal_bin.static_pad("video_sink").unwrap()))?;
         self.video_srcpad
             .set_target(Some(&state.internal_bin.static_pad("video_src").unwrap()))?;
+        self.text_srcpad
+            .set_target(Some(&state.internal_bin.static_pad("text_src").unwrap()))?;
 
         self.construct_transcription_bin(state)?;
 
@@ -395,7 +417,7 @@ impl TranscriberBin {
         gst::Element::link_many([
             &state.transcriber_aconv,
             &state.transcriber,
-            &state.transcriber_queue,
+            &state.text_tee,
         ])?;
 
         Ok(())
@@ -468,6 +490,10 @@ impl TranscriberBin {
         let transcription_valve = gst::ElementFactory::make("valve")
             .property_from_str("drop-mode", "transform-to-gap")
             .build()?;
+        let text_tee = gst::ElementFactory::make("tee")
+            .property("allow-not-linked", true)
+            .build()?;
+        let text_queue = gst::ElementFactory::make("queue").build()?;
 
         Ok(State {
             framerate: None,
@@ -484,6 +510,8 @@ impl TranscriberBin {
             tttocea608,
             cccapsfilter,
             transcription_valve,
+            text_tee,
+            text_queue,
             tearing_down: false,
         })
     }
@@ -567,11 +595,23 @@ impl ObjectSubclass for TranscriberBin {
             })
             .build();
 
+        let templ = klass.pad_template("src_text").unwrap();
+        let text_srcpad = gst::GhostPad::builder_with_template(&templ, Some("src_text"))
+            .query_function(|pad, parent, query| {
+                TranscriberBin::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |transcriber| transcriber.src_query(pad.upcast_ref(), query),
+                )
+            })
+            .build();
+
         Self {
             audio_srcpad,
             video_srcpad,
             audio_sinkpad,
             video_sinkpad,
+            text_srcpad,
             state: Mutex::new(None),
             settings: Mutex::new(Settings::default()),
         }
@@ -754,6 +794,7 @@ impl ObjectImpl for TranscriberBin {
         obj.add_pad(&self.audio_sinkpad).unwrap();
         obj.add_pad(&self.video_srcpad).unwrap();
         obj.add_pad(&self.video_sinkpad).unwrap();
+        obj.add_pad(&self.text_srcpad).unwrap();
 
         *self.state.lock().unwrap() = match self.build_state() {
             Ok(mut state) => match self.construct_internal_bin(&mut state) {
@@ -821,11 +862,21 @@ impl ElementImpl for TranscriberBin {
             )
             .unwrap();
 
+            let caps = gst::Caps::builder("text/x-raw").build();
+            let text_src_pad_template = gst::PadTemplate::new(
+                "src_text",
+                gst::PadDirection::Src,
+                gst::PadPresence::Always,
+                &caps,
+            )
+            .unwrap();
+
             vec![
                 video_src_pad_template,
                 video_sink_pad_template,
                 audio_src_pad_template,
                 audio_sink_pad_template,
+                text_src_pad_template,
             ]
         });
 
