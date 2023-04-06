@@ -111,6 +111,7 @@ plugins = {
   # csound has a non-trivial external dependency, see below
   'lewton': {'library': 'libgstlewton'},
   'spotify': {'library': 'libgstspotify'},
+  'qoa': {'library': 'libgstqoa'},
 
   'file': {'library': 'libgstrsfile'},
   # sodium can have an external dependency, see below
