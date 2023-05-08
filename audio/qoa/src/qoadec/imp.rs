@@ -107,11 +107,6 @@ impl AudioDecoderImpl for QoaDec {
         Ok(())
     }
 
-    fn set_format(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
-        gst::debug!(CAT, imp: self, "Setting format {:?}", caps);
-        Ok(())
-    }
-
     fn handle_frame(
         &self,
         inbuf: Option<&gst::Buffer>,

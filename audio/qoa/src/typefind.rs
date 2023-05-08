@@ -1,5 +1,5 @@
-use gst::{TypeFind, TypeFindProbability};
 use gst::glib;
+use gst::{TypeFind, TypeFindProbability};
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     TypeFind::register(
