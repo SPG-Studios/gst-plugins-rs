@@ -231,7 +231,7 @@ fn run_ctrl_test(setup: TestSetup) {
         &format!("videotestsrc pattern=ball motion=sweep num-buffers={:?} ! capsfilter name=filter caps=\"video/x-raw,width=(int)800,height=(int)480,format=(string)NV12,framerate=(fraction){:?}/1,interlace-mode=(string)progressive\"", setup.capture_rate, setup.capture_rate), false).unwrap();
 
     let srcpad = bin.by_name("filter").unwrap().static_pad("src").unwrap();
-    let _ = bin.add_pad(&gst::GhostPad::with_target(Some("src"), &srcpad).unwrap());
+    let _ = bin.add_pad(&gst::GhostPad::with_target(&srcpad).unwrap());
     let mut g = gst_check::Harness::with_element(&bin, None, Some("src"));
     g.play();
 
