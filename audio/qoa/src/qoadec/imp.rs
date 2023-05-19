@@ -41,7 +41,12 @@ impl ObjectSubclass for QoaDec {
     type ParentType = gst_audio::AudioDecoder;
 }
 
-impl ObjectImpl for QoaDec {}
+impl ObjectImpl for QoaDec {
+    fn constructed(&self) {
+        self.parent_constructed();
+        self.obj().set_drainable(false);
+    }
+}
 
 impl GstObjectImpl for QoaDec {}
 
@@ -113,10 +118,7 @@ impl AudioDecoderImpl for QoaDec {
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         gst::debug!(CAT, imp: self, "Handling buffer {:?}", inbuf);
 
-        let inbuf = match inbuf {
-            None => return Ok(gst::FlowSuccess::Ok),
-            Some(inbuf) => inbuf,
-        };
+        let inbuf = inbuf.expect("Non-drainable should never receive empty buffer");
 
         let inmap = inbuf.map_readable().map_err(|_| {
             gst::error!(CAT, imp: self, "Failed to buffer readable");
