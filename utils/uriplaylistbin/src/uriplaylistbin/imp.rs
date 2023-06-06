@@ -26,33 +26,12 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 /// how many items are allowed to be prepared and waiting in the pipeline
 const MAX_STREAMING_ITEMS: usize = 2;
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum PlaylistError {
+    #[error("plugin missing: {error}")]
     PluginMissing { error: anyhow::Error },
+    #[error("{item:?} failed: {error}")]
     ItemFailed { error: anyhow::Error, item: Item },
-}
-
-impl std::fmt::Display for PlaylistError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PlaylistError::PluginMissing { error } => {
-                write!(f, "{}", error)
-            }
-            PlaylistError::ItemFailed { error, item } => {
-                write!(f, "{} (URI: {})", error, item.uri())
-            }
-        }
-    }
-}
-
-impl std::error::Error for PlaylistError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            PlaylistError::PluginMissing { error } | PlaylistError::ItemFailed { error, .. } => {
-                Some(error.as_ref())
-            }
-        }
-    }
 }
 
 /// Number of different streams currently handled by the element
@@ -1679,12 +1658,26 @@ impl UriPlaylistBin {
                 }
 
                 let element = self.obj();
+                let mut notify_iteration = false;
+                let mut notify_index = false;
+
                 if current_iteration != state.current_iteration {
                     state.current_iteration = current_iteration;
-                    element.notify("current-iteration");
+                    notify_iteration = true;
                 }
                 if current_uri_index != state.current_uri_index {
                     state.current_uri_index = current_uri_index;
+                    notify_index = true;
+                }
+
+                // drop mutex before notifying changes as the callback will likely try to fetch the updated values
+                // which would deadlock.
+                drop(state_guard);
+
+                if notify_iteration {
+                    element.notify("current-iteration");
+                }
+                if notify_index {
                     element.notify("current-uri-index");
                 }
             }
