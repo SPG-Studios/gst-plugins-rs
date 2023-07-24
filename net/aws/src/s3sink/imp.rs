@@ -20,7 +20,7 @@ use aws_sdk_s3::{
         upload_part::builders::UploadPartFluentBuilder,
     },
     primitives::ByteStream,
-    types::{CompletedMultipartUpload, CompletedPart},
+    types::{CompletedMultipartUpload, CompletedPart, ServerSideEncryption},
     Client,
 };
 
@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::convert::From;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::str::FromStr;
 
 use crate::s3url::*;
 use crate::s3utils::{self, duration_from_millis, duration_to_millis, WaitError};
@@ -103,6 +104,7 @@ struct Settings {
     key: Option<String>,
     content_type: Option<String>,
     content_disposition: Option<String>,
+    server_side_encryption: Option<String>,
     buffer_size: u64,
     access_key: Option<String>,
     secret_access_key: Option<String>,
@@ -156,6 +158,7 @@ impl Default for Settings {
             key: None,
             content_type: None,
             content_disposition: None,
+            server_side_encryption: None,
             access_key: None,
             secret_access_key: None,
             session_token: None,
@@ -355,6 +358,7 @@ impl S3Sink {
         let content_type = settings.content_type.clone();
         let content_disposition = settings.content_disposition.clone();
         let metadata = settings.to_metadata(self);
+        let server_side_encryption = ServerSideEncryption::from_str(&settings.server_side_encryption.clone().unwrap()).unwrap();
 
         client
             .create_multipart_upload()
@@ -363,6 +367,7 @@ impl S3Sink {
             .set_content_type(content_type)
             .set_content_disposition(content_disposition)
             .set_metadata(metadata)
+            .set_server_side_encryption(Some(server_side_encryption))
     }
 
     fn create_abort_multipart_upload_request(
@@ -766,6 +771,10 @@ impl ObjectImpl for S3Sink {
                     .nick("content-disposition")
                     .blurb("Content-Disposition header to set for uploaded object")
                     .build(),
+                glib::ParamSpecString::builder("server-side-encryption")
+                    .nick("server-side-encryption")
+                    .blurb("The S3 server side encryption algorithm to use (AES256 or aws:kms)")
+                    .build(),
             ]
         });
 
@@ -879,6 +888,11 @@ impl ObjectImpl for S3Sink {
                     .get::<Option<String>>()
                     .expect("type checked upstream");
             }
+            "server-side-encryption" => {
+                settings.server_side_encryption = value
+                    .get::<Option<String>>()
+                    .expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -920,6 +934,7 @@ impl ObjectImpl for S3Sink {
             "endpoint-uri" => settings.endpoint_uri.to_value(),
             "content-type" => settings.content_type.to_value(),
             "content-disposition" => settings.content_disposition.to_value(),
+            "server-side-encryption" => settings.server_side_encryption.to_value(),
             _ => unimplemented!(),
         }
     }
