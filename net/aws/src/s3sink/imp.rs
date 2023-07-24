@@ -358,7 +358,10 @@ impl S3Sink {
         let content_type = settings.content_type.clone();
         let content_disposition = settings.content_disposition.clone();
         let metadata = settings.to_metadata(self);
-        let server_side_encryption = ServerSideEncryption::from_str(&settings.server_side_encryption.clone().unwrap()).unwrap();
+        let server_side_encryption = match ServerSideEncryption::from_str(&settings.server_side_encryption.clone().unwrap_or_default()) {
+            Ok(v) => Some(v),
+            Err(_e) => None,
+        };
 
         client
             .create_multipart_upload()
@@ -367,7 +370,7 @@ impl S3Sink {
             .set_content_type(content_type)
             .set_content_disposition(content_disposition)
             .set_metadata(metadata)
-            .set_server_side_encryption(Some(server_side_encryption))
+            .set_server_side_encryption(server_side_encryption)
     }
 
     fn create_abort_multipart_upload_request(
