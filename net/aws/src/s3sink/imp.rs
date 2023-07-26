@@ -28,9 +28,9 @@ use futures::future;
 use gst::glib::once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::convert::From;
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
-use std::str::FromStr;
 
 use crate::s3url::*;
 use crate::s3utils::{self, duration_from_millis, duration_to_millis, WaitError};
@@ -358,7 +358,9 @@ impl S3Sink {
         let content_type = settings.content_type.clone();
         let content_disposition = settings.content_disposition.clone();
         let metadata = settings.to_metadata(self);
-        let server_side_encryption = match ServerSideEncryption::from_str(&settings.server_side_encryption.clone().unwrap_or_default()) {
+        let server_side_encryption = match ServerSideEncryption::from_str(
+            &settings.server_side_encryption.clone().unwrap_or_default(),
+        ) {
             Ok(v) => Some(v),
             Err(_e) => None,
         };
