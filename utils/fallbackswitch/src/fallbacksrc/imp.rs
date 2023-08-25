@@ -35,6 +35,8 @@ struct Stats {
     last_fallback_retry_reason: RetryReason,
     buffering_percent: i32,
     fallback_buffering_percent: i32,
+    last_error_msg: String,
+    last_fallback_error_msg: String,
 }
 
 impl Default for Stats {
@@ -46,6 +48,8 @@ impl Default for Stats {
             last_fallback_retry_reason: RetryReason::None,
             buffering_percent: 100,
             fallback_buffering_percent: 100,
+            last_error_msg: "".to_string(),
+            last_fallback_error_msg: "".to_string(),
         }
     }
 }
@@ -65,6 +69,8 @@ impl Stats {
                 "fallback-buffering-percent",
                 self.fallback_buffering_percent,
             )
+            .field("last-error-message", &self.last_error_msg)
+            .field("last-fallback-error-message", &self.last_fallback_error_msg)
             .build()
     }
 }
@@ -2793,6 +2799,7 @@ impl FallbackSrc {
         );
 
         if src == &state.source.source || src.has_as_ancestor(&state.source.source) {
+            state.stats.last_error_msg = format!("{:?}", m);
             self.handle_source_error(state, RetryReason::Error, false);
             drop(state_guard);
             self.obj().notify("status");
@@ -2803,6 +2810,7 @@ impl FallbackSrc {
         // Check if error is from fallback input and if so, use a dummy fallback
         if let Some(ref source) = state.fallback_source {
             if src == &source.source || src.has_as_ancestor(&source.source) {
+                state.stats.last_fallback_error_msg = format!("{:?}", m);
                 self.handle_source_error(state, RetryReason::Error, true);
                 drop(state_guard);
                 self.obj().notify("status");
