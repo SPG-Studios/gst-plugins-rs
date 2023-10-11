@@ -192,6 +192,7 @@ plugins = {
     'examples': ['pngenc'],
   },
   'rav1e': {'library': 'libgstrav1e'},
+  'spritesheet': {'library': 'libgstspritesheet'},
   'videofx': {
     'library': 'libgstrsvideofx',
     'extra-deps': {'cairo-gobject': ''},
