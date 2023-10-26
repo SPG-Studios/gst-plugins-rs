@@ -13,7 +13,7 @@
  *
  * ## Example pipeline
  * ```bash
- * gst-launch-1.0 filesrc location=audio.qoa ! qoaparse ! qoadec ! autoaudiosink
+ * gst-launch-1.0 filesrc location=audio.qoa ! qoadec ! autoaudiosink
  * ```
  *
  * Since: plugins-rs-0.11.0-alpha.1

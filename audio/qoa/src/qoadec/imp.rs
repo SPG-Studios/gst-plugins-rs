@@ -11,7 +11,7 @@ use gst::glib;
 use gst::subclass::prelude::*;
 use gst_audio::prelude::*;
 use gst_audio::subclass::prelude::*;
-use once_cell::sync::Lazy;
+use gst::glib::once_cell::sync::Lazy;
 use qoaudio::{DecodedAudio, QoaDecoder};
 use std::sync::{Arc, Mutex};
 
@@ -71,9 +71,7 @@ impl ElementImpl for QoaDec {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
-            let sink_caps = gst::Caps::builder("audio/x-qoa")
-                .field("parsed", true)
-                .build();
+            let sink_caps = gst::Caps::builder("audio/x-qoa").build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
                 gst::PadDirection::Sink,
