@@ -9,10 +9,12 @@
 use gst::glib;
 
 mod qoadec;
+mod qoaparse;
 mod typefind;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     qoadec::register(plugin)?;
+    qoaparse::register(plugin)?;
     typefind::register(plugin)
 }
 
