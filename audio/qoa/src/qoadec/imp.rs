@@ -8,10 +8,10 @@
 
 use byte_slice_cast::*;
 use gst::glib;
+use gst::glib::once_cell::sync::Lazy;
 use gst::subclass::prelude::*;
 use gst_audio::prelude::*;
 use gst_audio::subclass::prelude::*;
-use gst::glib::once_cell::sync::Lazy;
 use qoaudio::{DecodedAudio, QoaDecoder};
 use std::sync::{Arc, Mutex};
 

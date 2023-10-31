@@ -8,6 +8,7 @@
 
 use gst::glib;
 
+mod qoa;
 mod qoadec;
 mod qoaparse;
 mod typefind;

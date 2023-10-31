@@ -1,5 +1,7 @@
+use crate::qoa::FrameHeader;
 use gst::glib;
 use gst::{TypeFind, TypeFindProbability};
+use qoaudio::QOA_HEADER_SIZE;
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     TypeFind::register(
@@ -16,6 +18,15 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
                         TypeFindProbability::Maximum,
                         &gst::Caps::builder("audio/x-qoa").build(),
                     );
+                } else {
+                    let raw_header =
+                        u64::from_be_bytes(data[0..QOA_HEADER_SIZE].try_into().unwrap());
+                    if let Ok(_header) = FrameHeader::parse(raw_header) {
+                        typefind.suggest(
+                            TypeFindProbability::Likely,
+                            &gst::Caps::builder("audio/x-qoa").build(),
+                        );
+                    }
                 }
             }
         },

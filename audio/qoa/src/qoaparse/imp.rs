@@ -6,13 +6,13 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::qoa::FrameHeader;
 use glib::once_cell::sync::Lazy;
 use gst::glib;
 use gst::subclass::prelude::*;
 use gst_base::prelude::*;
 use gst_base::subclass::prelude::*;
-use qoaudio::{QOA_HEADER_SIZE, QOA_LMS_LEN, QOA_MAGIC, QOA_MIN_FILESIZE};
-use std::fmt;
+use qoaudio::{QOA_HEADER_SIZE, QOA_MAGIC, QOA_MIN_FILESIZE};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default, Debug, PartialEq)]
@@ -72,7 +72,7 @@ impl ElementImpl for QoaParse {
             let src_caps = gst::Caps::builder("audio/x-qoa")
                 .field("parsed", true)
                 .field("rate", gst::IntRange::<i32>::new(1, 16777215))
-                .field("channels", &gst::IntRange::<i32>::new(1, 255))
+                .field("channels", gst::IntRange::<i32>::new(1, 255))
                 .build();
             let src_pad_template = gst::PadTemplate::new(
                 "src",
@@ -209,73 +209,5 @@ impl BaseParseImpl for QoaParse {
             .finish_frame(frame, (file_header_size + frame_header.frame_size) as u32)?;
 
         Ok((gst::FlowSuccess::Ok, 0))
-    }
-}
-
-pub const MAX_SLICES_PER_CHANNEL_PER_FRAME: usize = 256;
-
-pub struct InvalidFrameHeader;
-
-#[derive(Debug, Copy, Clone, Default)]
-pub struct FrameHeader {
-    /// Number of channels in this frame
-    pub channels: u8,
-    /// Sample rate in HZ for this frame
-    pub sample_rate: u32,
-    /// Samples per channel in this frame
-    pub num_samples_per_channel: u16,
-    /// Total size of the frame (includes header size itself)
-    pub frame_size: usize,
-}
-
-impl FrameHeader {
-    /// Parse and validate various traits of a valid frame header.
-    fn parse(frame_header: u64) -> Result<Self, InvalidFrameHeader> {
-        let channels = ((frame_header >> 56) & 0x0000ff) as u8;
-        let sample_rate = ((frame_header >> 32) & 0xffffff) as u32;
-        let num_samples_per_channel = ((frame_header >> 16) & 0x00ffff) as u16;
-        let frame_size = (frame_header & 0x00ffff) as usize;
-
-        if channels == 0 || sample_rate == 0 {
-            return Err(InvalidFrameHeader);
-        }
-
-        const LMS_SIZE: usize = 4;
-        let non_sample_data_size = QOA_HEADER_SIZE + QOA_LMS_LEN * LMS_SIZE * channels as usize;
-        if frame_size <= non_sample_data_size {
-            return Err(InvalidFrameHeader);
-        }
-        let data_size = frame_size - non_sample_data_size;
-        let num_slices = data_size / 8;
-
-        if num_slices % channels as usize != 0 {
-            return Err(InvalidFrameHeader);
-        }
-        if num_slices / channels as usize > MAX_SLICES_PER_CHANNEL_PER_FRAME {
-            return Err(InvalidFrameHeader);
-        }
-
-        Ok(FrameHeader {
-            channels,
-            sample_rate,
-            num_samples_per_channel,
-            frame_size,
-        })
-    }
-}
-
-impl PartialEq for FrameHeader {
-    fn eq(&self, other: &Self) -> bool {
-        self.channels == other.channels && self.sample_rate == other.sample_rate
-    }
-}
-
-impl fmt::Display for FrameHeader {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{{channels={}, sample_rate={}, num_samples_per_channel={}, frame_size={}}}",
-            self.channels, self.sample_rate, self.num_samples_per_channel, self.frame_size
-        )
     }
 }

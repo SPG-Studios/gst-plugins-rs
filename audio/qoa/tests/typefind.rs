@@ -14,15 +14,15 @@ fn init() {
 fn find_the_type_of_qoa_data() {
     init();
 
-    let src = gst_app::AppSrc::builder()
-        .is_live(true)
-        .build();
+    let src = gst_app::AppSrc::builder().is_live(true).build();
 
     let typefind = gst::ElementFactory::make("typefind").build().unwrap();
     let fakesink = gst::ElementFactory::make("fakesink").build().unwrap();
 
     let pipeline = gst::Pipeline::new();
-    pipeline.add_many(&[src.upcast_ref(), &typefind, &fakesink]).unwrap();
+    pipeline
+        .add_many(&[src.upcast_ref(), &typefind, &fakesink])
+        .unwrap();
     gst::Element::link_many(&[src.upcast_ref(), &typefind, &fakesink]).unwrap();
 
     pipeline.set_state(gst::State::Playing).unwrap();
