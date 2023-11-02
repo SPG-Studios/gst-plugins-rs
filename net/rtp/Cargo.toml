@@ -14,6 +14,8 @@ atomic_refcell = "0.1"
 bitstream-io = "4"
 byte-slice-cast = "1.2"
 chrono = { version = "0.4", default-features = false }
+data-encoding = "2"
+fnv_rs = "0.4"
 gst       = { workspace = true, features = ["v1_20"] }
 gst-audio = { workspace = true, features = ["v1_20"] }
 gst-base  = { workspace = true, features = ["v1_20"] }
@@ -26,6 +28,7 @@ gio.workspace = true
 hex = "0.4.3"
 log = "0.4"
 rand = "0.10"
+itertools = "0.14"
 rtp-types = { version = "0.1" }
 rtcp-types = { version = "0.3" }
 slab = "0.4.9"
