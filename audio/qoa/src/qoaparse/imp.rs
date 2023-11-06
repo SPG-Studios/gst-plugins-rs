@@ -6,13 +6,13 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::qoa::FrameHeader;
+use crate::qoa::{FrameHeader, QOA_MIN_FILESIZE};
 use glib::once_cell::sync::Lazy;
 use gst::glib;
 use gst::subclass::prelude::*;
 use gst_base::prelude::*;
 use gst_base::subclass::prelude::*;
-use qoaudio::{QOA_HEADER_SIZE, QOA_MAGIC, QOA_MIN_FILESIZE};
+use qoaudio::{QOA_HEADER_SIZE, QOA_MAGIC};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default, Debug, PartialEq)]

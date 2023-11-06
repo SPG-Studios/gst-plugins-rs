@@ -6,29 +6,34 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::qoa::QOA_MIN_FILESIZE;
 use byte_slice_cast::*;
 use gst::glib;
 use gst::glib::once_cell::sync::Lazy;
 use gst::subclass::prelude::*;
 use gst_audio::prelude::*;
 use gst_audio::subclass::prelude::*;
-use qoaudio::{DecodedAudio, QoaDecoder};
+use qoaudio::{QoaDecoder, QOA_HEADER_SIZE, QOA_MAGIC};
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
-#[derive(Default)]
 struct State {
-    decoder: Option<QoaDecoder>,
+    decoder: QoaDecoder<Cursor<Vec<u8>>>,
     audio_info: Option<gst_audio::AudioInfo>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            decoder: QoaDecoder::new_streaming().expect("Decoder creation failed"),
+            audio_info: None,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct QoaDec {
     state: Arc<Mutex<Option<State>>>,
-}
-
-enum HandledBuffer {
-    FormatChanged(gst::Buffer),
-    SameFormat(gst::Buffer),
 }
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
@@ -73,6 +78,8 @@ impl ElementImpl for QoaDec {
         static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
             let sink_caps = gst::Caps::builder("audio/x-qoa")
                 .field("parsed", true)
+                .field("rate", gst::IntRange::<i32>::new(1, 16777215))
+                .field("channels", gst::IntRange::<i32>::new(1, 255))
                 .build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -120,6 +127,37 @@ impl AudioDecoderImpl for QoaDec {
         Ok(())
     }
 
+    fn set_format(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
+        gst::debug!(CAT, imp: self, "Setting format {:?}", caps);
+
+        let s = caps.structure(0).unwrap();
+        let channels = s.get::<i32>("channels").unwrap();
+        let rate = s.get::<i32>("rate").unwrap();
+
+        if let Ok(audio_info) = get_audio_info(rate as u32, channels as u32) {
+            if self.obj().set_output_format(&audio_info).is_err() || self.obj().negotiate().is_err()
+            {
+                gst::debug!(
+                    CAT,
+                    imp: self,
+                    "Error to negotiate output from based on in-caps parameters"
+                );
+            }
+
+            let mut state_guard = self.state.lock().unwrap();
+            let state = state_guard.as_mut().unwrap();
+            state.audio_info = Some(audio_info);
+        } else {
+            gst::debug!(
+                CAT,
+                imp: self,
+                "Failed to get audio info"
+            );
+        }
+
+        Ok(())
+    }
+
     fn handle_frame(
         &self,
         inbuf: Option<&gst::Buffer>,
@@ -138,56 +176,23 @@ impl AudioDecoderImpl for QoaDec {
             gst::FlowError::NotNegotiated
         })?;
 
-        let outbuf = match self.handle_buffer(state, &inmap)? {
-            HandledBuffer::FormatChanged(buffer) => {
-                self.obj()
-                    .set_output_format(state.audio_info.as_ref().unwrap())?;
-
-                drop(state_guard); // Do not hold a lock while calling for negotiation
-                self.obj().negotiate()?;
-
-                buffer
-            }
-            HandledBuffer::SameFormat(buffer) => buffer,
-        };
-
-        self.obj().finish_frame(Some(outbuf), 1)
-    }
-}
-
-impl QoaDec {
-    fn handle_buffer(
-        &self,
-        state: &mut State,
-        indata: &[u8],
-    ) -> Result<HandledBuffer, gst::FlowError> {
-        let decoder = match state.decoder {
-            Some(ref mut decoder) => decoder,
-            None => {
-                let decoder = QoaDecoder::decode_header(indata).unwrap_or_else(|err| {
-                    gst::debug!(
-                        CAT,
-                        imp: self,
-                        "Using decoder in streaming mode, cause: {}",
-                        err
-                    );
-                    QoaDecoder::streaming()
-                });
-                state.decoder = Some(decoder);
-                state.decoder.as_mut().unwrap()
+        // Skip file header, if present
+        let file_header_size = {
+            if inmap.len() >= QOA_MIN_FILESIZE {
+                let magic = u32::from_be_bytes(inmap[0..4].try_into().unwrap());
+                if magic == QOA_MAGIC {
+                    QOA_HEADER_SIZE
+                } else {
+                    0
+                }
+            } else {
+                0
             }
         };
 
-        gst::trace!(
-            CAT,
-            imp: self,
-            "Trying to decode frame... indata: {}",
-            indata.len()
-        );
-
-        let audio: DecodedAudio = decoder
-            .decode_frames(indata)
-            .and_then(|frames| frames.try_into())
+        let samples = state
+            .decoder
+            .decode_frame(&inmap[file_header_size..])
             .map_err(|err| {
                 gst::element_error!(
                     self.obj(),
@@ -197,78 +202,23 @@ impl QoaDec {
                 gst::FlowError::Error
             })?;
 
-        gst::trace!(
-            CAT,
-            imp: self,
-            "Decoded audio with a duration of {:?}",
-            audio.duration()
-        );
+        gst::trace!(CAT, imp: self, "Successfully decoded {} audio samples from frame", samples.len());
 
-        // On new buffers the audio configuration might change, if so we need to request renegotiation
-        // and reconfigure the audio info
-        let format_changed = if state.audio_info.is_none()
-            || state.audio_info.as_ref().unwrap().channels() != audio.channels()
-            || state.audio_info.as_ref().unwrap().rate() != audio.sample_rate()
-        {
-            let audio_info = get_audio_info(&audio).map_err(|e| {
-                gst::element_error!(
-                    self.obj(),
-                    gst::CoreError::Negotiation,
-                    ["Failed to get audio info: {}", e]
-                );
-                gst::FlowError::Error
-            })?;
-
-            gst::debug!(
-                CAT,
-                imp: self,
-                "Successfully parsed headers: {:?}",
-                audio_info
-            );
-
-            state.audio_info = Some(audio_info);
-
-            true
-        } else {
-            false
-        };
-
-        let samples = audio.collect::<Vec<i16>>();
-
-        struct CastVec(Vec<i16>);
-        impl AsRef<[u8]> for CastVec {
-            fn as_ref(&self) -> &[u8] {
-                self.0.as_byte_slice()
-            }
-        }
-        impl AsMut<[u8]> for CastVec {
-            fn as_mut(&mut self) -> &mut [u8] {
-                self.0.as_mut_byte_slice()
-            }
-        }
-
-        let outbuf = gst::Buffer::from_mut_slice(CastVec(samples));
-        if format_changed {
-            Ok(HandledBuffer::FormatChanged(outbuf))
-        } else {
-            Ok(HandledBuffer::SameFormat(outbuf))
-        }
+        let outbuf = gst::Buffer::from_slice(samples.as_byte_slice().to_vec());
+        self.obj().finish_frame(Some(outbuf), 1)
     }
 }
 
-fn get_audio_info(audio: &DecodedAudio) -> Result<gst_audio::AudioInfo, String> {
-    let index = match audio.channels() as usize {
+fn get_audio_info(sample_rate: u32, channels: u32) -> Result<gst_audio::AudioInfo, String> {
+    let index = match channels as usize {
         0 => return Err("no channels".to_string()),
         n if n > 8 => return Err("more than 8 channels, not supported yet".to_string()),
         n => n,
     };
     let to = &QOA_CHANNEL_POSITIONS[index - 1][..index];
-    let info_builder = gst_audio::AudioInfo::builder(
-        gst_audio::AUDIO_FORMAT_S16,
-        audio.sample_rate(),
-        audio.channels(),
-    )
-    .positions(to);
+    let info_builder =
+        gst_audio::AudioInfo::builder(gst_audio::AUDIO_FORMAT_S16, sample_rate, channels)
+            .positions(to);
 
     let audio_info = info_builder
         .build()

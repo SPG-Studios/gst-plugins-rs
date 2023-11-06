@@ -1,6 +1,8 @@
 use qoaudio::{QOA_HEADER_SIZE, QOA_LMS_LEN};
 use std::fmt;
 
+pub const QOA_MIN_FILESIZE: usize = 16;
+
 pub const MAX_SLICES_PER_CHANNEL_PER_FRAME: usize = 256;
 
 #[derive(Debug, Copy, Clone)]
