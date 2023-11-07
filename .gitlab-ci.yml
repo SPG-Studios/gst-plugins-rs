@@ -319,6 +319,8 @@ check commits:
   extends: '.debian:12-stable'
   stage: "lint"
   needs: []
+  variables:
+    FDO_UPSTREAM_REPO: "gstreamer/gst-plugins-rs"
   script:
     - ci-fairy check-commits --textwidth 0 --no-signed-off-by
     - ci/check-for-symlinks.sh
