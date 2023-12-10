@@ -148,6 +148,8 @@ You will find the following plugins in this repository:
 
     - `uriplaylistbin`: Helper bin to gaplessly play a list of URIs.
 
+    - `xdgscreencapsrc`: GStreamer xdg-desktop-portal screen capture plugin
+
 ## Building
 
 gst-plugins-rs relies on [cargo-c](https://github.com/lu-zero/cargo-c/) to
