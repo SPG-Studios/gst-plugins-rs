@@ -1,0 +1,26 @@
+[package]
+name = "gst-plugin-whisper"
+version = "0.1.0"
+authors = ["Diego Nieto <diego.nieto.m@outlook.com>"]
+repository = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
+license = "MPL-2.0"
+edition = "2021"
+description = "whisper transcribe plugin"
+
+[dependencies]
+gst = { package = "gstreamer", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
+gst-base = { package = "gstreamer-base", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
+gst-audio = { package = "gstreamer-audio", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs", features = ["v1_16"] }
+hound = "3"
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", branch = "master" }
+
+[lib]
+name = "gstwhisper"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+gst-plugin-version-helper = {  git = "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs" }
+
+[features]
+capi = []
