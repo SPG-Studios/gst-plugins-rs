@@ -350,6 +350,35 @@ gst-launch-1.0 -e uridecodebin uri=file:///home/meh/path/to/video/file ! \
 
 You should see a second video displayed in the videoroomtest web page.
 
+### Simulcasts with LiveKit
+
+Video streams of differing qualities can be combined into a single simulcast
+track which allows LiveKit to send different versions to the receiving clients
+independently based on their network connection and preferences. LiveKit is
+specific about using the RID values `q`, `h`, and `f` to represent quarter-,
+half-, and full-size streams. This creates a simulcast with all 3 sizes:
+
+```shell
+gst-launch-1.0 \
+  livekitwebrtcsink name=sink \
+    signaller::ws-url=ws://localhost:7880 \
+    signaller::api-key=devkey \
+    signaller::secret-key=secret \
+    signaller::room-name=test \
+    signaller::identity=gst-simulcast \
+    signaller::participant-name=gst-simulcast \
+    video-caps=video/x-h264 \
+    video_0::mid=track0 \
+    video_1::mid=track0 \
+    video_2::mid=track0 \
+    video_0::rid=q \
+    video_1::rid=h \
+    video_2::rid=f \
+  videotestsrc is-live=1 ! video/x-raw,framerate=15/1,width=320,height=180 ! videoconvert ! x264enc bitrate=300 key-int-max=120 b-adapt=false vbv-buf-capacity=120 tune=zerolatency speed-preset=ultrafast threads=4 ! video/x-h264,profile=baseline ! h264parse config-interval=-1 ! queue ! sink.video_0 \
+  videotestsrc is-live=1 ! video/x-raw,framerate=30/1,width=640,height=360 ! videoconvert ! x264enc bitrate=600 key-int-max=120 b-adapt=false vbv-buf-capacity=120 tune=zerolatency speed-preset=ultrafast threads=4 ! video/x-h264,profile=baseline ! h264parse config-interval=-1 ! queue ! sink.video_1 \
+  videotestsrc is-live=1 ! video/x-raw,framerate=30/1,width=1280,height=720 ! videoconvert ! x264enc bitrate=3000 key-int-max=120 b-adapt=false vbv-buf-capacity=120 tune=zerolatency speed-preset=ultrafast threads=4 ! video/x-h264,profile=baseline ! h264parse config-interval=-1 ! queue ! sink.video_2
+```
+
 ## Streaming from LiveKit using the livekitwebrtcsrc element
 
 First, publish a stream to the room using the following command:
