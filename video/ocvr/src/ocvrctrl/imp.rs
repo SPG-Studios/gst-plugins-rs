@@ -1,0 +1,736 @@
+// Copyright (C) 2022 Jochen Henneberg <jh@henneberg-systemdesign.com>
+//
+// SPDX-License-Identifier: MPL-2.0
+
+use gst::glib;
+use gst::prelude::*;
+use gst::subclass::prelude::*;
+
+use std::cmp;
+use std::sync::Mutex;
+
+use crc::{Crc, CRC_32_ISCSI};
+use gst_video::video_frame::*;
+use gst_video::{VideoFormat, VideoInfo};
+use once_cell::sync::Lazy;
+
+mod syncstate;
+use syncstate::SyncState;
+mod data;
+use data::Data;
+mod settings;
+use settings::*;
+
+static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+    gst::DebugCategory::new(
+        "ocvrctrl",
+        gst::DebugColorFlags::empty(),
+        Some("Original content video rate controller"),
+    )
+});
+
+const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
+
+// Original content framerate to detect - in case of 'hint' listen to
+// downstream events from ocvrhint, used in syncstate child module and
+// thus needs to be pub
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstOcvrCtrlContentRate")]
+pub enum ContentRate {
+    #[enum_value(name = "Search for matching rate", nick = "Auto")]
+    Auto,
+    #[enum_value(name = "Content rate 24Hz (for 60Hz capture rate only)", nick = "24Hz")]
+    Hz24,
+    #[enum_value(name = "Content rate 25Hz (for 50Hz capture rate only)", nick = "25Hz")]
+    Hz25,
+    #[enum_value(name = "Content rate 30Hz", nick = "30Hz")]
+    Hz30,
+    #[enum_value(name = "Content rate 50Hz (for 50Hz capture rate only)", nick = "50Hz")]
+    Hz50,
+    #[enum_value(name = "Content rate 60Hz (for 60Hz capture rate only)", nick = "60Hz")]
+    Hz60,
+    #[enum_value(name = "From 'ocvrhint'", nick = "Hint")]
+    Hint,
+}
+
+impl Default for ContentRate {
+    fn default() -> Self {
+        ContentRate::Hint
+    }
+}
+
+impl ContentRate {
+    pub fn next(self, rate: CaptureRate) -> ContentRate {
+        match rate {
+            CaptureRate::HZ_50 => match self {
+                ContentRate::Hz25 => ContentRate::Hz30,
+                ContentRate::Hz30 => ContentRate::Hz50,
+                ContentRate::Hz50 => ContentRate::Hz25,
+                _ => unreachable!(),
+            },
+            CaptureRate::HZ_60 => match self {
+                ContentRate::Hz24 => ContentRate::Hz30,
+                ContentRate::Hz30 => ContentRate::Hz60,
+                ContentRate::Hz60 => ContentRate::Hz24,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn first(rate: CaptureRate) -> ContentRate {
+        match rate {
+            CaptureRate::HZ_50 => ContentRate::Hz25,
+            CaptureRate::HZ_60 => ContentRate::Hz24,
+            _ => unreachable!(),
+        }
+    }
+}
+
+// Capture framerates to check, used in syncstate child module and
+// thus needs to be pub
+#[glib::flags(name = "OcvrCtrlCaptureRate")]
+pub enum CaptureRate {
+    #[flags_value(name = "Capture rate 50Hz", nick = "50Hz")]
+    HZ_50 = 0b00000001,
+    #[flags_value(name = "Capture rate 60Hz", nick = "60Hz")]
+    HZ_60 = 0b00000010,
+}
+
+// Method used to check rate
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstOcvrCtrlMethod")]
+pub enum Method {
+    #[enum_value(name = "Fallback to fuzzy if accurate fails.", nick = "Auto")]
+    Auto,
+    #[enum_value(name = "Accurate compare by checksum.", nick = "Accurate")]
+    Accurate,
+    #[enum_value(name = "Fuzzy compare.", nick = "Fuzzy")]
+    Fuzzy,
+}
+
+impl Default for Method {
+    fn default() -> Self {
+        Method::Auto
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstOcvrCtrlTolerance")]
+pub enum Tolerance {
+    #[enum_value(name = "Resync unless content rate is reset.", nick = "Lazy")]
+    Lazy,
+    #[enum_value(name = "Strict compare and resync 'retries' times.", nick = "Strict")]
+    Strict,
+    #[enum_value(name = "Like 'Strict' but ignore retries.", nick = "Paranoid")]
+    Paranoid,
+}
+
+impl Default for Tolerance {
+    fn default() -> Self {
+        Tolerance::Strict
+    }
+}
+
+pub struct OcvrCtrl {
+    srcpad: gst::Pad,
+    sinkpad: gst::Pad,
+    settings: Mutex<Settings>,
+    data: Mutex<Data>,
+}
+
+impl OcvrCtrl {
+    fn calc_checksum(win: &[u8]) -> u32 {
+        let crc = CASTAGNOLI;
+        let mut digest = crc.digest();
+
+        digest.update(win);
+        digest.finalize()
+    }
+
+    fn compare_fuzzy(ping: &[u8], pong: &[u8], threshold: u32) -> bool {
+        let it = ping.iter();
+        let mut r = true;
+        pong.iter().zip(it).all(|(a, b)| {
+            let ax = cmp::max(a, b);
+            let bx = cmp::min(a, b);
+            let d = ax - bx;
+            if d > threshold as u8 {
+                r = false;
+            }
+            r
+        });
+
+        gst::log!(CAT, "Fuzzy frame compare: {:?}", r);
+        r
+    }
+
+    fn save_frame(&self, buffer: &gst::Buffer) {
+        let mut data = self.data.lock().unwrap();
+
+        if !data.sync_state.needs_save(data.capture_rate.unwrap()) {
+            gst::log!(CAT, "Save frame not needed -> {:?}", data.sync_state);
+            return;
+        }
+
+        gst::log!(CAT, "Save frame -> {:?}", data.sync_state);
+        let info = VideoInfo::builder(
+            data.frame_format.unwrap(),
+            data.frame_size.0,
+            data.frame_size.1,
+        )
+        .build()
+        .unwrap();
+        let frame =
+            VideoFrameRef::<&gst::BufferRef>::from_buffer_ref_readable(buffer, &info).unwrap();
+        let plane: u32 = match data.frame_format.unwrap() {
+            VideoFormat::I420 => 0, // luma
+            VideoFormat::Nv12 => 0, // luma
+            _ => unimplemented!(),
+        };
+        let frame_data = frame.plane_data(plane).unwrap();
+        let info = frame.info();
+        let width = info.width() as usize;
+        let height = info.height() as usize;
+        let stride = info.stride()[plane as usize] as usize;
+
+        let wn: &str;
+        let win = if data.is_ping {
+            wn = "pong";
+            &mut data.pong_window
+        } else {
+            wn = "ping";
+            &mut data.ping_window
+        };
+        gst::log!(CAT, "Save frame to {}", wn);
+
+        win.clear();
+        let settings = self.settings.lock().unwrap();
+        for line in frame_data
+            .chunks_exact(stride)
+            .step_by(height / settings.rows as usize)
+        {
+            win.extend_from_slice(&line[..width]);
+        }
+
+        data.is_ping = !data.is_ping;
+    }
+
+    fn compare_frames(&self) -> Result<bool, ()> {
+        let data = self.data.lock().unwrap();
+
+        if !data.can_compare() {
+            return Err(());
+        }
+
+        let n = data.sync_state.needs_compare(data.capture_rate.unwrap());
+
+        if !n {
+            gst::log!(CAT, "Comparison not needed -> {:?}", data.sync_state);
+            return Ok(true);
+        }
+
+        let r = match data.method {
+            Method::Fuzzy => {
+                gst::log!(CAT, "Compare frames 'fuzzy' -> {:?}", data.sync_state);
+                let settings = self.settings.lock().unwrap();
+                Self::compare_fuzzy(&data.ping_window, &data.pong_window, settings.threshold)
+            }
+            Method::Accurate | Method::Auto => {
+                gst::log!(CAT, "Compare frames 'accurate' -> {:?}", data.sync_state);
+                let crc_ping = Self::calc_checksum(&data.ping_window);
+                let crc_pong = Self::calc_checksum(&data.pong_window);
+                crc_ping == crc_pong
+            }
+        };
+
+        Ok(r)
+    }
+
+    fn sink_chain(
+        &self,
+        pad: &gst::Pad,
+        mut buffer: gst::Buffer,
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        {
+            let mut data = self.data.lock().unwrap();
+
+            // if we don't have supported caps just forward the frame
+            if data.capture_rate.is_none() || data.sync_state.is_idle() {
+                gst::log!(CAT, obj: pad, "Passthrough");
+                drop(data);
+                return self.srcpad.push(buffer);
+            }
+
+            // otherwise advance the frame counter
+            if data.capture_rate.is_some() {
+                let r = data.capture_rate.unwrap();
+                data.sync_state.advance(r);
+            }
+        }
+
+        // save the buffer and check for frame match
+        self.save_frame(&buffer);
+        let m = match self.compare_frames() {
+            Err(_) => {
+                gst::log!(CAT, obj: pad, "Need at least two frames for comparison");
+                return self.srcpad.push(buffer);
+            }
+            Ok(v) => v,
+        };
+
+        let mut data = self.data.lock().unwrap();
+        let r = data.capture_rate.unwrap();
+        let settings = self.settings.lock().unwrap();
+
+        // if we are synced and frame comparison failed or if we lost
+        // sync let's try to recover
+        if !data.sync_state.eval_compare(r, m) {
+            let s = data.on_sync_lost(
+                settings.method,
+                settings.retries,
+                settings.tolerance,
+                settings.content_rate,
+            );
+            gst::info!(
+                CAT,
+                obj: pad,
+                "Unexpected frame mismatch - lost sync (solution: {:?}) -> {:?}",
+                s,
+                data.sync_state
+            );
+
+            // if we are idle (no sync retries left) tell ocvrhint to
+            // start pattern matching again
+            let mut hint = None;
+            let mut caps = None;
+            if settings.in_hint_mode() && data.sync_state.is_idle() {
+                // let downstream know about the original caps
+                caps = Some(data.upstream_caps.copy());
+                hint = Some(
+                    gst::Structure::builder("ocvrctrl")
+                        .field("synced", false)
+                        .build(),
+                );
+            }
+
+            drop(settings);
+            drop(data);
+            if let Some(s) = hint {
+                self.srcpad
+                    .push_event(gst::event::Caps::new(&caps.unwrap()));
+                self.srcpad
+                    .push_event(gst::event::CustomDownstream::builder(s).build());
+            }
+            return self.srcpad.push(buffer);
+        }
+
+        let c = data.sync_state.update(r, m);
+        if m {
+            gst::log!(
+                CAT,
+                obj: pad,
+                "Frames match or no check needed -> {:?}",
+                data.sync_state
+            );
+        } else {
+            gst::log!(CAT, obj: pad, "Frames mismatch -> {:?}", data.sync_state);
+        }
+
+        let mut hint = None;
+        let mut caps = None;
+        if c && data.sync_state.is_synced() {
+            // reset sync method and retries once we are synced
+            data.on_synced(settings.retries);
+            gst::info!(CAT, obj: pad, "Synced -> {:?}", data.sync_state);
+            // if we receive hints and we are synced tell the hinter
+            // to stop looking for pattern matches because we start
+            // dropping frames and matching will not work anymore
+            if settings.in_hint_mode() {
+                hint = Some(
+                    gst::Structure::builder("ocvrctrl")
+                        .field("synced", true)
+                        .build(),
+                );
+            }
+
+            // let downstream know about the new caps
+            if settings.send_caps {
+                caps = Some(data.synced_caps(settings.drop));
+            }
+        }
+
+        // check if we should drop the frame
+        let d = data.sync_state.drop(settings.drop, r);
+
+        // adjust PTS and duration if buffer is not dropped
+        if data.sync_state.is_synced() && !d {
+            if let (Some(mut pts), Some(mut dur)) = (buffer.pts(), buffer.duration()) {
+                let b = buffer.make_mut();
+                if data.sync_state.ts_adjust(r, &mut pts) {
+                    b.set_pts(pts);
+                }
+
+                if data.sync_state.dur_adjust(r, settings.drop, &mut dur) {
+                    b.set_duration(dur);
+                }
+            }
+        }
+
+        if d {
+            gst::info!(CAT, obj: pad, "Drop frame -> {:?}", data.sync_state);
+        } else {
+            gst::log!(CAT, obj: pad, "Fwd frame");
+        }
+
+        drop(settings);
+        drop(data);
+
+        if let Some(h) = hint {
+            self.srcpad
+                .push_event(gst::event::CustomDownstream::builder(h).build());
+        }
+
+        if let Some(c) = caps {
+            self.srcpad.push_event(gst::event::Caps::new(&c));
+        }
+
+        if !d {
+            self.srcpad.push(buffer)
+        } else {
+            Ok(gst::FlowSuccess::Ok)
+        }
+    }
+
+    fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
+        if let gst::EventView::Caps(e) = event.view() {
+            gst::log!(CAT, obj: pad, "Handling event {:?}", e);
+
+            let mut data = self.data.lock().unwrap();
+            let settings = self.settings.lock().unwrap();
+            data.reset(settings.content_rate, settings.method, settings.retries);
+
+            if let Ok(info) = VideoInfo::from_caps(e.caps()) {
+                data.upstream_caps = e.caps().copy();
+                data.capture_rate = match info.fps().round().numer() {
+                    50 => {
+                        if settings.capture_rate(CaptureRate::HZ_50) {
+                            Some(CaptureRate::HZ_50)
+                        } else {
+                            None
+                        }
+                    }
+                    60 => {
+                        if settings.capture_rate(CaptureRate::HZ_60) {
+                            Some(CaptureRate::HZ_60)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                gst::log!(CAT, obj: pad, "Input framerate {:?}", data.capture_rate);
+
+                // Remember format and size
+                data.frame_format = Some(info.format());
+                data.frame_size = (info.width(), info.height());
+                gst::log!(CAT, obj: pad, "Input format {:?}", data.frame_format);
+                gst::log!(CAT, obj: pad, "Input size {:?}", data.frame_size);
+            } else {
+                data.frame_format = None;
+                data.frame_size = (0, 0);
+            }
+
+            // we may have to update the content rate from the capture rate
+            data.reset_content_rate(settings.content_rate);
+            gst::log!(CAT, obj: pad, "{:?}", data);
+        }
+
+        self.srcpad.push_event(event)
+    }
+
+    fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
+        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+
+        if let gst::EventView::CustomUpstream(e) = event.view() {
+            // Extract the framerate hint
+            if let Some(s) = e.structure() {
+                if s.name() != "ocvrhint" {
+                    return self.sinkpad.push_event(event);
+                }
+
+                // do we listen to ocvrhint
+                let settings = self.settings.lock().unwrap();
+                if !settings.in_hint_mode() {
+                    drop(settings);
+                    return self.sinkpad.push_event(event);
+                }
+
+                let mut data = self.data.lock().unwrap();
+                data.reset_on_hint(settings.method, settings.retries);
+
+                data.content_rate = match s.get::<u32>("rate").unwrap() {
+                    24 => Some(ContentRate::Hz24),
+                    30 => Some(ContentRate::Hz30),
+                    60 => Some(ContentRate::Hz60),
+                    _ => None,
+                };
+                gst::info!(
+                    CAT,
+                    obj: pad,
+                    "'ocvrhint' event found, rate {:?}",
+                    data.content_rate
+                );
+                if data.content_rate.is_some() && data.sync_state.is_idle() {
+                    data.method_overwrite();
+                    data.sync_state = SyncState::sync(data.content_rate.unwrap());
+                }
+
+                true
+            } else {
+                self.sinkpad.push_event(event)
+            }
+        } else {
+            self.sinkpad.push_event(event)
+        }
+    }
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for OcvrCtrl {
+    const NAME: &'static str = "GstOcvrCtrl";
+    type Type = super::OcvrCtrl;
+    type ParentType = gst::Element;
+
+    fn with_class(klass: &Self::Class) -> Self {
+        let templ = klass.pad_template("sink").unwrap();
+        let sinkpad = gst::Pad::builder_from_template(&templ)
+            .chain_function(|pad, parent, buffer| {
+                OcvrCtrl::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::FlowError::Error),
+                    |ocvr_monitor| ocvr_monitor.sink_chain(pad, buffer),
+                )
+            })
+            .event_function(|pad, parent, event| {
+                OcvrCtrl::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |ocvr_monitor| ocvr_monitor.sink_event(pad, event),
+                )
+            })
+            .build();
+
+        let templ = klass.pad_template("src").unwrap();
+        let srcpad = gst::Pad::builder_from_template(&templ)
+            .event_function(|pad, parent, event| {
+                OcvrCtrl::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |ocvr_monitor| ocvr_monitor.src_event(pad, event),
+                )
+            })
+            .build();
+
+        let settings: Mutex<Settings> = Default::default();
+        let data: Mutex<Data> = Default::default();
+
+        Self {
+            srcpad,
+            sinkpad,
+            settings,
+            data,
+        }
+    }
+}
+
+impl ObjectImpl for OcvrCtrl {
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        let obj = self.obj();
+        obj.add_pad(&self.sinkpad).unwrap();
+        obj.add_pad(&self.srcpad).unwrap();
+    }
+
+    fn properties() -> &'static [glib::ParamSpec] {
+        // Metadata for the properties
+        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+            vec![
+                glib::ParamSpecEnum::builder::<ContentRate>("content-rate")
+                    .nick("Content rate")
+                    .blurb("Framerate to detect")
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecFlags::builder::<CaptureRate>("capture-rates")
+                    .nick("Capture rates")
+                    .blurb("Sink pad framerates to check")
+                    .default_value(CaptureRate {
+                        bits: DEFAULT_CAPTURE_RATES.bits(),
+                    })
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecEnum::builder::<Method>("method")
+                    .nick("Check method")
+                    .blurb("Method to check for duplicate frames")
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("threshold")
+                    .nick("Threshold")
+                    .blurb("Compare threshold for method 'fuzzy'")
+                    .minimum(1)
+                    .maximum((u8::MAX - 1) as u32)
+                    .default_value(DEFAULT_THRESHOLD)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecEnum::builder::<Tolerance>("tolerance")
+                    .nick("Check tolerance")
+                    .blurb("How to handle failed comparisons")
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("retries")
+                    .nick("Times to retries check")
+                    .blurb("Retry times for tolerance 'lazy' or 'strict'")
+                    .minimum(0)
+                    .maximum(100)
+                    .default_value(DEFAULT_RETRIES)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("rows")
+                    .nick("Rows to consider")
+                    .blurb("Number of pixel rows considered for 'fuzzy' compare")
+                    .minimum(0)
+                    .maximum(u32::MAX - 1)
+                    .default_value(DEFAULT_ROWS)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecBoolean::builder("drop")
+                    .nick("Make 30Hz from 60Hz")
+                    .blurb("Change 60Hz capture rate to 30Hz always")
+                    .default_value(DEFAULT_DROP)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecBoolean::builder("send-caps")
+                    .nick("Send caps event on rate change")
+                    .blurb("Send caps event downstream on content rate change")
+                    .default_value(DEFAULT_SEND_CAPS)
+                    .mutable_playing()
+                    .build(),
+            ]
+        });
+
+        PROPERTIES.as_ref()
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        let mut settings = self.settings.lock().unwrap();
+        match pspec.name() {
+            "content-rate" => {
+                let rate = value.get().expect("type checked upstream");
+                settings.content_rate = rate;
+                let mut data = self.data.lock().unwrap();
+                data.sync_state = SyncState::sync(rate);
+            }
+            "capture-rates" => {
+                let rates = value.get().expect("type checked upstream");
+                settings.capture_rates = rates;
+            }
+            "method" => {
+                let method = value.get().expect("type checked upstream");
+                settings.method = method;
+            }
+            "threshold" => {
+                let threshold = value.get().expect("type checked upstream");
+                settings.threshold = threshold;
+            }
+            "tolerance" => {
+                let tolerance = value.get().expect("type checked upstream");
+                settings.tolerance = tolerance;
+            }
+            "retries" => {
+                let retries = value.get().expect("type checked upstream");
+                settings.retries = retries;
+            }
+            "rows" => {
+                let rows = value.get().expect("type checked upstream");
+                settings.rows = rows;
+            }
+            "drop" => {
+                let drop = value.get().expect("type checked upstream");
+                settings.drop = drop;
+            }
+            "send-caps" => {
+                let sc = value.get().expect("type checked upstream");
+                settings.send_caps = sc;
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        let settings = self.settings.lock().unwrap();
+        match pspec.name() {
+            "content-rate" => settings.content_rate.to_value(),
+            "capture-rates" => settings.capture_rates.to_value(),
+            "method" => settings.method.to_value(),
+            "threshold" => (settings.threshold).to_value(),
+            "tolerance" => settings.tolerance.to_value(),
+            "retries" => (settings.retries).to_value(),
+            "rows" => (settings.rows).to_value(),
+            "drop" => settings.drop.to_value(),
+            "send-caps" => settings.send_caps.to_value(),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+impl GstObjectImpl for OcvrCtrl {}
+
+impl ElementImpl for OcvrCtrl {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+            gst::subclass::ElementMetadata::new(
+                "Original content video rate controller",
+                "Parser/Video",
+                "Precise check estimated framerate",
+                "Jochen Henneberg <jh@henneberg-systemdesign.com>",
+            )
+        });
+
+        Some(&*ELEMENT_METADATA)
+    }
+
+    fn pad_templates() -> &'static [gst::PadTemplate] {
+        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+            let caps = gst::Caps::builder("video/x-raw")
+                .field(
+                    "format",
+                    gst::List::new([VideoFormat::I420.to_str(), VideoFormat::Nv12.to_str()]),
+                )
+                .build();
+
+            let src_pad_template = gst::PadTemplate::new(
+                "src",
+                gst::PadDirection::Src,
+                gst::PadPresence::Always,
+                &caps,
+            )
+            .unwrap();
+
+            let sink_pad_template = gst::PadTemplate::new(
+                "sink",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Always,
+                &caps,
+            )
+            .unwrap();
+
+            vec![src_pad_template, sink_pad_template]
+        });
+
+        PAD_TEMPLATES.as_ref()
+    }
+}

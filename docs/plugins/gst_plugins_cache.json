@@ -3709,6 +3709,381 @@
         "tracers": {},
         "url": "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
     },
+    "ocvr": {
+        "description": "Original content video rate detector",
+        "elements": {
+            "ocvrctrl": {
+                "author": "Jochen Henneberg <jh@henneberg-systemdesign.com>",
+                "description": "Precise check estimated framerate",
+                "hierarchy": [
+                    "GstOcvrCtrl",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Parser/Video",
+                "long-name": "Original content video rate controller",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "video/x-raw:\n         format: { I420, NV12 }\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "video/x-raw:\n         format: { I420, NV12 }\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "properties": {
+                    "capture-rates": {
+                        "blurb": "Sink pad framerates to check",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "60Hz+50Hz",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "OcvrCtrlCaptureRate",
+                        "writable": true
+                    },
+                    "content-rate": {
+                        "blurb": "Framerate to detect",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "Hint (6)",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "GstOcvrCtrlContentRate",
+                        "writable": true
+                    },
+                    "drop": {
+                        "blurb": "Change 60Hz capture rate to 30Hz always",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
+                    "method": {
+                        "blurb": "Method to check for duplicate frames",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "Auto (0)",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "GstOcvrCtrlMethod",
+                        "writable": true
+                    },
+                    "retries": {
+                        "blurb": "Retry times for tolerance 'lazy' or 'strict'",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "3",
+                        "max": "100",
+                        "min": "0",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "guint",
+                        "writable": true
+                    },
+                    "rows": {
+                        "blurb": "Number of pixel rows considered for 'fuzzy' compare",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "10",
+                        "max": "-2",
+                        "min": "0",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "guint",
+                        "writable": true
+                    },
+                    "send-caps": {
+                        "blurb": "Send caps event downstream on content rate change",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "true",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
+                    "threshold": {
+                        "blurb": "Compare threshold for method 'fuzzy'",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "1",
+                        "max": "254",
+                        "min": "1",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "guint",
+                        "writable": true
+                    },
+                    "tolerance": {
+                        "blurb": "How to handle failed comparisons",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "Strict (1)",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "GstOcvrCtrlTolerance",
+                        "writable": true
+                    }
+                },
+                "rank": "none"
+            },
+            "ocvrhint": {
+                "author": "Jochen Henneberg <jh@henneberg-systemdesign.com>",
+                "description": "Detects the original content framerate from encoded video",
+                "hierarchy": [
+                    "GstOcvrHint",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Parser/Video",
+                "long-name": "Original content video rate hinter",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "video/x-h265:\n      alignment: au\nvideo/x-h264:\n      alignment: au\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "video/x-h265:\n      alignment: au\nvideo/x-h264:\n      alignment: au\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "properties": {
+                    "capture-rates": {
+                        "blurb": "Sink pad framerates to check",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "60Hz+50Hz",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "OcvrHintCaptureRate",
+                        "writable": true
+                    },
+                    "content-rates": {
+                        "blurb": "Framerates to detect",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "60Hz+50Hz+30Hz+25Hz+24Hz",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "OcvrHintContentRate",
+                        "writable": true
+                    },
+                    "threshold": {
+                        "blurb": "Framerate detect threshold",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "0.9",
+                        "max": "1",
+                        "min": "0",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "gfloat",
+                        "writable": true
+                    },
+                    "window-size": {
+                        "blurb": "Multiple of GOP size",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "4",
+                        "max": "100",
+                        "min": "1",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "guint",
+                        "writable": true
+                    }
+                },
+                "rank": "none"
+            }
+        },
+        "filename": "gstocvr",
+        "license": "MPL",
+        "other-types": {
+            "GstOcvrCtrlContentRate": {
+                "kind": "enum",
+                "values": [
+                    {
+                        "desc": "Search for matching rate",
+                        "name": "Auto",
+                        "value": "0"
+                    },
+                    {
+                        "desc": "Content rate 24Hz (for 60Hz capture rate only)",
+                        "name": "24Hz",
+                        "value": "1"
+                    },
+                    {
+                        "desc": "Content rate 25Hz (for 50Hz capture rate only)",
+                        "name": "25Hz",
+                        "value": "2"
+                    },
+                    {
+                        "desc": "Content rate 30Hz",
+                        "name": "30Hz",
+                        "value": "3"
+                    },
+                    {
+                        "desc": "Content rate 50Hz (for 50Hz capture rate only)",
+                        "name": "50Hz",
+                        "value": "4"
+                    },
+                    {
+                        "desc": "Content rate 60Hz (for 60Hz capture rate only)",
+                        "name": "60Hz",
+                        "value": "5"
+                    },
+                    {
+                        "desc": "From 'ocvrhint'",
+                        "name": "Hint",
+                        "value": "6"
+                    }
+                ]
+            },
+            "GstOcvrCtrlMethod": {
+                "kind": "enum",
+                "values": [
+                    {
+                        "desc": "Fallback to fuzzy if accurate fails.",
+                        "name": "Auto",
+                        "value": "0"
+                    },
+                    {
+                        "desc": "Accurate compare by checksum.",
+                        "name": "Accurate",
+                        "value": "1"
+                    },
+                    {
+                        "desc": "Fuzzy compare.",
+                        "name": "Fuzzy",
+                        "value": "2"
+                    }
+                ]
+            },
+            "GstOcvrCtrlTolerance": {
+                "kind": "enum",
+                "values": [
+                    {
+                        "desc": "Resync unless content rate is reset.",
+                        "name": "Lazy",
+                        "value": "0"
+                    },
+                    {
+                        "desc": "Strict compare and resync 'retries' times.",
+                        "name": "Strict",
+                        "value": "1"
+                    },
+                    {
+                        "desc": "Like 'Strict' but ignore retries.",
+                        "name": "Paranoid",
+                        "value": "2"
+                    }
+                ]
+            },
+            "OcvrCtrlCaptureRate": {
+                "kind": "flags",
+                "values": [
+                    {
+                        "desc": "Capture rate 50Hz",
+                        "name": "50Hz",
+                        "value": "0x00000001"
+                    },
+                    {
+                        "desc": "Capture rate 60Hz",
+                        "name": "60Hz",
+                        "value": "0x00000002"
+                    }
+                ]
+            },
+            "OcvrHintCaptureRate": {
+                "kind": "flags",
+                "values": [
+                    {
+                        "desc": "Capture rate 50Hz",
+                        "name": "50Hz",
+                        "value": "0x00000001"
+                    },
+                    {
+                        "desc": "Capture rate 60Hz",
+                        "name": "60Hz",
+                        "value": "0x00000002"
+                    }
+                ]
+            },
+            "OcvrHintContentRate": {
+                "kind": "flags",
+                "values": [
+                    {
+                        "desc": "Content rate 24Hz (60Hz capture rate only)",
+                        "name": "24Hz",
+                        "value": "0x00000001"
+                    },
+                    {
+                        "desc": "Content rate 25Hz (50Hz capture rate only)",
+                        "name": "25Hz",
+                        "value": "0x00000002"
+                    },
+                    {
+                        "desc": "Content rate 30Hz",
+                        "name": "30Hz",
+                        "value": "0x00000004"
+                    },
+                    {
+                        "desc": "Content rate 50Hz (50Hz capture rate only)",
+                        "name": "50Hz",
+                        "value": "0x00000008"
+                    },
+                    {
+                        "desc": "Content rate 60Hz (60Hz capture rate only)",
+                        "name": "60Hz",
+                        "value": "0x00000010"
+                    }
+                ]
+            }
+        },
+        "package": "gst-plugin-ocvr",
+        "source": "gst-plugin-ocvr",
+        "tracers": {},
+        "url": "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs"
+    },
     "raptorq": {
         "description": "GStreamer RaptorQ FEC Plugin",
         "elements": {
