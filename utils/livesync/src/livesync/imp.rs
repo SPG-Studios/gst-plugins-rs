@@ -753,6 +753,118 @@ impl LiveSync {
         }
     }
 
+    fn transform_caps(
+        &self,
+        direction: gst::PadDirection,
+        caps: &gst::Caps,
+        filter: Option<&gst::Caps>,
+    ) -> Option<gst::Caps> {
+        let other_caps = if direction == gst::PadDirection::Src {
+            let mut caps = caps.clone();
+            let mut x = gst::Caps::new_empty();
+
+            for s in caps.make_mut().iter_mut() {
+                if let Ok(Some(framerate)) = s.get_optional::<gst::Fraction>("framerate") {
+                    if framerate.numer() != 0 {
+                        let mut f = s.to_owned();
+                        f.set("framerate", gst::Fraction::new(0, 1));
+                        f.set("max-framerate", framerate);
+                        x.merge_structure(f);
+                    }
+                }
+            }
+
+            caps.merge(x);
+            caps
+        } else {
+            let mut caps = caps.clone();
+            let mut x = gst::Caps::new_empty();
+
+            for s in caps.make_mut().iter_mut() {
+                if let Ok(Some(framerate)) = s.get_optional::<gst::Fraction>("framerate") {
+                    if framerate.numer() == 0 && framerate.denom() == 1 {
+                        let mut f = s.to_owned();
+                        if let Ok(Some(r)) = f.get_optional::<gst::Fraction>("max-framerate") {
+                            f.set("framerate", r);
+                            f.remove_field("max-framerate");
+                        } else {
+                            f.remove_field("framerate");
+                        }
+                        x.merge_structure(f);
+                    }
+                }
+            }
+
+            caps.merge(x);
+            caps
+        };
+
+        gst::debug!(
+            CAT,
+            imp: self,
+            "Transformed caps from {} to {} in direction {:?}",
+            caps,
+            other_caps,
+            direction
+        );
+
+        if let Some(filter) = filter {
+            Some(filter.intersect_with_mode(&other_caps, gst::CapsIntersectMode::First))
+        } else {
+            Some(other_caps)
+        }
+    }
+
+    fn find_transform(&self, pad: &gst::Pad, caps: &gst::Caps) -> Option<gst::Caps> {
+        let otherpad = if *pad == self.srcpad {
+            &self.sinkpad
+        } else {
+            &self.srcpad
+        };
+
+        let othercaps = self.transform_caps(pad.direction(), caps, None);
+
+        let peercaps = otherpad.peer_query_caps(othercaps.as_ref());
+
+        let mut othercaps = if let Some(c) = othercaps {
+            peercaps.intersect_with_mode(&c, gst::CapsIntersectMode::First)
+        } else {
+            peercaps
+        };
+        othercaps.fixate();
+
+        gst::debug!(CAT, imp: self, "Input caps were {:?}, and got final caps {:?}", caps, othercaps);
+
+        Some(othercaps)
+    }
+
+    fn accept_caps(&self, direction: gst::PadDirection, caps: &gst::Caps) -> bool {
+        let other_caps = self.transform_caps(direction, caps, None);
+        if let Some(o) = other_caps {
+            !o.is_empty()
+        } else {
+            true
+        }
+    }
+
+    fn query_caps(&self, pad: &gst::Pad, filter: Option<&gst::Caps>) -> Option<gst::Caps> {
+        let otherpad = if *pad == self.srcpad {
+            &self.sinkpad
+        } else {
+            &self.srcpad
+        };
+
+        let peerfilter = if let Some(f) = filter {
+            self.transform_caps(pad.direction(), f, None)
+        } else {
+            None
+        };
+
+        let peercaps = otherpad.peer_query_caps(peerfilter.as_ref());
+
+        self.transform_caps(otherpad.direction(), &peercaps, filter)
+    }
+
     fn sink_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         if query.is_serialized() {
             let (sender, receiver) = mpsc::sync_channel(1);
@@ -772,7 +884,21 @@ impl LiveSync {
             // If the sender gets dropped, we will also unblock
             receiver.recv().unwrap_or(false)
         } else {
-            gst::Pad::query_default(pad, Some(&*self.obj()), query)
+            match query.view_mut() {
+                gst::QueryViewMut::Caps(q) => {
+                    let caps = self.query_caps(pad, q.filter_owned().as_ref());
+                    q.set_result(&caps);
+                    true
+                }
+                gst::QueryViewMut::AcceptCaps(q) => {
+                    let ret = self.accept_caps(gst::PadDirection::Src, &q.caps_owned());
+
+                    q.set_result(ret);
+
+                    true
+                }
+                _ => gst::Pad::query_default(pad, Some(&*self.obj()), query),
+            }
         }
     }
 
@@ -795,6 +921,12 @@ impl LiveSync {
                 q.set(true, min + latency, max.map(|max| max + latency));
 
                 state.upstream_latency = Some(min);
+                true
+            }
+
+            gst::QueryViewMut::Caps(q) => {
+                let caps = self.query_caps(pad, q.filter_owned().as_ref());
+                q.set_result(&caps);
                 true
             }
 
@@ -1074,7 +1206,7 @@ impl LiveSync {
                     }
 
                     gst::EventView::Caps(e) => {
-                        state.pending_caps = Some(e.caps_owned());
+                        state.pending_caps = self.find_transform(&self.sinkpad, &e.caps_owned());
                         push = false;
                     }
 
