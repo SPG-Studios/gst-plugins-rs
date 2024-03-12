@@ -524,12 +524,18 @@ if pkg_config.found()
   extra_env += {'PKG_CONFIG': pkg_config.full_path()}
 endif
 
-pkg_config_path = get_option('pkg_config_path')
+# Prepend any Meson-provided dependencies (such as the GStreamer
+# global project's)
+pkg_config_path = [
+  meson.global_build_root() / 'meson-uninstalled',
+  meson.project_build_root() / 'meson-uninstalled',
+]
+if get_option('pkg_config_path').length() > 0
+  pkg_config_path += [get_option('pkg_config_path')]
+endif
+
 if pkg_config_path.length() > 0
-  pathsep = ':'
-  if host_system == 'windows'
-    pathsep = ';'
-  endif
+  pathsep = host_system == 'windows' ? ';' : ':'
   extra_env += {'PKG_CONFIG_PATH': pathsep.join(pkg_config_path)}
 endif
 
