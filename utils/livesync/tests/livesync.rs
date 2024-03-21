@@ -95,6 +95,31 @@ fn test_audio_nonsinglesegment() {
     test_audio(false);
 }
 
+#[test]
+fn test_video_negotiate_framerate_fixed() {
+    init();
+
+    let mut h = gst_check::Harness::new("livesync");
+
+    let src_caps = gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(25, 1))
+        .build();
+    h.set_src_caps(src_caps.clone());
+
+    h.play();
+
+    let buffer = gst::Buffer::new();
+    assert!(h.push_and_pull(buffer).is_ok());
+
+    let current_caps = h
+        .sinkpad()
+        .expect("harness has no sinkpad")
+        .current_caps()
+        .expect("current caps missing");
+
+    assert_eq!(current_caps, src_caps);
+}
+
 fn test_video(singlesegment: bool) {
     init();
 
