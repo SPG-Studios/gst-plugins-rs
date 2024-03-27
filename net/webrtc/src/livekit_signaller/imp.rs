@@ -43,7 +43,7 @@ struct Settings {
     auth_token: Option<String>,
     role: WebRTCSignallerRole,
     producer_peer_id: Option<String>,
-    excluded_produder_peer_ids: Vec<String>,
+    excluded_producer_peer_ids: Vec<String>,
     timeout: u32,
 }
 
@@ -59,7 +59,7 @@ impl Default for Settings {
             auth_token: None,
             role: WebRTCSignallerRole::default(),
             producer_peer_id: None,
-            excluded_produder_peer_ids: vec![],
+            excluded_producer_peer_ids: vec![],
             timeout: DEFAULT_TRACK_PUBLISH_TIMEOUT,
         }
     }
@@ -133,7 +133,7 @@ impl Signaller {
         self.settings
             .lock()
             .unwrap()
-            .excluded_produder_peer_ids
+            .excluded_producer_peer_ids
             .is_empty()
     }
 
@@ -141,7 +141,7 @@ impl Signaller {
         self.settings
             .lock()
             .unwrap()
-            .excluded_produder_peer_ids
+            .excluded_producer_peer_ids
             .iter()
             .any(|id| id == peer_id)
     }
@@ -899,7 +899,7 @@ impl ObjectImpl for Signaller {
             "role" => settings.role = value.get().unwrap(),
             "producer-peer-id" => settings.producer_peer_id = value.get().unwrap(),
             "excluded-producer-peer-ids" => {
-                settings.excluded_produder_peer_ids = value
+                settings.excluded_producer_peer_ids = value
                     .get::<gst::ArrayRef>()
                     .expect("type checked upstream")
                     .as_slice()
@@ -943,7 +943,7 @@ impl ObjectImpl for Signaller {
             "role" => settings.role.to_value(),
             "producer-peer-id" => settings.producer_peer_id.to_value(),
             "excluded-producer-peer-ids" => {
-                gst::Array::new(&settings.excluded_produder_peer_ids).to_value()
+                gst::Array::new(&settings.excluded_producer_peer_ids).to_value()
             }
             _ => unimplemented!(),
         }
