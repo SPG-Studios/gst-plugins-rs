@@ -1115,7 +1115,7 @@ impl HlsSink3 {
     }
 }
 
-struct HlsCmafSinkSettings {
+struct HlsMp4BaseSinkSettings {
     init_location: String,
     location: String,
     target_duration: u32,
@@ -1123,21 +1123,11 @@ struct HlsCmafSinkSettings {
     sync: bool,
     latency: gst::ClockTime,
 
-    cmafmux: gst::Element,
     appsink: gst_app::AppSink,
 }
 
-impl Default for HlsCmafSinkSettings {
+impl Default for HlsMp4BaseSinkSettings {
     fn default() -> Self {
-        let cmafmux = gst::ElementFactory::make("cmafmux")
-            .name("muxer")
-            .property(
-                "fragment-duration",
-                gst::ClockTime::from_seconds(DEFAULT_TARGET_DURATION as u64),
-            )
-            .property("latency", DEFAULT_LATENCY)
-            .build()
-            .expect("Could not make element cmafmux");
         let appsink = gst_app::AppSink::builder()
             .buffer_list(true)
             .sync(DEFAULT_SYNC)
@@ -1151,14 +1141,13 @@ impl Default for HlsCmafSinkSettings {
             playlist_type: None,
             sync: DEFAULT_SYNC,
             latency: DEFAULT_LATENCY,
-            cmafmux,
             appsink,
         }
     }
 }
 
 #[derive(Default)]
-struct HlsCmafSinkState {
+struct HlsMp4BaseSinkState {
     init_idx: u32,
     segment_idx: u32,
     init_segment: Option<m3u8_rs::Map>,
@@ -1166,19 +1155,56 @@ struct HlsCmafSinkState {
 }
 
 #[derive(Default)]
-pub struct HlsCmafSink {
-    settings: Mutex<HlsCmafSinkSettings>,
-    state: Mutex<HlsCmafSinkState>,
+pub struct HlsMp4BaseSink {
+    settings: Mutex<HlsMp4BaseSinkSettings>,
+    state: Mutex<HlsMp4BaseSinkState>,
+}
+
+#[repr(C)]
+pub struct HlsMp4BaseSinkClass {
+    pub parent_class: <HlsBaseSink as ObjectSubclass>::Class,
+    pub get_mux_element: fn(&super::HlsMp4BaseSink) -> gst::Element,
+}
+
+unsafe impl ClassStruct for HlsMp4BaseSinkClass {
+    type Type = HlsMp4BaseSink;
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for HlsCmafSink {
-    const NAME: &'static str = "GstHlsCmafSink";
-    type Type = super::HlsCmafSink;
+impl ObjectSubclass for HlsMp4BaseSink {
+    const NAME: &'static str = "GstHlsMp4BaseSink";
+    type Type = super::HlsMp4BaseSink;
     type ParentType = super::HlsBaseSink;
+    type Class = HlsMp4BaseSinkClass;
+
+    fn class_init(klass: &mut Self::Class) {
+        klass.get_mux_element = |_| panic!("get_mux_element virtual method must be overriden!");
+    }
 }
 
-impl ObjectImpl for HlsCmafSink {
+trait HlsMp4BaseSinkImpl: HlsBaseSinkImpl {
+    fn mux_element(&self) -> gst::Element;
+}
+
+unsafe impl<T: HlsMp4BaseSinkImpl> IsSubclassable<T> for super::HlsMp4BaseSink {
+    fn class_init(class: &mut glib::Class<Self>) {
+        Self::parent_class_init::<T>(class.upcast_ref_mut());
+        let klass = class.as_mut();
+        klass.get_mux_element =
+            |obj| unsafe { obj.unsafe_cast_ref::<T::Type>().imp().mux_element() };
+    }
+}
+
+impl HlsMp4BaseSinkImpl for HlsMp4BaseSink {
+    fn mux_element(&self) -> gst::Element {
+        let obj = self.obj();
+        (obj.class().as_ref().get_mux_element)(&obj)
+    }
+}
+
+impl HlsBaseSinkImpl for HlsMp4BaseSink {}
+
+impl ObjectImpl for HlsMp4BaseSink {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
             vec![
@@ -1240,7 +1266,7 @@ impl ObjectImpl for HlsCmafSink {
             }
             "target-duration" => {
                 settings.target_duration = value.get().expect("type checked upstream");
-                settings.cmafmux.set_property(
+                self.mux_element().set_property(
                     "fragment-duration",
                     gst::ClockTime::from_seconds(settings.target_duration as u64),
                 );
@@ -1257,7 +1283,7 @@ impl ObjectImpl for HlsCmafSink {
             }
             "latency" => {
                 settings.latency = value.get().expect("type checked upstream");
-                settings.cmafmux.set_property("latency", settings.latency);
+                self.mux_element().set_property("latency", settings.latency);
             }
             _ => unimplemented!(),
         };
@@ -1307,15 +1333,22 @@ impl ObjectImpl for HlsCmafSink {
 
         let obj = self.obj();
         let settings = self.settings.lock().unwrap();
+        let mux = self.mux_element();
 
-        obj.add_many([&settings.cmafmux, settings.appsink.upcast_ref()])
-            .unwrap();
-        settings.cmafmux.link(&settings.appsink).unwrap();
+        obj.add_many([&mux, settings.appsink.upcast_ref()]).unwrap();
+        mux.link(&settings.appsink).unwrap();
 
-        let sinkpad = settings.cmafmux.static_pad("sink").unwrap();
-        let gpad = gst::GhostPad::with_target(&sinkpad).unwrap();
-
-        obj.add_pad(&gpad).unwrap();
+        for tpl in mux.pad_template_list() {
+            if tpl.presence() != gst::PadPresence::Always {
+                continue;
+            }
+            if tpl.direction() != gst::PadDirection::Sink {
+                continue;
+            }
+            let sinkpad = mux.static_pad(tpl.name_template()).unwrap();
+            let gpad = gst::GhostPad::with_target(&sinkpad).unwrap();
+            obj.add_pad(&gpad).unwrap();
+        }
 
         let self_weak = self.downgrade();
         settings.appsink.set_callbacks(
@@ -1333,57 +1366,24 @@ impl ObjectImpl for HlsCmafSink {
     }
 }
 
-impl GstObjectImpl for HlsCmafSink {}
+impl GstObjectImpl for HlsMp4BaseSink {}
 
-impl ElementImpl for HlsCmafSink {
-    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
-            gst::subclass::ElementMetadata::new(
-                "HTTP Live Streaming CMAF Sink",
-                "Sink/Muxer",
-                "HTTP Live Streaming CMAF Sink",
-                "Seungha Yang <seungha@centricular.com>",
-            )
-        });
-
-        Some(&*ELEMENT_METADATA)
-    }
-
-    fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
-            let pad_template = gst::PadTemplate::new(
-                "sink",
-                gst::PadDirection::Sink,
-                gst::PadPresence::Always,
-                &[
-                    gst::Structure::builder("video/x-h264")
-                        .field("stream-format", gst::List::new(["avc", "avc3"]))
-                        .field("alignment", "au")
-                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
-                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
-                        .build(),
-                    gst::Structure::builder("video/x-h265")
-                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
-                        .field("alignment", "au")
-                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
-                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
-                        .build(),
-                    gst::Structure::builder("audio/mpeg")
-                        .field("mpegversion", 4i32)
-                        .field("stream-format", "raw")
-                        .field("channels", gst::IntRange::new(1, u16::MAX as i32))
-                        .field("rate", gst::IntRange::new(1, i32::MAX))
-                        .build(),
-                ]
-                .into_iter()
-                .collect::<gst::Caps>(),
-            )
-            .unwrap();
-
-            vec![pad_template]
-        });
-
-        PAD_TEMPLATES.as_ref()
+impl ElementImpl for HlsMp4BaseSink {
+    fn request_new_pad(
+        &self,
+        _templ: &gst::PadTemplate,
+        name: Option<&str>,
+        caps: Option<&gst::Caps>,
+    ) -> Option<gst::Pad> {
+        let mux = self.mux_element();
+        let mux_tpl = mux.pad_template("sink_%u").unwrap();
+        let mux_sink_pad = mux.request_pad(&mux_tpl, name, caps)?;
+        let sink_pad = gst::GhostPad::builder(gst::PadDirection::Sink)
+            .name(mux_sink_pad.name())
+            .build();
+        sink_pad.set_target(Some(&mux_sink_pad)).unwrap();
+        self.obj().add_pad(&sink_pad).unwrap();
+        Some(sink_pad.upcast())
     }
 
     fn change_state(
@@ -1408,16 +1408,14 @@ impl ElementImpl for HlsCmafSink {
     }
 }
 
-impl BinImpl for HlsCmafSink {}
+impl BinImpl for HlsMp4BaseSink {}
 
-impl HlsBaseSinkImpl for HlsCmafSink {}
-
-impl HlsCmafSink {
+impl HlsMp4BaseSink {
     fn start(&self, target_duration: u32, playlist_type: Option<MediaPlaylistType>) -> Playlist {
         gst::info!(CAT, imp: self, "Starting");
 
         let mut state = self.state.lock().unwrap();
-        *state = HlsCmafSinkState::default();
+        *state = HlsMp4BaseSinkState::default();
 
         let (turn_vod, playlist_type) = if playlist_type == Some(MediaPlaylistType::Vod) {
             (true, Some(MediaPlaylistType::Event))
@@ -1598,3 +1596,217 @@ impl HlsCmafSink {
         self.add_segment(dur.mseconds() as f32 / 1_000f32, running_time, location)
     }
 }
+
+pub struct HlsCmafSink {
+    cmafmux: gst::Element,
+}
+
+impl Default for HlsCmafSink {
+    fn default() -> Self {
+        let cmafmux = gst::ElementFactory::make("cmafmux")
+            .name("muxer")
+            .property(
+                "fragment-duration",
+                gst::ClockTime::from_seconds(DEFAULT_TARGET_DURATION as u64),
+            )
+            .property("latency", DEFAULT_LATENCY)
+            .build()
+            .expect("Could not make element cmafmux");
+        Self { cmafmux }
+    }
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for HlsCmafSink {
+    const NAME: &'static str = "GstCmafSink";
+    type Type = super::HlsCmafSink;
+    type ParentType = super::HlsMp4BaseSink;
+}
+
+impl HlsMp4BaseSinkImpl for HlsCmafSink {
+    fn mux_element(&self) -> gst::Element {
+        self.cmafmux.clone()
+    }
+}
+
+impl HlsBaseSinkImpl for HlsCmafSink {}
+impl BinImpl for HlsCmafSink {}
+
+impl ElementImpl for HlsCmafSink {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+            gst::subclass::ElementMetadata::new(
+                "HTTP Live Streaming CMAF Sink",
+                "Sink/Muxer",
+                "HTTP Live Streaming CMAF Sink",
+                "Seungha Yang <seungha@centricular.com>",
+            )
+        });
+
+        Some(&*ELEMENT_METADATA)
+    }
+
+    fn pad_templates() -> &'static [gst::PadTemplate] {
+        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+            let pad_template = gst::PadTemplate::new(
+                "sink",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Always,
+                &[
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-h265")
+                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("audio/mpeg")
+                        .field("mpegversion", 4i32)
+                        .field("stream-format", "raw")
+                        .field("channels", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("rate", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                ]
+                .into_iter()
+                .collect::<gst::Caps>(),
+            )
+            .unwrap();
+
+            vec![pad_template]
+        });
+
+        PAD_TEMPLATES.as_ref()
+    }
+}
+impl GstObjectImpl for HlsCmafSink {}
+impl ObjectImpl for HlsCmafSink {}
+
+pub struct HlsFmp4Sink {
+    fmp4mux: gst::Element,
+}
+
+impl Default for HlsFmp4Sink {
+    fn default() -> Self {
+        let fmp4mux = gst::ElementFactory::make("isofmp4mux")
+            .name("muxer")
+            .property(
+                "fragment-duration",
+                gst::ClockTime::from_seconds(DEFAULT_TARGET_DURATION as u64),
+            )
+            .property("latency", DEFAULT_LATENCY)
+            .build()
+            .expect("Could not make element fmp4mux");
+        Self { fmp4mux }
+    }
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for HlsFmp4Sink {
+    const NAME: &'static str = "GstFmp4Sink";
+    type Type = super::HlsFmp4Sink;
+    type ParentType = super::HlsMp4BaseSink;
+}
+
+impl HlsMp4BaseSinkImpl for HlsFmp4Sink {
+    fn mux_element(&self) -> gst::Element {
+        self.fmp4mux.clone()
+    }
+}
+
+impl HlsBaseSinkImpl for HlsFmp4Sink {}
+impl BinImpl for HlsFmp4Sink {}
+
+impl ElementImpl for HlsFmp4Sink {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+            gst::subclass::ElementMetadata::new(
+                "HTTP Live Streaming fMP4 Sink",
+                "Sink/Muxer",
+                "HTTP Live Streaming fMP4 Sink",
+                "Simonas Kazlauskas <gstreamer@kazlauskas.me>",
+            )
+        });
+
+        Some(&*ELEMENT_METADATA)
+    }
+
+    fn pad_templates() -> &'static [gst::PadTemplate] {
+        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+            let pad_template = gst::PadTemplate::new(
+                "sink_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-h265")
+                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-vp8")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-vp9")
+                        .field("profile", gst::List::new(["0", "1", "2", "3"]))
+                        .field("chroma-format", gst::List::new(["4:2:0", "4:2:2", "4:4:4"]))
+                        .field("bit-depth-luma", gst::List::new([8u32, 10u32, 12u32]))
+                        .field("bit-depth-chroma", gst::List::new([8u32, 10u32, 12u32]))
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-av1")
+                        .field("stream-format", "obu-stream")
+                        .field("alignment", "tu")
+                        .field("profile", gst::List::new(["main", "high", "professional"]))
+                        .field(
+                            "chroma-format",
+                            gst::List::new(["4:0:0", "4:2:0", "4:2:2", "4:4:4"]),
+                        )
+                        .field("bit-depth-luma", gst::List::new([8u32, 10u32, 12u32]))
+                        .field("bit-depth-chroma", gst::List::new([8u32, 10u32, 12u32]))
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("audio/mpeg")
+                        .field("mpegversion", 4i32)
+                        .field("stream-format", "raw")
+                        .field("channels", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("rate", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                    gst::Structure::builder("audio/x-opus")
+                        .field("channel-mapping-family", gst::IntRange::new(0i32, 255))
+                        .field("channels", gst::IntRange::new(1i32, 8))
+                        .field("rate", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                    gst::Structure::builder("audio/x-flac")
+                        .field("framed", true)
+                        .field("channels", gst::IntRange::<i32>::new(1, 8))
+                        .field("rate", gst::IntRange::<i32>::new(1, 10 * u16::MAX as i32))
+                        .build(),
+                ]
+                .into_iter()
+                .collect::<gst::Caps>(),
+            )
+            .unwrap();
+
+            vec![pad_template]
+        });
+
+        PAD_TEMPLATES.as_ref()
+    }
+}
+
+impl GstObjectImpl for HlsFmp4Sink {}
+impl ObjectImpl for HlsFmp4Sink {}

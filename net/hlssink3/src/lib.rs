@@ -51,7 +51,15 @@ glib::wrapper! {
 }
 
 glib::wrapper! {
-    pub struct HlsCmafSink(ObjectSubclass<imp::HlsCmafSink>) @extends HlsBaseSink, gst::Bin, gst::Element, gst::Object;
+    pub struct HlsMp4BaseSink(ObjectSubclass<imp::HlsMp4BaseSink>) @extends HlsBaseSink, gst::Bin, gst::Element, gst::Object;
+}
+
+glib::wrapper! {
+    pub struct HlsCmafSink(ObjectSubclass<imp::HlsCmafSink>) @extends HlsMp4BaseSink, HlsBaseSink, gst::Bin, gst::Element, gst::Object;
+}
+
+glib::wrapper! {
+    pub struct HlsFmp4Sink(ObjectSubclass<imp::HlsFmp4Sink>) @extends HlsMp4BaseSink, HlsBaseSink, gst::Bin, gst::Element, gst::Object;
 }
 
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -73,6 +81,13 @@ pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         "hlscmafsink",
         gst::Rank::NONE,
         HlsCmafSink::static_type(),
+    )?;
+
+    gst::Element::register(
+        Some(plugin),
+        "hlsfmp4sink",
+        gst::Rank::NONE,
+        HlsFmp4Sink::static_type(),
     )?;
 
     Ok(())

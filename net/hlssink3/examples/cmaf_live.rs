@@ -174,7 +174,7 @@ fn setup_audio_sink(
 
 fn get_codec_string(pipeline: &gst::Pipeline, name: &str) -> String {
     let sink = pipeline.by_name(name).unwrap();
-    let pad = sink.static_pad("sink").unwrap();
+    let [pad] = <[_; 1]>::try_from(sink.sink_pads()).unwrap();
     let caps = pad.sticky_event::<gst::event::Caps>(0).unwrap();
     gst_pbutils::codec_utils_caps_get_mime_codec(caps.caps())
         .unwrap()
