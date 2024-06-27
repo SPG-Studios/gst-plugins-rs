@@ -1,0 +1,56 @@
+{
+    "id": "org.gstreamer.paintablesink.Example",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "master",
+    "sdk": "org.gnome.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "painablesink-example",
+    "finish-args": [
+        "--share=ipc",
+        "--socket=fallback-x11",
+        "--device=dri",
+        "--socket=wayland"
+    ],
+    "cleanup": [
+        "/include",
+        "/lib/pkgconfig",
+        "/man",
+        "/share/doc",
+        "/share/gtk-doc",
+        "/share/man",
+        "/share/pkgconfig",
+        "*.la",
+        "*.a"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin"
+    },
+    "modules": [
+        {
+            "name": "gst-plugins-rs",
+            "buildsystem": "simple",
+            "build-options": {
+                "env": {
+                    "CARGO_HOME": "/run/build/gst-plugins-rs/cargo",
+                    "CARGO_TARGET_DIR": "/run/build/gst-plugins-rs/cargo/target"
+                }
+            },
+            "build-commands": [
+                "cargo cinstall --offline --package gst-plugin-gtk4 --release --features=wayland,x11glx,x11egl,x11egl,gtk_v4_14 --library-type=cdylib --prefix=/app",
+                "cargo build --offline --package gst-plugin-gtk4 --release --features=wayland,x11glx,x11egl,x11egl,gtk_v4_14 --examples",
+                "mkdir -p /app/bin",
+                "mv $CARGO_TARGET_DIR/release/examples/gtksink /app/bin/painablesink-example",
+                "mv video/gtk4/examples/gtksink.py /app/bin/painablesink-example.py"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../../"
+                },
+                "gst-plugin-gtk4-sources.json"
+            ]
+        }
+    ]
+}
