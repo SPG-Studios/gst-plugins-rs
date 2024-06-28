@@ -27,6 +27,9 @@ To build and include the plugin in a Flatpak manifest, you can add the following
 
 ```json
 {
+    "finish-args": [
+        "--env=GST_PLUGIN_PATH=/app/lib64/gstreamer-1.0"
+    ],
     "sdk-extensions": [
         "org.freedesktop.Sdk.Extension.rust-stable"
     ],
