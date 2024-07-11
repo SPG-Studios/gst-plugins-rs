@@ -264,6 +264,22 @@ dependencies = [
 
 [[package]]
 name = "async-tungstenite"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cca750b12e02c389c1694d35c16539f88b8bbaa5945934fdc1b41a776688589"
+dependencies = [
+ "futures-io",
+ "futures-util",
+ "log",
+ "native-tls",
+ "pin-project-lite",
+ "tokio",
+ "tokio-native-tls",
+ "tungstenite 0.21.0",
+]
+
+[[package]]
+name = "async-tungstenite"
 version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb786dab48e539c5f17b23bac20d812ac027c01732ed7c7b58850c69a684e46c"
@@ -2850,6 +2866,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-speechmatics"
+version = "0.13.0-alpha.1"
+dependencies = [
+ "async-tungstenite 0.25.1",
+ "atomic_refcell",
+ "futures",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "http 1.1.0",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "gst-plugin-spotify"
 version = "0.14.0-alpha.1"
 dependencies = [
@@ -3021,7 +3056,7 @@ version = "0.14.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-recursion",
- "async-tungstenite",
+ "async-tungstenite 0.26.2",
  "aws-config",
  "aws-credential-types",
  "aws-sdk-kinesisvideo",
@@ -3078,7 +3113,7 @@ name = "gst-plugin-webrtc-signalling"
 version = "0.14.0-alpha.1"
 dependencies = [
  "anyhow",
- "async-tungstenite",
+ "async-tungstenite 0.26.2",
  "clap",
  "futures",
  "gst-plugin-webrtc-signalling-protocol",
@@ -3869,7 +3904,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.4.10",
+ "socket2 0.5.7",
  "tokio",
  "tower-service",
  "tracing",
@@ -7092,6 +7127,7 @@ dependencies = [
  "http 1.1.0",
  "httparse",
  "log",
+ "native-tls",
  "rand",
  "sha1",
  "thiserror",
