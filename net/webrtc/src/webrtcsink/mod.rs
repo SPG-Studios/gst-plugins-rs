@@ -73,6 +73,11 @@ glib::wrapper! {
     pub struct JanusVRWebRTCSink(ObjectSubclass<imp::janus::JanusVRWebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
 }
 
+#[cfg(feature = "cloudflare-calls")]
+glib::wrapper! {
+    pub struct CloudflareCallsWebRTCSink(ObjectSubclass<imp::cloudflare_calls::CloudflareCallsWebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum WebRTCSinkError {
     #[error("no session with id")]
@@ -228,6 +233,14 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         "janusvrwebrtcsink",
         gst::Rank::NONE,
         JanusVRWebRTCSink::static_type(),
+    )?;
+
+    #[cfg(feature = "cloudflare-calls")]
+    gst::Element::register(
+        Some(plugin),
+        "cloudflarecallswebrtcsink",
+        gst::Rank::NONE,
+        CloudflareCallsWebRTCSink::static_type(),
     )?;
 
     Ok(())

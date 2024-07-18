@@ -80,7 +80,7 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["v1_22", "aws", "janus", "livekit", "whip"]
+default = ["v1_22", "aws", "janus", "livekit", "whip", "cloudflare-calls"]
 static = []
 capi = []
 v1_22 = ["gst/v1_22", "gst-app/v1_22", "gst-video/v1_22", "gst-webrtc/v1_22", "gst-sdp/v1_22", "gst-rtp/v1_22"]
@@ -92,6 +92,7 @@ aws = ["dep:aws-config", "dep:aws-types", "dep:aws-credential-types", "dep:aws-s
 janus = ["dep:http"]
 livekit = ["dep:livekit-protocol", "dep:livekit-api"]
 whip = ["dep:async-recursion", "dep:reqwest", "dep:warp", "dep:ctrlc"]
+cloudflare-calls = ["dep:reqwest", "reqwest/json"]
 
 [package.metadata.capi]
 min_version = "0.9.21"

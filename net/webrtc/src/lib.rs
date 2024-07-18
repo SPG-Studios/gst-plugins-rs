@@ -16,6 +16,8 @@ use tokio::runtime;
 
 #[cfg(feature = "aws")]
 mod aws_kvs_signaller;
+#[cfg(feature = "cloudflare-calls")]
+mod cloudflare_calls_signaller;
 #[cfg(feature = "janus")]
 mod janusvr_signaller;
 #[cfg(feature = "livekit")]

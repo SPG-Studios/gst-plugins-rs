@@ -4882,3 +4882,54 @@ pub(super) mod janus {
         type ParentType = crate::webrtcsink::BaseWebRTCSink;
     }
 }
+
+#[cfg(feature = "cloudflare-calls")]
+pub(super) mod cloudflare_calls {
+    use super::*;
+    use crate::cloudflare_calls_signaller::CloudflareCallsProducerSignaller;
+    const DEFAULT_CLOUDFLARE_STUN_SERVER: Option<&str> = Some("stun://stun.cloudflare.com:3478");
+
+    #[derive(Default)]
+    pub struct CloudflareCallsWebRTCSink {}
+
+    impl ObjectImpl for CloudflareCallsWebRTCSink {
+        fn constructed(&self) {
+            let element = self.obj();
+            let ws = element
+                .upcast_ref::<crate::webrtcsink::BaseWebRTCSink>()
+                .imp();
+
+            let _ = ws.set_signaller(CloudflareCallsProducerSignaller::default().upcast());
+            ws.settings.lock().unwrap().stun_server =
+                DEFAULT_CLOUDFLARE_STUN_SERVER.map(String::from);
+        }
+    }
+
+    impl GstObjectImpl for CloudflareCallsWebRTCSink {}
+
+    impl ElementImpl for CloudflareCallsWebRTCSink {
+        fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+            static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+                gst::subclass::ElementMetadata::new(
+                    "CloudflareCallsWebRTCSink",
+                    "Sink/Network/WebRTC",
+                    "WebRTC sink with Cloudflare Calls signaller",
+                    "Matthew Waters <matthew@centricular.com>",
+                )
+            });
+
+            Some(&*ELEMENT_METADATA)
+        }
+    }
+
+    impl BinImpl for CloudflareCallsWebRTCSink {}
+
+    impl BaseWebRTCSinkImpl for CloudflareCallsWebRTCSink {}
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for CloudflareCallsWebRTCSink {
+        const NAME: &'static str = "GstCloudflareCallsWebRTCSink";
+        type Type = crate::webrtcsink::CloudflareCallsWebRTCSink;
+        type ParentType = crate::webrtcsink::BaseWebRTCSink;
+    }
+}
