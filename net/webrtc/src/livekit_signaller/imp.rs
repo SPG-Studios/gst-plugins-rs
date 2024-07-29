@@ -86,6 +86,71 @@ struct Connection {
     channels: Option<Channels>,
 }
 
+/// Media Restrictions associated with an RID.
+///
+/// The video dimensions are not required by LiveKit but this module derives
+/// video layer dimensions from them.
+/// See https://datatracker.ietf.org/doc/html/rfc8851#section-5 for details.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Restrictions {
+    rid: String,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+}
+
+impl Restrictions {
+    /// Parse `<rid> <direction> <restrictions>`
+    pub fn parse(restriction: &str) -> Option<Self> {
+        let mut parts = restriction.split_whitespace();
+        let rid = parts.next()?;
+        let _direction = parts.next()?;
+        let restrictions = parts.next()?.split(';').collect::<Vec<_>>();
+        Some(Self::from((rid.to_string(), restrictions.as_slice())))
+    }
+    /// Converts into a LiveKit video layer. Only RID values "q", "h", and "f"
+    /// are supported for the purpose of creating simulcasts.
+    pub fn create_video_layer(&self) -> Option<proto::VideoLayer> {
+        let Self {
+            rid,
+            max_width,
+            max_height,
+        } = self;
+        let width = max_width.unwrap_or_default();
+        let height = max_height.unwrap_or_default();
+        let quality = match rid.as_str() {
+            "q" => proto::VideoQuality::Low as i32,
+            "h" => proto::VideoQuality::Medium as i32,
+            "f" => proto::VideoQuality::High as i32,
+            _ => return None,
+        };
+        Some(proto::VideoLayer {
+            quality,
+            width,
+            height,
+            ..Default::default()
+        })
+    }
+}
+
+impl From<(String, &[&str])> for Restrictions {
+    fn from(value: (String, &[&str])) -> Self {
+        let (rid, value) = value;
+        let max_width = value
+            .iter()
+            .filter_map(|s| s.strip_prefix("max-width="))
+            .find_map(|s| s.parse().ok());
+        let max_height = value
+            .iter()
+            .filter_map(|s| s.strip_prefix("max-height="))
+            .find_map(|s| s.parse().ok());
+        Self {
+            rid,
+            max_width,
+            max_height,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IceCandidateJson {
@@ -396,13 +461,12 @@ impl Signaller {
                             }
                         }
 
-                        let layers = if mtype == proto::TrackType::Video {
-                            vec![proto::VideoLayer {
-                                quality: proto::VideoQuality::High as i32,
-                                ..Default::default()
-                            }]
+                        let layers = Self::build_simulcast_layers(mtype, media);
+                        let (width, height) = if mtype == proto::TrackType::Video {
+                            let max_layer = &layers[layers.len() - 1];
+                            (max_layer.width, max_layer.height)
                         } else {
-                            vec![]
+                            (0, 0)
                         };
 
                         let req = proto::AddTrackRequest {
@@ -414,6 +478,8 @@ impl Signaller {
                             disable_dtx: true,
                             disable_red,
                             layers,
+                            width,
+                            height,
                             ..Default::default()
                         };
 
@@ -524,6 +590,42 @@ impl Signaller {
                 self.obj()
                     .emit_by_name::<()>("producer-removed", &[&peer_sid, &meta]);
             }
+        }
+    }
+
+    fn build_simulcast_layers(
+        track_type: proto::TrackType,
+        media: &gst_sdp::SDPMediaRef,
+    ) -> Vec<proto::VideoLayer> {
+        if track_type != proto::TrackType::Video {
+            return vec![];
+        }
+        let restrictions = media
+            .attributes()
+            .filter(|attr| attr.key() == "rid")
+            .filter_map(|attr| attr.value())
+            .filter_map(Restrictions::parse)
+            .map(|restrictions| (restrictions.rid.clone(), restrictions))
+            .collect::<HashMap<String, Restrictions>>();
+
+        gst::debug!(CAT, "parsed SDP RID restrictions {restrictions:?}");
+
+        let layers = media
+            .attribute_val("simulcast")
+            .into_iter()
+            .filter_map(|simulcast| simulcast.split_whitespace().nth(1))
+            .flat_map(|simulcast| simulcast.split(';'))
+            .filter_map(|rid| restrictions.get(rid))
+            .filter_map(Restrictions::create_video_layer)
+            .collect::<Vec<_>>();
+
+        if layers.is_empty() {
+            vec![proto::VideoLayer {
+                quality: proto::VideoQuality::High as i32,
+                ..Default::default()
+            }]
+        } else {
+            layers
         }
     }
 
