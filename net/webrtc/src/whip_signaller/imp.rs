@@ -655,6 +655,19 @@ pub struct WhipServer {
 }
 
 impl WhipServer {
+    fn add_cors_headers(res: &mut http::Response<Body>) {
+        let headers = res.headers_mut();
+        headers.insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
+        headers.insert(
+            "Access-Control-Allow-Methods",
+            HeaderValue::from_static("POST, OPTIONS, PATCH, DELETE"),
+        );
+        headers.insert(
+            "Access-Control-Allow-Headers",
+            HeaderValue::from_static("Content-Type, Authorization"),
+        );
+    }
+
     pub fn on_webrtcbin_ready(&self) -> RustClosure {
         glib::closure!(|signaller: &super::WhipServerSignaller,
                         _producer_identifier: &str,
@@ -715,10 +728,13 @@ impl WhipServer {
     async fn patch_handler(&self, _id: String) -> Result<impl warp::Reply, warp::Rejection> {
         // FIXME: implement ICE Trickle and ICE restart
         // emit signal `handle-ice` to for ICE trickle
-        let reply = warp::reply::reply();
-        let res = warp::reply::with_status(reply, http::StatusCode::NOT_IMPLEMENTED);
-        Ok(res.into_response())
+        let mut res =
+            warp::reply::with_status(warp::reply::reply(), http::StatusCode::NOT_IMPLEMENTED)
+                .into_response();
 
+        WhipServer::add_cors_headers(&mut res);
+
+        Ok(res)
         //FIXME: add state checking once ICE trickle is implemented
     }
 
@@ -732,7 +748,11 @@ impl WhipServer {
             gst::info!(CAT, imp = self, "Failed to End session {id}");
             // FIXME: Do we send a different response
         }
-        Ok(warp::reply::reply().into_response())
+
+        let mut res = warp::reply::reply().into_response();
+        WhipServer::add_cors_headers(&mut res);
+
+        Ok(res)
     }
 
     async fn options_handler(&self) -> Result<impl warp::Reply, warp::Rejection> {
@@ -780,8 +800,7 @@ impl WhipServer {
             .body(Body::empty())
             .unwrap();
 
-        let headers = res.headers_mut();
-        headers.extend(links);
+        WhipServer::add_cors_headers(&mut res);
 
         Ok(res)
     }
@@ -931,15 +950,33 @@ impl WhipServer {
             .body(Body::from(ans_text.unwrap()))
             .unwrap();
 
-        let headers = res.headers_mut();
-        headers.extend(links);
+        WhipServer::add_cors_headers(&mut res);
 
         Ok(res)
     }
-
     fn serve(&self) -> Option<tokio::task::JoinHandle<()>> {
         let mut settings = self.settings.lock().unwrap();
         let addr: SocketAddr;
+
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_methods(vec!["POST", "OPTIONS", "PATCH", "DELETE"])
+            .allow_headers(vec!["Content-Type", "Authorization"]);
+
+        let _prefix = warp::path(ROOT);
+
+        let preflight =
+            warp::options()
+                .and(warp::header::<String>("origin"))
+                .map(|_origin: String| {
+                    let mut res = http::Response::builder()
+                        .status(StatusCode::NO_CONTENT)
+                        .body(Body::empty())
+                        .unwrap();
+                    WhipServer::add_cors_headers(&mut res);
+                    res
+                });
+
         match settings.host_addr.socket_addrs(|| None) {
             Ok(v) => {
                 // pick the first vector item
@@ -1016,7 +1053,9 @@ impl WhipServer {
             .and(post_filter)
             .or(prefix.and(options_filter))
             .or(prefix.and(patch_filter))
-            .or(prefix.and(delete_filter));
+            .or(prefix.and(delete_filter))
+            .or(preflight)
+            .with(cors);
 
         let s = warp::serve(api);
         let jh = RUNTIME.spawn(async move {
