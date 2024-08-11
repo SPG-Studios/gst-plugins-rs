@@ -18,6 +18,8 @@
  *
  * Since: plugins-rs-0.12.0
  */
+use std::os::fd::OwnedFd;
+use std::os::fd::AsRawFd;
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
@@ -106,7 +108,7 @@ pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     TOKIO_RT.block_on(future)
 }
 
-async fn portal_main(cursor_mode: CursorMode, source_type: SourceType) -> ashpd::Result<u32> {
+async fn portal_main(cursor_mode: CursorMode, source_type: SourceType) -> ashpd::Result<(u32, OwnedFd)> {
     let proxy = Screencast::new().await?;
     let session = proxy.create_session().await?;
     proxy
@@ -126,8 +128,9 @@ async fn portal_main(cursor_mode: CursorMode, source_type: SourceType) -> ashpd:
         .response()?;
 
     if let Some(first_value) = response.streams().iter().next() {
-        let id = first_value.pipe_wire_node_id();
-        Ok(id)
+        let node_id = first_value.pipe_wire_node_id();
+        let fd = proxy.open_pipe_wire_remote(&session).await?;
+        Ok((node_id, fd))
     } else {
         Err(ashpd::Error::NoResponse)
     }
@@ -317,8 +320,10 @@ impl ElementImpl for XdgScreenCapSrc {
         let success = self.parent_change_state(transition)?;
 
         if transition == gst::StateChange::NullToReady {
-            if let Ok(fd) = block_on(portal_main(settings.cursor_mode, settings.source_type)) {
-                self.src.set_property("fd", fd as i32);
+            if let Ok((node_id, fd)) = block_on(portal_main(settings.cursor_mode, settings.source_type)) {
+                gst::debug!(CAT, imp = self, "Setting fd={:?} path={} to pipewiresrc", fd, node_id);
+                self.src.set_property("fd", fd.as_raw_fd());
+                self.src.set_property("path", format!("{}", node_id));
             } else {
                 return Err(gst::StateChangeError);
             }
