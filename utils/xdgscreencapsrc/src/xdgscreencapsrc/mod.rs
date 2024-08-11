@@ -12,7 +12,7 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct XdpScreenCast(ObjectSubclass<imp::XdpScreenCast>) @extends gst::Bin, gst::Element, gst::Object;
+    pub struct XdgScreenCapSrc(ObjectSubclass<imp::XdgScreenCapSrc>) @extends gst::Bin, gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -20,6 +20,6 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         Some(plugin),
         "xdgscreencapsrc",
         gst::Rank::NONE,
-        XdpScreenCast::static_type(),
+        XdgScreenCapSrc::static_type(),
     )
 }

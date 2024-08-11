@@ -151,7 +151,7 @@ impl Default for Settings {
     }
 }
 
-pub struct XdpScreenCast {
+pub struct XdgScreenCapSrc {
     settings: Mutex<Settings>,
     src: gst::Element,
     srcpad: gst::GhostPad,
@@ -165,12 +165,12 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     )
 });
 
-impl XdpScreenCast {}
+impl XdgScreenCapSrc {}
 
 #[glib::object_subclass]
-impl ObjectSubclass for XdpScreenCast {
-    const NAME: &'static str = "GstXdpScreenCast";
-    type Type = super::XdpScreenCast;
+impl ObjectSubclass for XdgScreenCapSrc {
+    const NAME: &'static str = "GstXdgScreenCapSrc";
+    type Type = super::XdgScreenCapSrc;
     type ParentType = gst::Bin;
 
     fn with_class(klass: &Self::Class) -> Self {
@@ -187,7 +187,7 @@ impl ObjectSubclass for XdpScreenCast {
     }
 }
 
-impl ObjectImpl for XdpScreenCast {
+impl ObjectImpl for XdgScreenCapSrc {
     // based on https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html#org-freedesktop-portal-screencast-selectsources
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
@@ -198,7 +198,6 @@ impl ObjectImpl for XdpScreenCast {
                 )
                 .nick("cursor mode")
                 .blurb("Determines how the cursor will be drawn in the screen cast stream")
-                .mutable_ready()
                 .build(),
                 glib::ParamSpecEnum::builder_with_default::<SourceType>(
                     "source-type",
@@ -206,7 +205,6 @@ impl ObjectImpl for XdpScreenCast {
                 )
                 .nick("source type")
                 .blurb("Sets the types of content to record")
-                .mutable_ready()
                 .build(),
             ]
         });
@@ -274,14 +272,14 @@ impl ObjectImpl for XdpScreenCast {
     }
 }
 
-impl GstObjectImpl for XdpScreenCast {}
+impl GstObjectImpl for XdgScreenCapSrc {}
 
-impl ElementImpl for XdpScreenCast {
+impl ElementImpl for XdgScreenCapSrc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
             gst::subclass::ElementMetadata::new(
                 "xdg-desktop-portal screen capture",
-                "Generic",
+                "Video/Source",
                 "Source element wrapping pipewiresrc using \
                 xdg-desktop-portal to start a screencast session.",
                 "Ruben Gonzalez <rgonzalez@fluendo.com>",
@@ -293,7 +291,7 @@ impl ElementImpl for XdpScreenCast {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
-            let caps = gst::Caps::new_any();
+            let caps = gst::Caps::builder("video/x-raw").build();
             let src_pad_template = gst::PadTemplate::new(
                 "src",
                 gst::PadDirection::Src,
@@ -330,4 +328,4 @@ impl ElementImpl for XdpScreenCast {
     }
 }
 
-impl BinImpl for XdpScreenCast {}
+impl BinImpl for XdgScreenCapSrc {}
