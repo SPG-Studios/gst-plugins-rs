@@ -294,7 +294,22 @@ impl ElementImpl for XdgScreenCapSrc {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
-            let caps = gst::Caps::builder("video/x-raw").build();
+            let mut caps = gst::Caps::new_empty();
+
+            {
+                let caps = caps.get_mut().unwrap();
+
+                let raw_caps = gst_video::VideoCapsBuilder::new().build();
+                caps.append(raw_caps);
+                #[cfg(feature = "v1_24")]
+                {
+                    let dma_caps = gst_video::VideoCapsBuilder::new()
+                        .format(gst_video::VideoFormat::DmaDrm)
+                        .features([gst_allocators::CAPS_FEATURE_MEMORY_DMABUF])
+                        .build();
+                    caps.append(dma_caps);
+                }
+            }
             let src_pad_template = gst::PadTemplate::new(
                 "src",
                 gst::PadDirection::Src,
