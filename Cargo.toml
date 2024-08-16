@@ -47,6 +47,8 @@ members = [
     "utils/togglerecord",
     "utils/tracers",
     "utils/uriplaylistbin",
+    "utils/xdgscreencapsrc",
+
 
     "video/cdg",
     "video/closedcaption",

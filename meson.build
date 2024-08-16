@@ -207,6 +207,7 @@ plugins = {
   },
   'gopbuffer': {'library': 'libgstgopbuffer'},
   'quinn': {'library': 'libgstquinn'},
+  'xdgscreencapsrc': {'library': 'libgstxdgscreencapsrc'},
 }
 
 # Won't build on platforms where it bundles the sources because of:
