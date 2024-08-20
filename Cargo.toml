@@ -10,6 +10,7 @@ members = [
     "audio/csound",
     "audio/lewton",
     "audio/spotify",
+    "audio/qoa",
 
     "generic/file",
     "generic/originalbuffer",
@@ -68,6 +69,7 @@ default-members = [
     "audio/audiofx",
     "audio/claxon",
     "audio/lewton",
+    "audio/qoa",
 
     "generic/originalbuffer",
     "generic/threadshare",
