@@ -12,6 +12,7 @@ rust-version.workspace = true
 gio = { workspace = true, optional = true }
 gst.workspace = true
 gst-audio.workspace = true
+gst-video.workspace = true
 gst-plugin-gtk4 = { path = "../../video/gtk4", optional = true }
 gtk = { workspace = true, optional = true }
 num-rational = { version = "0.4", default-features = false, features = [] }
