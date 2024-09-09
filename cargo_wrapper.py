@@ -37,6 +37,9 @@ def shlex_join(args):
 
 
 def generate_depfile_for(fpath):
+    # Get rid of the `.dll.lib` double suffixes first
+    while fpath.suffixes:
+        fpath = fpath.with_suffix('')
     file_stem = fpath.parent / fpath.stem
     depfile_content = ""
     with open(f"{file_stem}.d", 'r') as depfile:
