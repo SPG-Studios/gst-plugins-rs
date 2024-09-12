@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::LazyLock;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
@@ -93,6 +94,40 @@ struct Connection {
     room_timeout_task: Option<JoinHandle<()>>,
     last_participant_lost_at: Option<Instant>,
     our_participant_sid: String,
+}
+
+impl Connection {
+    fn disconnect(self, timeout: u32) {
+        let timed_disconnect = async move {
+            let task = self.disconnect_task();
+            if tokio::time::timeout(Duration::from_secs(u64::from(timeout)), task)
+                .await
+                .is_ok()
+            {
+                gst::debug!(CAT, "ok");
+            } else {
+                gst::error!(CAT, "timed out");
+            }
+        };
+        let _ = block_on(RUNTIME.spawn(timed_disconnect));
+    }
+
+    async fn disconnect_task(self) {
+        let Self {
+            signal_task,
+            signal_client,
+            ..
+        } = self;
+        let _ = signal_task.await;
+        signal_client
+            .send(proto::signal_request::Message::Leave(proto::LeaveRequest {
+                can_reconnect: false,
+                reason: proto::DisconnectReason::ClientInitiated as i32,
+                ..Default::default()
+            }))
+            .await;
+        signal_client.close().await;
+    }
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq, glib::Enum)]
@@ -661,17 +696,6 @@ impl Signaller {
         }
     }
 
-    async fn close_signal_client(signal_client: &signal_client::SignalClient) {
-        signal_client
-            .send(proto::signal_request::Message::Leave(proto::LeaveRequest {
-                can_reconnect: false,
-                reason: proto::DisconnectReason::ClientInitiated as i32,
-                ..Default::default()
-            }))
-            .await;
-        signal_client.close().await;
-    }
-
     pub(crate) fn participant_info(&self, participant_sid: &str) -> Option<proto::ParticipantInfo> {
         let connection = self.connection.lock().unwrap();
         let connection = connection.as_ref()?;
@@ -937,9 +961,9 @@ impl SignallableImpl for Signaller {
             canceller.abort();
         }
 
+        let timeout = self.settings.lock().unwrap().timeout;
         if let Some(connection) = self.connection.lock().unwrap().take() {
-            block_on(connection.signal_task).unwrap();
-            block_on(Self::close_signal_client(&connection.signal_client));
+            connection.disconnect(timeout);
         }
         self.obj().notify("connection-state");
     }
