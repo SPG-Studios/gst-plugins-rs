@@ -12,7 +12,8 @@ use gst::glib;
 use gst::prelude::*;
 
 use librespot::core::{
-    cache::Cache, config::SessionConfig, session::Session, spotify_id::SpotifyId,
+    cache::Cache, config::SessionConfig, session::Session, session::SessionError,
+    spotify_id::SpotifyId,
 };
 use librespot::discovery::Credentials;
 
@@ -132,7 +133,9 @@ impl Settings {
         let cache = Cache::new(credentials_cache, None, files_cache, max_size)?;
 
         if let Some(cached_cred) = cache.credentials() {
-            if !self.username.is_empty() && self.username != cached_cred.username {
+            if !self.username.is_empty()
+                && self.username.to_lowercase() != cached_cred.username.to_lowercase()
+            {
                 gst::debug!(
                     cat,
                     obj = &src,
@@ -147,15 +150,31 @@ impl Settings {
                     "reuse cached credentials for user {}",
                     cached_cred.username
                 );
-                if let Ok((session, _credentials)) = Session::connect(
+                let old_cached_cred = cached_cred.clone();
+                match Session::connect(
                     SessionConfig::default(),
                     cached_cred,
                     Some(cache.clone()),
-                    true,
+                    false,
                 )
                 .await
                 {
-                    return Ok(session);
+                    Ok((session, credentials)) => {
+                        if old_cached_cred.auth_type != credentials.auth_type
+                            || old_cached_cred.auth_data != credentials.auth_data
+                        {
+                            cache.save_credentials(&credentials);
+                        }
+                        return Ok(session);
+                    }
+                    Err(e) => match e {
+                        SessionError::AuthenticationError(ae)
+                            if format!("{:?}", ae).starts_with("LoginFailed(") =>
+                        {
+                            ()
+                        }
+                        _ => return Err(e.into()),
+                    },
                 }
             }
         }
@@ -167,10 +186,10 @@ impl Settings {
         );
 
         if self.username.is_empty() {
-            bail!("username is not set and credentials are not in cache");
+            bail!("username is not set and valid credentials are not in cache");
         }
         if self.password.is_empty() {
-            bail!("password is not set and credentials are not in cache");
+            bail!("password is not set and valid credentials are not in cache");
         }
 
         let cred = Credentials::with_password(&self.username, &self.password);
