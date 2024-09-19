@@ -11225,8 +11225,32 @@
                 ],
                 "kind": "object",
                 "properties": {
+                    "mid": {
+                        "blurb": "The Media Identification (MID) value to produce from this pad",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "NULL",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "gchararray",
+                        "writable": true
+                    },
                     "msid": {
                         "blurb": "Remote MediaStream ID in use for this pad",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "NULL",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "gchararray",
+                        "writable": true
+                    },
+                    "rid": {
+                        "blurb": "The RtpStreamId (RID) value to produce from this pad",
                         "conditionally-available": false,
                         "construct": false,
                         "construct-only": false,
