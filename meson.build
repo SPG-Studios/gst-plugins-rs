@@ -572,6 +572,22 @@ endif
 gst_plugins = []
 pc_files = []
 plugin_names = []
+# 'libstd-a4645a6cfe4a7b8c.rlib', '/WHOLEARCHIVE:libcompiler_builtins-fe61a4d0f68ffd28.rlib', '/LIBPATH:<path to toolchain>/lib/rustlib/<arch>-pc-windows-msvc/lib'
+if system == 'windows'
+  rlibs = run_command(cargo_wrapper,
+        'libs',
+        meson.current_build_dir(),
+        meson.current_source_dir(),
+        meson.global_build_root(),
+        target,
+        get_option('prefix'),
+        get_option('libdir'),
+        env: extra_env,
+        check: true).stdout().strip().split(';')
+else
+  rlibs = []
+endif
+
 foreach plugin : plugins
   plugin_name = fs.stem(plugin.full_path())
   # skip the 'lib' prefix from plugin path when not building with MSVC
@@ -601,7 +617,18 @@ foreach plugin : plugins
   endif
 
   # Extract plugin dependencies from their Cargo.toml file
-  plugin_deps = []
+  if system == 'windows'
+    plugin_deps = [
+      # stdlib
+      cc.find_library('ntdll', required: false),
+      cc.find_library('secur32', required: false),
+      cc.find_library('crypt32', required: false),
+      # https://github.com/rust-random/getrandom/commit/875081b66da2c91cefe0fe2c099116a94caed754
+      cc.find_library('bcrypt', required: false),
+    ]
+  else
+    plugin_deps = []
+  endif
   p = run_command('dependencies.py', meson.current_source_dir(), plugin_name,
     capture: true,
     check: true)
@@ -625,6 +652,7 @@ foreach plugin : plugins
   dep = declare_dependency(
     link_with: plugin,
     dependencies: plugin_deps,
+    link_args: rlibs,
     variables: {'full_path': plugin.full_path()},
   )
   meson.override_dependency(plugin_name, dep)
