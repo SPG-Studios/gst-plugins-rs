@@ -172,7 +172,7 @@ impl ObjectImpl for HlsSink3 {
                     .build(),
                 glib::ParamSpecObject::builder::<gst::Element>("muxer")
                     .nick("Override the muxer")
-                    .blurb("Specifying this property will override the default muxer (`splitmuxsink`)")
+                    .blurb("Specifying this property will override the default muxer (`mpegtsmux`)")
                     .build(),
             ]
         });
