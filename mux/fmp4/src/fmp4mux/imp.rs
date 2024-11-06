@@ -103,6 +103,7 @@ pub static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 const DEFAULT_FRAGMENT_DURATION: gst::ClockTime = gst::ClockTime::from_seconds(10);
+const DEFAULT_FRAGMENT_DURATION_IS_MINIMUM: bool = false;
 const DEFAULT_CHUNK_DURATION: Option<gst::ClockTime> = gst::ClockTime::NONE;
 const DEFAULT_HEADER_UPDATE_MODE: super::HeaderUpdateMode = super::HeaderUpdateMode::None;
 const DEFAULT_WRITE_MFRA: bool = false;
@@ -114,6 +115,7 @@ const DEFAULT_WRITE_EDTS_MODE: WriteEdtsMode = WriteEdtsMode::Auto;
 #[derive(Debug, Clone)]
 struct Settings {
     fragment_duration: gst::ClockTime,
+    fragment_duration_is_minimum: bool,
     chunk_duration: Option<gst::ClockTime>,
     header_update_mode: super::HeaderUpdateMode,
     write_mfra: bool,
@@ -129,6 +131,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             fragment_duration: DEFAULT_FRAGMENT_DURATION,
+            fragment_duration_is_minimum: DEFAULT_FRAGMENT_DURATION_IS_MINIMUM,
             chunk_duration: DEFAULT_CHUNK_DURATION,
             header_update_mode: DEFAULT_HEADER_UPDATE_MODE,
             write_mfra: DEFAULT_WRITE_MFRA,
@@ -1979,11 +1982,17 @@ impl FMP4Mux {
                     break;
                 }
 
-                // If this GOP starts after the fragment end then don't dequeue it yet unless this is
-                // the first stream and no GOPs were dequeued at all yet. This would mean that the
-                // GOP is bigger than the fragment duration.
+                let cmp_pts = if settings.fragment_duration_is_minimum {
+                    gop.start_pts
+                } else {
+                    gop.end_pts
+                };
+
+                // If this GOP ends (or starts if fragment_duration_is_minimum
+                // is set)  after the fragment end then don't dequeue it yet
+                // unless this is the first stream and no GOPs were dequeued at all
                 if !all_eos
-                    && gop.end_pts > dequeue_end_pts
+                    && cmp_pts > dequeue_end_pts
                     && (chunk_end_pts.is_some() || !gops.is_empty())
                 {
                     gst::trace!(CAT, obj = stream.sinkpad, "Not including GOP yet",);
@@ -3308,6 +3317,12 @@ impl ObjectImpl for FMP4Mux {
                     .default_value(DEFAULT_FRAGMENT_DURATION.nseconds())
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecBoolean::builder("fragment-duration-is-minimum")
+                    .nick("Fragment duration is minimum")
+                    .blurb("If possible thanks to latency, consume enough GOPs to exceed the specified fragment duration")
+                    .default_value(DEFAULT_FRAGMENT_DURATION_IS_MINIMUM)
+                    .mutable_ready()
+                    .build(),
                 glib::ParamSpecUInt64::builder("chunk-duration")
                     .nick("Chunk Duration")
                     .blurb("Duration for each FMP4 chunk (default = no chunks)")
@@ -3374,6 +3389,11 @@ impl ObjectImpl for FMP4Mux {
                 }
             }
 
+            "fragment-duration-is-minimum" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.fragment_duration_is_minimum = value.get().expect("type checked upstream");
+            }
+
             "chunk-duration" => {
                 let mut settings = self.settings.lock().unwrap();
                 let chunk_duration = value.get().expect("type checked upstream");
@@ -3435,6 +3455,11 @@ impl ObjectImpl for FMP4Mux {
             "fragment-duration" => {
                 let settings = self.settings.lock().unwrap();
                 settings.fragment_duration.to_value()
+            }
+
+            "fragment-duration-is-minimum" => {
+                let settings = self.settings.lock().unwrap();
+                settings.fragment_duration_is_minimum.to_value()
             }
 
             "chunk-duration" => {
