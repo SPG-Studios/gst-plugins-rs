@@ -1149,23 +1149,6 @@ impl ObjectSubclass for BandwidthEstimator {
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
         let sinkpad = gst::Pad::builder_from_template(&templ)
-            .chain_function(|_pad, parent, buffer| {
-                BandwidthEstimator::catch_panic_pad_function(
-                    parent,
-                    || Err(gst::FlowError::Error),
-                    |this| {
-                        let mut state = this.state.lock().unwrap();
-                        state.buffers.push_front(buffer);
-
-                        state.flow_return
-                    },
-                )
-            })
-            .flags(gst::PadFlags::PROXY_CAPS | gst::PadFlags::PROXY_ALLOCATION)
-            .build();
-
-        let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_from_template(&templ)
             .event_function(|pad, parent, event| {
                 BandwidthEstimator::catch_panic_pad_function(
                     parent,
@@ -1227,6 +1210,23 @@ impl ObjectSubclass for BandwidthEstimator {
                     },
                 )
             })
+            .chain_function(|_pad, parent, buffer| {
+                BandwidthEstimator::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::FlowError::Error),
+                    |this| {
+                        let mut state = this.state.lock().unwrap();
+                        state.buffers.push_front(buffer);
+
+                        state.flow_return
+                    },
+                )
+            })
+            .flags(gst::PadFlags::PROXY_CAPS | gst::PadFlags::PROXY_ALLOCATION)
+            .build();
+
+        let templ = klass.pad_template("src").unwrap();
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .activatemode_function(|pad, parent, mode, active| {
                 BandwidthEstimator::catch_panic_pad_function(
                     parent,
