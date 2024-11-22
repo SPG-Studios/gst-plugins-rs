@@ -18,7 +18,6 @@
  *
  */
 use gst::{glib, prelude::*, subclass::prelude::*};
-use smallvec::SmallVec;
 use std::sync::LazyLock;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -31,7 +30,6 @@ use std::{
 use time::Duration;
 
 type Bitrate = u32;
-type BufferList = SmallVec<[gst::Buffer; 10]>;
 
 const DEFAULT_MIN_BITRATE: Bitrate = 1000;
 const DEFAULT_ESTIMATED_BITRATE: Bitrate = 2_048_000;
@@ -762,7 +760,7 @@ impl Default for State {
 
 impl State {
     // 4. sending engine implementing a "leaky bucket"
-    fn create_buffer_list(&mut self, bwe: &super::BandwidthEstimator) -> BufferList {
+    fn create_buffer_list(&mut self, bwe: &super::BandwidthEstimator) -> gst::BufferList {
         let now = Instant::now();
         let elapsed = Duration::try_from(now - self.last_push).unwrap();
         let mut budget = (elapsed.whole_nanoseconds() as i64)
@@ -776,8 +774,8 @@ impl State {
         let mut remaining = self.buffers.iter().map(|b| b.size() as f64).sum::<f64>() * 8.;
         let total_size = remaining;
 
-        let mut list_size = 0;
-        let mut list = BufferList::new();
+        let mut list = gst::BufferList::new();
+        let mutlist = list.get_mut().unwrap();
 
         // Leak the bucket so it can hold at most 30ms of data
         let maximum_remaining_bits = 30. * self.estimated_bitrate as f64 / 1000.;
@@ -787,8 +785,7 @@ impl State {
             let n_bits = buf.size() * 8;
 
             leaked = budget <= 0 && remaining > maximum_remaining_bits;
-            list_size += buf.size();
-            list.push(buf);
+            mutlist.add(buf);
             budget -= n_bits as i64;
             remaining -= n_bits as f64;
         }
@@ -801,7 +798,7 @@ impl State {
             human_kbits(self.estimated_bitrate),
             human_kbits(budget as f64),
             human_kbits(total_budget as f64),
-            human_kbits(list_size as f64 * 8.),
+            human_kbits(list.calculate_size() as f64 * 8.),
             human_kbits(remaining),
             human_kbits(total_size)
         );
@@ -1044,14 +1041,8 @@ pub struct BandwidthEstimator {
 }
 
 impl BandwidthEstimator {
-    fn push_list(&self, list: BufferList) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let mut res = Ok(gst::FlowSuccess::Ok);
-        for buf in list {
-            res = self.srcpad.push(buf);
-            if res.is_err() {
-                break;
-            }
-        }
+    fn push_list(&self, list: gst::BufferList) -> Result<gst::FlowSuccess, gst::FlowError> {
+        let res = self.srcpad.push_list(list);
 
         self.state.lock().unwrap().flow_return = res;
 
