@@ -268,7 +268,14 @@ impl TextToCea708 {
 
         let mut packet = DTVCCPacket::new(seq_no);
         gst::trace!(CAT, "New packet {}", packet.sequence_no());
-        while let Some(service) = self.service_writer.take_service(packet.free_space()) {
+        // Limit the amount of data in each packet to reduce latency.
+        let framerate_max_cc_count = 600
+            .mul_div_round(self.framerate.denom(), self.framerate.numer())
+            .unwrap() as usize;
+        if let Some(service) = self
+            .service_writer
+            .take_service(std::cmp::min(packet.free_space(), framerate_max_cc_count))
+        {
             gst::trace!(CAT, "adding service {service:?} to packet");
             packet.push_service(service).unwrap();
         }
