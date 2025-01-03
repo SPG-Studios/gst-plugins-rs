@@ -5314,6 +5314,7 @@ const DEFAULT_SIGNALLING_SERVER_HOST: &str = "0.0.0.0";
 const DEFAULT_SIGNALLING_SERVER_PORT: u16 = 8443;
 const DEFAULT_SIGNALLING_SERVER_CERT: Option<&str> = None;
 const DEFAULT_SIGNALLING_SERVER_CERT_PASSWORD: Option<&str> = None;
+const DEFAULT_SIGNALLING_SERVER_LOGGING: bool = false;
 
 #[derive(Default)]
 pub struct WebRTCSinkState {
@@ -5327,6 +5328,7 @@ pub struct WebRTCSinkSettings {
     signalling_server_port: u16,
     signalling_server_cert: Option<String>,
     signalling_server_cert_password: Option<String>,
+    signalling_server_logging: bool,
 }
 
 impl Default for WebRTCSinkSettings {
@@ -5338,6 +5340,7 @@ impl Default for WebRTCSinkSettings {
             signalling_server_cert: DEFAULT_SIGNALLING_SERVER_CERT.map(String::from),
             signalling_server_cert_password: DEFAULT_SIGNALLING_SERVER_CERT_PASSWORD
                 .map(String::from),
+            signalling_server_logging: DEFAULT_SIGNALLING_SERVER_LOGGING,
         }
     }
 }
@@ -5475,11 +5478,13 @@ impl WebRTCSink {
                 );
             }
 
-            if let Err(err) = LazyLock::force(&SIGNALLING_LOGGING) {
-                Err(anyhow!(
-                    "failed signalling server logging initialization: {}",
-                    err
-                ))?;
+            if settings.signalling_server_logging {
+                if let Err(err) = LazyLock::force(&SIGNALLING_LOGGING) {
+                    Err(anyhow!(
+                        "failed signalling server logging initialization: {}",
+                        err
+                    ))?;
+                }
             }
             state.signalling_server_handle = Some(RUNTIME.spawn(glib::clone!(
                 #[weak(rename_to = this)]
@@ -5591,6 +5596,19 @@ impl ObjectImpl for WebRTCSink {
                     .blurb("The password for the certificate the signalling server will use")
                     .default_value(DEFAULT_SIGNALLING_SERVER_CERT_PASSWORD)
                     .build(),
+
+                /**
+                 * GstWebRTCSink:signalling-server-logging:
+                 *
+                 * Whether to enable logging for the signalling server.
+                 *
+                 * Since: plugins-rs-0.14.0
+                 */
+                glib::ParamSpecString::builder("signalling-server-logging")
+                    .nick("Signalling server logging")
+                    .blurb("Whether the signalling server should ouput logs")
+                    .default_value(DEFAULT_SIGNALLING_SERVER_LOGGING)
+                    .build()
             ]
         });
 
@@ -5626,6 +5644,12 @@ impl ObjectImpl for WebRTCSink {
                     .get::<Option<String>>()
                     .expect("type checked upstream")
             }
+            "signalling-server-logging" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.signalling_server_logging = value
+                    .get::<bool>()
+                    .expect("type checked upstream")
+            }
             _ => unimplemented!(),
         }
     }
@@ -5651,6 +5675,10 @@ impl ObjectImpl for WebRTCSink {
             "signalling-server-cert-password" => {
                 let settings = self.settings.lock().unwrap();
                 settings.signalling_server_cert_password.to_value()
+            }
+            "signalling-server-logging" => {
+                let settings = self.settings.lock().unwrap();
+                settings.signalling_server_logging.to_value()
             }
             _ => unimplemented!(),
         }
