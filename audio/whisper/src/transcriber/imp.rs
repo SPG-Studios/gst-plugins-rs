@@ -31,10 +31,12 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 const DEFAULT_AUDIO_CHUNK_SIZE_IN_MS: u32 = 4000;
+const DEFAULT_TRANSCRIBE_LATENCY: gst::ClockTime = gst::ClockTime::from_seconds(5);
 
 struct Settings {
     model_path: String,
     chunk_size: u32,
+    transcribe_latency: gst::ClockTime,
 }
 
 struct State {
@@ -79,6 +81,7 @@ impl Default for Settings {
         Self {
             model_path: String::new(),
             chunk_size: DEFAULT_AUDIO_CHUNK_SIZE_IN_MS,
+            transcribe_latency: DEFAULT_TRANSCRIBE_LATENCY,
         }
     }
 }
@@ -322,7 +325,26 @@ impl Transcriber {
 
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         gst::log!(CAT, obj = pad, "Handling src query {:?}", query);
-        gst::Pad::query_default(pad, Some(pad), query)
+
+        use gst::QueryViewMut::*;
+        match query.view_mut() {
+            Latency(q) => {
+                let mut peer_query = gst::query::Latency::new();
+
+                let ret = self.sinkpad.peer_query(&mut peer_query);
+
+                if ret {
+                    let (_, min, _) = peer_query.result();
+
+                    let our_latency = self.settings.lock().unwrap().transcribe_latency;
+
+                    gst::info!(CAT, obj = pad, "Our latency {our_latency}");
+                    q.set(true, our_latency + min, gst::ClockTime::NONE);
+                }
+                ret
+            }
+            _ => gst::Pad::query_default(pad, Some(pad), query),
+        }
     }
 
     fn prepare(&self) -> Result<(), gst::ErrorMessage> {
@@ -462,6 +484,12 @@ impl ObjectImpl for Transcriber {
                     .default_value(DEFAULT_AUDIO_CHUNK_SIZE_IN_MS)
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecUInt::builder("transcribe-latency")
+                .nick("Whisper Transcribe Latency")
+                .blurb("Amount of milliseconds to allow Whisper transcribe")
+                .default_value(DEFAULT_TRANSCRIBE_LATENCY.mseconds() as u32)
+                .mutable_ready()
+                .build(),
             ]
         });
 
@@ -477,6 +505,9 @@ impl ObjectImpl for Transcriber {
             "chunk-size" => {
                 settings.chunk_size = value.get().expect("type checked upstream");
             }
+            "transcribe-latency" => {
+                settings.transcribe_latency = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -486,6 +517,7 @@ impl ObjectImpl for Transcriber {
         match pspec.name() {
             "model-path" => settings.model_path.to_value(),
             "chunk-size" => settings.chunk_size.to_value(),
+            "transcribe-latency" => settings.transcribe_latency.to_value(),
             _ => unimplemented!(),
         }
     }
