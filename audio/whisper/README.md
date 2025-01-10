@@ -18,7 +18,10 @@ gst-launch-1.0 \
     decodebin ! \
     audioconvert ! \
     audio/x-raw,format=F32LE ! \
-    whisper model-path=${LM} ! \
+    whispertranscriber model-path=${LM} ! \
+    textrender ! \
+    videoconvert ! \
+    autovideosink
     textrender ! \
     videoconvert ! \
     autovideosink

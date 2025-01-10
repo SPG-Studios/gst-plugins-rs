@@ -18,7 +18,7 @@ glib::wrapper! {
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
-        "whisper",
+        "whispertranscriber",
         gst::Rank::NONE,
         Transcriber::static_type(),
     )
