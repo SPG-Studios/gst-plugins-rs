@@ -9,9 +9,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use bitstream_io::{BigEndian, ByteRead, ByteReader, FromByteStream};
+use bitstream_io::{BitRead, BitReader, LittleEndian};
 
 use std::collections::VecDeque;
-use std::io::Cursor;
+use std::io::{Cursor, SeekFrom};
 
 use std::sync::LazyLock;
 
@@ -24,14 +25,47 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 #[derive(Clone, Default, Debug)]
+pub(crate) struct VorbisInfo {
+    channels: u8,
+    rate: i32,
+}
+
+impl VorbisInfo {
+    fn from_headers(id_header: &[u8], setup_header: &[u8]) -> anyhow::Result<Self> {
+        use anyhow::Context;
+
+        // We assume our headers have been created through our own parser
+        // so we'll have checked the header ID and length already.
+        let channels = *id_header.get(11).context("short id header")?;
+
+        // We already checked the rate is <= 192000 when parsing, so know that the last byte is 0
+        let rate = u32::from_le_bytes([id_header[12], id_header[13], id_header[14], 0x00]) as i32;
+
+        Ok(VorbisInfo { channels, rate })
+    }
+
+    fn channels(&self) -> u8 {
+        self.channels
+    }
+
+    fn rate(&self) -> i32 {
+        self.rate
+    }
+}
+
+#[derive(Clone, Default, Debug)]
 pub(crate) struct VorbisHeaders {
     headers: [Vec<u8>; 3],
+    info: VorbisInfo,
 }
 
 impl VorbisHeaders {
     fn new(id_header: Vec<u8>, comment_header: Vec<u8>, setup_header: Vec<u8>) -> Self {
+        let info = VorbisInfo::from_headers(&id_header, &setup_header).expect("vorbis info");
+
         VorbisHeaders {
             headers: [id_header, comment_header, setup_header],
+            info,
         }
     }
 
@@ -149,18 +183,11 @@ impl VorbisConfig {
     }
 
     pub(crate) fn channels(&self) -> u8 {
-        // We assume our headers have been created through our own parser
-        // so we'll have checked the header ID and length already.
-        let id_hdr = &self.headers.headers[0];
-        id_hdr[11]
+        self.headers.info.channels()
     }
 
     pub(crate) fn rate(&self) -> i32 {
-        // We assume our headers have been created through our own parser
-        // so we'll have checked the header ID and length already.
-        let id_hdr = &self.headers.headers[0];
-        // We already checked the rate is <= 192000 when parsing, so know that the last byte is 0
-        u32::from_le_bytes([id_hdr[12], id_hdr[13], id_hdr[14], 0x00]) as i32
+        self.headers.info.rate()
     }
 
     pub(crate) fn into_headers(self) -> [Vec<u8>; 3] {
