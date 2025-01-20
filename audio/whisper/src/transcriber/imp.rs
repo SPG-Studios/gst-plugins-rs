@@ -95,6 +95,66 @@ extern "C" fn log_callback(level: u32, message: *const c_char, _user_data: *mut 
 }
 
 impl Transcriber {
+    fn high_pass_filter(&self, data: &mut Vec<f32>, cutoff: f32, sample_rate: f32) {
+        let rc = 1.0 / (2.0 * std::f32::consts::PI * cutoff);
+        let dt = 1.0 / sample_rate;
+        let alpha = dt / (rc + dt);
+
+        let mut y = data[0];
+
+        for i in 1..data.len() {
+            y = alpha * (y + data[i] - data[i - 1]);
+            data[i] = y;
+        }
+    }
+
+    fn vad_simple(
+        &self,
+        pcmf32: &mut Vec<f32>,
+        sample_rate: i32,
+        last_ms: i32,
+        vad_thold: f32,
+        freq_thold: f32,
+    ) -> bool {
+        let n_samples = pcmf32.len() as i32;
+        let n_samples_last = (sample_rate * last_ms) / 1000;
+
+        if n_samples_last >= n_samples {
+            // not enough samples - assume no speech
+            gst::error!(CAT, "num samples {}. N samples {}. N samples last {}", pcmf32.len(), n_samples, n_samples_last);
+            return false;
+        }
+
+        if freq_thold > 0.0 {
+            self.high_pass_filter(pcmf32, freq_thold, sample_rate as f32);
+        }
+
+        let mut energy_all = 0.0f32;
+        let mut energy_last = 0.0f32;
+
+        for i in 0..n_samples as usize {
+            energy_all += pcmf32[i].abs();
+
+            if i >= (n_samples - n_samples_last) as usize {
+                energy_last += pcmf32[i].abs();
+            }
+        }
+
+        energy_all /= n_samples as f32;
+        energy_last /= n_samples_last as f32;
+
+        gst::debug!(CAT,
+            "{}: energy_all: {}, energy_last: {}, vad_thold: {}, freq_thold: {}",
+            "vad_simple", energy_all, energy_last, vad_thold, freq_thold
+        );
+
+        if energy_last > vad_thold * energy_all {
+            return false;
+        }
+
+        true
+    }
+
     fn create_state(&self) -> Result<(), gst::ErrorMessage> {
         let wp_ctx = WhisperContext::new_with_params(
             &self.settings.lock().unwrap().model_path,
@@ -141,6 +201,11 @@ impl Transcriber {
             unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, num_f32) };
 
         let samples: Vec<f32> = f32_slice.to_vec();
+
+        let mut vad_chunk = samples.iter().take(32000).cloned().collect();
+
+        let voice_activity_detected = self.vad_simple(&mut vad_chunk, 16000, 1000, 0.6, 100.0);
+        gst::debug!(CAT, "Voice activity detected {}. Total samples {}", voice_activity_detected, samples.len());
 
         let start_time_metrics = std::time::Instant::now();
 
