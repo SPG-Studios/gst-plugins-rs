@@ -14,8 +14,7 @@ use gst::DebugLevel;
 
 use std::ffi::CStr;
 use std::ffi::{c_char, c_void};
-use std::sync::{mpsc, Arc, LazyLock, Mutex};
-use std::thread;
+use std::sync::{LazyLock, Mutex};
 use std::vec::Vec;
 
 use whisper_rs::{
@@ -40,38 +39,26 @@ struct Settings {
 }
 
 struct State {
-    buffer_tx: Option<mpsc::Sender<InputEvent>>,
     is_eos: bool,
-    wp_processor: Option<thread::JoinHandle<()>>,
-}
-
-enum InputEvent {
-    InputChunk { buffer: gst::Buffer },
-    Eos,
-}
-
-pub struct TranscriberStream {
-    imp: glib::subclass::ObjectImplRef<Transcriber>,
     adapter: gst_base::UniqueAdapter,
     wp_state: Option<WhisperState>,
-    last_sample: bool,
-    in_eos: bool,
     offset: Option<ClockTime>,
 }
 
 pub struct Transcriber {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
-    settings: Arc<Mutex<Settings>>,
-    state: Arc<Mutex<State>>,
+    settings: Mutex<Settings>,
+    state: Mutex<State>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        State {
-            buffer_tx: None,
+        Self {
             is_eos: false,
-            wp_processor: None,
+            adapter: gst_base::UniqueAdapter::new(),
+            wp_state: None,
+            offset: None,
         }
     }
 }
@@ -107,43 +94,43 @@ extern "C" fn log_callback(level: u32, message: *const c_char, _user_data: *mut 
     }
 }
 
-impl TranscriberStream {
-    fn try_new(imp: &Transcriber) -> Result<Self, gst::ErrorMessage> {
+impl Transcriber {
+    fn create_state(&self) -> Result<(), gst::ErrorMessage> {
         let wp_ctx = WhisperContext::new_with_params(
-            &imp.settings.lock().unwrap().model_path,
+            &self.settings.lock().unwrap().model_path,
             WhisperContextParameters::default(),
         );
         let wp_state = wp_ctx.as_ref().unwrap().create_state();
 
-        Ok(TranscriberStream {
-            imp: imp.ref_counted(),
-            adapter: gst_base::UniqueAdapter::new(),
-            wp_state: Some(wp_state.unwrap()),
-            last_sample: false,
-            in_eos: false,
-            offset: None,
-        })
+        self.state.lock().unwrap().wp_state = Some(wp_state.unwrap());
+
+        Ok(())
     }
 
-    fn try_decode(&mut self) {
-        let min_ms = self.imp.settings.lock().unwrap().chunk_size;
-        let data_in_ms: i32 = (self.adapter.available() / 64).try_into().unwrap();
+    fn try_decode(&self) {
+        let mut state = self.state.lock().unwrap();
+        let min_ms = self.settings.lock().unwrap().chunk_size;
+        let data_in_ms: i32 = (state.adapter.available() / 64).try_into().unwrap();
 
         let min_data_reached: bool = data_in_ms >= min_ms.try_into().unwrap();
-        let process = min_data_reached || (self.in_eos && self.last_sample);
+        let process = min_data_reached || state.is_eos;
         if !process {
             gst::debug!(
                 CAT,
-                imp = self.imp,
+                imp = self,
                 "Data len not reached: {:?} and not in EOS.",
-                self.adapter.available()
+                state.adapter.available()
             );
             return;
         }
 
-        gst::debug!(CAT, imp = self.imp, "Processing data");
+        gst::debug!(CAT, imp = self, "Processing data");
 
-        let adapter = self.adapter.buffer(self.adapter.available()).ok().unwrap();
+        let adapter = state
+            .adapter
+            .buffer(state.adapter.available())
+            .ok()
+            .unwrap();
         let data: gst::MappedBuffer<gst::buffer::Readable> = adapter
             .into_mapped_buffer_readable()
             .map_err(|_| gst::FlowError::Error)
@@ -157,7 +144,12 @@ impl TranscriberStream {
 
         let start_time_metrics = std::time::Instant::now();
 
-        if let Some(wp_state) = &mut self.wp_state {
+        let offset = if let Some(offset) = state.offset {
+            offset
+        } else {
+            gst::ClockTime::from_mseconds(0)
+        };
+        if let Some(wp_state) = &mut state.wp_state {
             let mut wp_params = FullParams::new(SamplingStrategy::default());
             wp_params.set_print_progress(false);
             wp_params.set_print_special(false);
@@ -175,11 +167,6 @@ impl TranscriberStream {
                 .expect("failed to get number of segments");
 
             let mut last_end = gst::ClockTime::NONE;
-            let offset = if let Some(offset) = self.offset {
-                offset
-            } else {
-                gst::ClockTime::from_mseconds(0)
-            };
 
             for i in 0..num_segments {
                 let segment = wp_state
@@ -192,6 +179,12 @@ impl TranscriberStream {
                     .full_get_segment_t1(i)
                     .expect("failed to get end timestamp");
 
+                let n_tokens = wp_state.full_n_tokens(i).unwrap();
+                for j in 0..n_tokens {
+                    let prob = wp_state.full_get_token_prob(i, j);
+                    println!("prob {}={:?}", j, prob);
+                }
+
                 let start_time =
                     gst::ClockTime::from_mseconds((offset.mseconds() * 10).try_into().unwrap());
                 let end_time = gst::ClockTime::from_mseconds(
@@ -200,13 +193,7 @@ impl TranscriberStream {
                         .unwrap(),
                 );
                 let mut buffer = gst::Buffer::from_mut_slice(segment.into_bytes());
-                gst::info!(
-                    CAT,
-                    imp = self.imp,
-                    "GST TIME [{} -> {}]",
-                    start_time,
-                    end_time
-                );
+                gst::info!(CAT, imp = self, "GST TIME [{} -> {}]", start_time, end_time);
 
                 {
                     let buf = buffer.get_mut().unwrap();
@@ -216,15 +203,15 @@ impl TranscriberStream {
 
                 last_end = Some((end_time / 10).try_into().unwrap());
 
-                let _ = self.imp.srcpad.push(buffer);
+                let _ = self.srcpad.push(buffer);
             }
-            self.offset = last_end;
+            state.offset = last_end;
             gst::trace!(
                 CAT,
-                imp = self.imp,
+                imp = self,
                 "Took {}ms. Number of bytes: caps {}, samples {}, data {}, segments {}",
                 (end_time_metrics - start_time_metrics).as_millis(),
-                self.adapter.available(),
+                state.adapter.available(),
                 samples.len(),
                 data.len(),
                 num_segments
@@ -233,16 +220,14 @@ impl TranscriberStream {
             if num_segments > 0 {
                 gst::info!(
                     CAT,
-                    imp = self.imp,
+                    imp = self,
                     "Number of segments produced {num_segments}"
                 );
-                self.adapter.clear();
+                state.adapter.clear();
             }
         }
     }
-}
 
-impl Transcriber {
     fn sink_chain(
         &self,
         pad: &gst::Pad,
@@ -260,16 +245,8 @@ impl Transcriber {
             return Err(gst::FlowError::Error);
         }
 
-        let Some(buffer_tx) = self.state.lock().unwrap().buffer_tx.take() else {
-            gst::log!(CAT, obj = pad, "Flushing");
-            return Err(gst::FlowError::Flushing);
-        };
-
-        buffer_tx
-            .send(InputEvent::InputChunk { buffer: buffer })
-            .unwrap();
-
-        self.state.lock().unwrap().buffer_tx = Some(buffer_tx);
+        self.state.lock().unwrap().adapter.push(buffer);
+        self.try_decode();
 
         Ok(gst::FlowSuccess::Ok)
     }
@@ -281,13 +258,13 @@ impl Transcriber {
         match event.view() {
             Eos(_) => {
                 gst::info!(CAT, imp = self, "Received EOS. Sending InputEvent::Eos");
-
-                let mut state = self.state.lock().unwrap();
-                state.is_eos = true;
-                let _ = state.buffer_tx.as_mut().unwrap().send(InputEvent::Eos);
+                self.state.lock().unwrap().is_eos = true;
+                self.try_decode();
+                gst::Pad::event_default(pad, Some(&*self.obj()), event);
             }
             FlushStart(_) => {
                 gst::info!(CAT, imp = self, "Received flush start");
+                self.state.lock().unwrap().adapter.clear();
             }
             FlushStop(_) => {
                 gst::info!(CAT, imp = self, "Received flush stop");
@@ -301,6 +278,7 @@ impl Transcriber {
             }
             Caps(c) => {
                 gst::info!(CAT, "Received caps {c:?}");
+                gst::Pad::event_default(pad, Some(&*self.obj()), event);
             }
             StreamStart(_) => {
                 gst::info!(CAT, "Received stream start");
@@ -354,56 +332,7 @@ impl Transcriber {
             whisper_rs::set_log_callback(Some(log_callback), std::ptr::null_mut());
         }
 
-        let mut transcriber = TranscriberStream::try_new(self)?;
-
-        let (buffer_tx, buffer_rx) = mpsc::channel::<InputEvent>();
-
-        let handle = thread::spawn(move || {
-            gst::info!(CAT, imp = transcriber.imp, "Transcriber loop started");
-            loop {
-                let buffer = buffer_rx.recv().unwrap();
-
-                transcriber.in_eos = transcriber.imp.state.lock().unwrap().is_eos;
-                match buffer {
-                    InputEvent::InputChunk { buffer } => {
-                        gst::debug!(
-                            CAT,
-                            imp = transcriber.imp,
-                            "Received buffer with pts {:?}",
-                            buffer.pts().unwrap()
-                        );
-                        transcriber.adapter.push(buffer);
-                        transcriber.try_decode();
-                    }
-                    InputEvent::Eos => {
-                        gst::info!(
-                            CAT,
-                            imp = transcriber.imp,
-                            "Received InputEvent::Eos. Last processing"
-                        );
-                        transcriber.last_sample = true;
-                        transcriber.try_decode();
-                        break;
-                    }
-                }
-            }
-            gst::info!(CAT, imp = transcriber.imp, "Finishing transcriber loop");
-
-            gst::Pad::event_default(
-                &transcriber.imp.sinkpad,
-                Some(&*transcriber.imp.obj()),
-                gst::event::Eos::new(),
-            );
-        });
-
-        let mut state = self.state.lock().unwrap();
-
-        state.buffer_tx = Some(buffer_tx);
-        state.wp_processor = Some(handle);
-
-        gst::debug!(CAT, imp = self, "Prepared");
-
-        Ok(())
+        self.create_state()
     }
 }
 
@@ -460,8 +389,8 @@ impl ObjectSubclass for Transcriber {
         Self {
             srcpad,
             sinkpad,
-            settings: Arc::new(Mutex::new(Settings::default())),
-            state: Arc::new(Mutex::new(State::default())),
+            settings: Mutex::new(Settings::default()),
+            state: Mutex::new(State::default()),
         }
     }
 }
@@ -485,11 +414,11 @@ impl ObjectImpl for Transcriber {
                     .mutable_ready()
                     .build(),
                 glib::ParamSpecUInt::builder("transcribe-latency")
-                .nick("Whisper Transcribe Latency")
-                .blurb("Amount of milliseconds to allow Whisper transcribe")
-                .default_value(DEFAULT_TRANSCRIBE_LATENCY.mseconds() as u32)
-                .mutable_ready()
-                .build(),
+                    .nick("Whisper Transcribe Latency")
+                    .blurb("Amount of milliseconds to allow Whisper transcribe")
+                    .default_value(DEFAULT_TRANSCRIBE_LATENCY.mseconds() as u32)
+                    .mutable_ready()
+                    .build(),
             ]
         });
 
@@ -565,16 +494,6 @@ impl ElementImpl for Transcriber {
 
         match transition {
             gst::StateChange::PausedToReady => {
-                let mut state = self.state.lock().unwrap();
-                let thread = state.wp_processor.take().unwrap();
-                match thread.join() {
-                    Ok(_) => {
-                        gst::log!(CAT, imp = self, "Thread finished");
-                    }
-                    Err(_e) => {
-                        gst::error!(CAT, imp = self, "Error finishing thread");
-                    }
-                }
                 success = gst::StateChangeSuccess::NoPreroll;
             }
             gst::StateChange::ReadyToPaused => {
