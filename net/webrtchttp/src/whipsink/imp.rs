@@ -8,24 +8,23 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::utils::{
-    build_reqwest_client, parse_redirect_location, set_ice_servers, wait, wait_async, WaitError,
-    RUNTIME,
+    self, build_reqwest_client, parse_redirect_location, set_ice_servers, wait, wait_async,
+    WaitError, RUNTIME,
 };
 use crate::IceTransportPolicy;
 use async_recursion::async_recursion;
-use futures::future;
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_sdp::*;
 use gst_webrtc::*;
-use once_cell::sync::Lazy;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::StatusCode;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new("whipsink", gst::DebugColorFlags::empty(), Some("WHIP Sink"))
 });
 
@@ -76,7 +75,7 @@ pub struct WhipSink {
     settings: Mutex<Settings>,
     state: Mutex<State>,
     webrtcbin: gst::Element,
-    canceller: Mutex<Option<future::AbortHandle>>,
+    canceller: Mutex<utils::Canceller>,
 }
 
 impl Default for WhipSink {
@@ -89,7 +88,7 @@ impl Default for WhipSink {
             settings: Mutex::new(Settings::default()),
             state: Mutex::new(State::default()),
             webrtcbin,
-            canceller: Mutex::new(None),
+            canceller: Mutex::new(utils::Canceller::default()),
         }
     }
 }
@@ -100,11 +99,11 @@ impl GstObjectImpl for WhipSink {}
 
 impl ElementImpl for WhipSink {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "WHIP Sink Bin",
                 "Sink/Network/WebRTC",
-                "A bin to stream media using the WebRTC HTTP Ingestion Protocol (WHIP)",
+                "A bin to stream RTP media using the WebRTC HTTP Ingestion Protocol (WHIP)",
                 "Taruntej Kanakamalla <taruntej@asymptotic.io>",
             )
         });
@@ -112,7 +111,7 @@ impl ElementImpl for WhipSink {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst::Caps::builder("application/x-rtp").build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink_%u",
@@ -130,12 +129,15 @@ impl ElementImpl for WhipSink {
 
     fn request_new_pad(
         &self,
-        templ: &gst::PadTemplate,
+        _templ: &gst::PadTemplate,
         name: Option<&str>,
         caps: Option<&gst::Caps>,
     ) -> Option<gst::Pad> {
-        let wb_sink_pad = self.webrtcbin.request_pad(templ, name, caps)?;
-        let sink_pad = gst::GhostPad::new(Some(&wb_sink_pad.name()), gst::PadDirection::Sink);
+        let webrtcsink_templ = self.webrtcbin.pad_template("sink_%u").unwrap();
+        let wb_sink_pad = self.webrtcbin.request_pad(&webrtcsink_templ, name, caps)?;
+        let sink_pad = gst::GhostPad::builder(gst::PadDirection::Sink)
+            .name(wb_sink_pad.name())
+            .build();
 
         sink_pad.set_target(Some(&wb_sink_pad)).unwrap();
         self.obj().add_pad(&sink_pad).unwrap();
@@ -143,61 +145,80 @@ impl ElementImpl for WhipSink {
         Some(sink_pad.upcast())
     }
 
+    #[allow(clippy::single_match)]
     fn change_state(
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        if transition == gst::StateChange::NullToReady {
-            /*
-             * Fail the state change if WHIP endpoint has not been set by the
-             * time ReadyToPaused transition happens. This prevents us from
-             * having to check this everywhere else.
-             */
-            let settings = self.settings.lock().unwrap();
+        match transition {
+            gst::StateChange::NullToReady => {
+                /*
+                 * Fail the state change if WHIP endpoint has not been set by the
+                 * time ReadyToPaused transition happens. This prevents us from
+                 * having to check this everywhere else.
+                 */
+                let settings = self.settings.lock().unwrap();
 
-            if settings.whip_endpoint.is_none() {
-                gst::error!(CAT, imp: self, "WHIP endpoint URL must be set");
-                return Err(gst::StateChangeError);
+                if settings.whip_endpoint.is_none() {
+                    gst::error!(CAT, imp = self, "WHIP endpoint URL must be set");
+                    return Err(gst::StateChangeError);
+                }
+
+                /*
+                 * Check if we have a valid URL. We can be assured any further URL
+                 * handling won't fail due to invalid URLs.
+                 */
+                if let Err(e) =
+                    reqwest::Url::parse(settings.whip_endpoint.as_ref().unwrap().as_str())
+                {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "WHIP endpoint URL could not be parsed: {}",
+                        e
+                    );
+
+                    return Err(gst::StateChangeError);
+                }
+                drop(settings);
             }
 
-            /*
-             * Check if we have a valid URL. We can be assured any further URL
-             * handling won't fail due to invalid URLs.
-             */
-            if let Err(e) = reqwest::Url::parse(settings.whip_endpoint.as_ref().unwrap().as_str()) {
-                gst::error!(
-                    CAT,
-                    imp: self,
-                    "WHIP endpoint URL could not be parsed: {}",
-                    e
-                );
-
-                return Err(gst::StateChangeError);
+            gst::StateChange::PausedToReady => {
+                // Interrupt requests in progress, if any
+                {
+                    let mut canceller = self.canceller.lock().unwrap();
+                    canceller.abort();
+                }
             }
-            drop(settings);
+            _ => (),
         }
 
-        if transition == gst::StateChange::PausedToReady {
-            // Interrupt requests in progress, if any
-            if let Some(canceller) = &*self.canceller.lock().unwrap() {
-                canceller.abort();
-            }
+        let res = self.parent_change_state(transition)?;
 
-            let state = self.state.lock().unwrap();
-            if let State::Running { .. } = *state {
-                // Release server-side resources
-                drop(state);
-                self.terminate_session();
+        match transition {
+            gst::StateChange::PausedToReady => {
+                {
+                    let mut canceller = self.canceller.lock().unwrap();
+                    *canceller = utils::Canceller::None;
+                }
+
+                let state = self.state.lock().unwrap();
+                if let State::Running { .. } = *state {
+                    // Release server-side resources
+                    drop(state);
+                    self.terminate_session();
+                }
             }
+            _ => (),
         }
 
-        self.parent_change_state(transition)
+        Ok(res)
     }
 }
 
 impl ObjectImpl for WhipSink {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecString::builder("whip-endpoint")
                     .nick("WHIP Endpoint")
                     .blurb("The WHIP server endpoint to POST SDP offer to.
@@ -340,6 +361,13 @@ impl ObjectImpl for WhipSink {
         obj.set_suppressed_flags(gst::ElementFlags::SINK | gst::ElementFlags::SOURCE);
         obj.set_element_flags(gst::ElementFlags::SINK);
 
+        gst::warning!(
+            CAT,
+            imp = self,
+            "whipsink will be deprecated in the future, \
+            it is recommended that whipclientsink be used instead"
+        );
+
         // The spec requires all m= lines to be bundled (section 4.2)
         self.webrtcbin
             .set_property("bundle-policy", gst_webrtc::WebRTCBundlePolicy::MaxBundle);
@@ -347,21 +375,22 @@ impl ObjectImpl for WhipSink {
         let self_weak = self.downgrade();
         self.webrtcbin
             .connect_notify(Some("ice-gathering-state"), move |webrtcbin, _pspec| {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return,
+                let Some(self_) = self_weak.upgrade() else {
+                    return;
                 };
 
                 let state = webrtcbin.property::<WebRTCICEGatheringState>("ice-gathering-state");
 
                 match state {
                     WebRTCICEGatheringState::Gathering => {
-                        gst::info!(CAT, imp: self_, "ICE gathering started")
+                        gst::info!(CAT, imp = self_, "ICE gathering started")
                     }
                     WebRTCICEGatheringState::Complete => {
-                        gst::info!(CAT, imp: self_, "ICE gathering completed");
+                        gst::info!(CAT, imp = self_, "ICE gathering completed");
 
                         let self_ref = self_.ref_counted();
+
+                        gst::info!(CAT, imp = self_, "ICE gathering complete");
 
                         // With tokio's spawn one does not have to .await the
                         // returned JoinHandle to make the provided future start
@@ -506,7 +535,7 @@ impl WhipSink {
     fn handle_future_error(&self, err: WaitError) {
         match err {
             WaitError::FutureAborted => {
-                gst::warning!(CAT, imp: self, "Future aborted")
+                gst::warning!(CAT, imp = self, "Future aborted")
             }
             WaitError::FutureError(err) => {
                 self.raise_error(gst::ResourceError::Failed, err.to_string())
@@ -539,35 +568,36 @@ impl WhipSink {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Sending offer SDP: {:?}",
             offer_sdp.sdp().as_text()
         );
 
         let timeout;
+        let endpoint;
+
         {
             let settings = self.settings.lock().unwrap();
             timeout = settings.timeout;
+            endpoint =
+                reqwest::Url::parse(settings.whip_endpoint.as_ref().unwrap().as_str()).unwrap();
             drop(settings);
         }
 
-        if let Err(e) = wait_async(&self.canceller, self.do_post(offer_sdp), timeout).await {
+        if let Err(e) =
+            wait_async(&self.canceller, self.do_post(offer_sdp, endpoint), timeout).await
+        {
             self.handle_future_error(e);
         }
     }
 
     #[async_recursion]
-    async fn do_post(&self, offer: gst_webrtc::WebRTCSessionDescription) {
+    async fn do_post(&self, offer: gst_webrtc::WebRTCSessionDescription, endpoint: reqwest::Url) {
         let auth_token;
-        let endpoint;
-        let timeout;
 
         {
             let settings = self.settings.lock().unwrap();
-            endpoint =
-                reqwest::Url::parse(settings.whip_endpoint.as_ref().unwrap().as_str()).unwrap();
             auth_token = settings.auth_token.clone();
-            timeout = settings.timeout;
             drop(settings);
         }
 
@@ -597,7 +627,7 @@ impl WhipSink {
         let sdp = offer.sdp();
         let body = sdp.as_text().unwrap();
 
-        gst::debug!(CAT, imp: self, "Using endpoint {}", endpoint.as_str());
+        gst::debug!(CAT, imp = self, "Using endpoint {}", endpoint.as_str());
         let mut headermap = HeaderMap::new();
         headermap.insert(
             reqwest::header::CONTENT_TYPE,
@@ -613,33 +643,16 @@ impl WhipSink {
             );
         }
 
-        let res = wait_async(
-            &self.canceller,
-            client
-                .request(reqwest::Method::POST, endpoint.clone())
-                .headers(headermap)
-                .body(body)
-                .send(),
-            timeout,
-        )
-        .await;
+        let res = client
+            .request(reqwest::Method::POST, endpoint.clone())
+            .headers(headermap)
+            .body(body)
+            .send()
+            .await;
 
         match res {
-            Ok(r) => match r {
-                Ok(resp) => {
-                    if let Err(e) = wait_async(
-                        &self.canceller,
-                        self.parse_endpoint_response(offer, resp, redirects),
-                        timeout,
-                    )
-                    .await
-                    {
-                        self.handle_future_error(e);
-                    }
-                }
-                Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
-            },
-            Err(err) => self.handle_future_error(err),
+            Ok(resp) => self.parse_endpoint_response(offer, resp, redirects).await,
+            Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
         }
     }
 
@@ -650,7 +663,6 @@ impl WhipSink {
         redirects: u8,
     ) {
         let endpoint;
-        let timeout;
         let use_link_headers;
 
         {
@@ -658,7 +670,6 @@ impl WhipSink {
             endpoint =
                 reqwest::Url::parse(settings.whip_endpoint.as_ref().unwrap().as_str()).unwrap();
             use_link_headers = settings.use_link_headers;
-            timeout = settings.timeout;
             drop(settings);
         }
 
@@ -702,7 +713,7 @@ impl WhipSink {
 
                 let url = reqwest::Url::parse(endpoint.as_str()).unwrap();
 
-                gst::debug!(CAT, imp: self, "WHIP resource: {:?}", location);
+                gst::debug!(CAT, imp = self, "WHIP resource: {:?}", location);
 
                 let url = match url.join(location) {
                     Ok(joined_url) => joined_url,
@@ -732,29 +743,26 @@ impl WhipSink {
                     drop(state);
                 }
 
-                match wait_async(&self.canceller, resp.bytes(), timeout).await {
-                    Ok(res) => match res {
-                        Ok(ans_bytes) => match sdp_message::SDPMessage::parse_buffer(&ans_bytes) {
-                            Ok(ans_sdp) => {
-                                let answer = gst_webrtc::WebRTCSessionDescription::new(
-                                    gst_webrtc::WebRTCSDPType::Answer,
-                                    ans_sdp,
-                                );
-                                self.webrtcbin.emit_by_name::<()>(
-                                    "set-remote-description",
-                                    &[&answer, &None::<gst::Promise>],
-                                );
-                            }
-                            Err(err) => {
-                                self.raise_error(
-                                    gst::ResourceError::Failed,
-                                    format!("Could not parse answer SDP: {err}"),
-                                );
-                            }
-                        },
-                        Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
+                match resp.bytes().await {
+                    Ok(ans_bytes) => match sdp_message::SDPMessage::parse_buffer(&ans_bytes) {
+                        Ok(ans_sdp) => {
+                            let answer = gst_webrtc::WebRTCSessionDescription::new(
+                                gst_webrtc::WebRTCSDPType::Answer,
+                                ans_sdp,
+                            );
+                            self.webrtcbin.emit_by_name::<()>(
+                                "set-remote-description",
+                                &[&answer, &None::<gst::Promise>],
+                            );
+                        }
+                        Err(err) => {
+                            self.raise_error(
+                                gst::ResourceError::Failed,
+                                format!("Could not parse answer SDP: {err}"),
+                            );
+                        }
                     },
-                    Err(err) => self.handle_future_error(err),
+                    Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
                 }
             }
 
@@ -788,16 +796,12 @@ impl WhipSink {
 
                             gst::debug!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "Redirecting endpoint to {}",
                                 redirect_url.as_str()
                             );
 
-                            if let Err(err) =
-                                wait_async(&self.canceller, self.do_post(offer), timeout).await
-                            {
-                                self.handle_future_error(err);
-                            }
+                            self.do_post(offer, redirect_url).await
                         }
                         Err(e) => self.raise_error(gst::ResourceError::Failed, e.to_string()),
                     }
@@ -810,11 +814,9 @@ impl WhipSink {
             }
 
             s => {
-                match wait_async(&self.canceller, resp.bytes(), timeout).await {
+                match resp.bytes().await {
                     Ok(r) => {
-                        let res = r
-                            .map(|x| x.escape_ascii().to_string())
-                            .unwrap_or_else(|_| "(no further details)".to_string());
+                        let res = r.escape_ascii().to_string();
 
                         // FIXME: Check and handle 'Retry-After' header in case of server error
                         self.raise_error(
@@ -822,7 +824,7 @@ impl WhipSink {
                             format!("Unexpected response: {} - {}", s.as_str(), res),
                         );
                     }
-                    Err(err) => self.handle_future_error(err),
+                    Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
                 }
             }
         }
@@ -859,7 +861,7 @@ impl WhipSink {
             );
         }
 
-        gst::debug!(CAT, imp: self, "DELETE request on {}", resource_url);
+        gst::debug!(CAT, imp = self, "DELETE request on {}", resource_url);
         let client = build_reqwest_client(reqwest::redirect::Policy::default());
         let future = async {
             client
@@ -878,14 +880,14 @@ impl WhipSink {
         let res = wait(&self.canceller, future, timeout);
         match res {
             Ok(r) => {
-                gst::debug!(CAT, imp: self, "Response to DELETE : {}", r.status());
+                gst::debug!(CAT, imp = self, "Response to DELETE : {}", r.status());
             }
             Err(e) => match e {
                 WaitError::FutureAborted => {
-                    gst::warning!(CAT, imp: self, "DELETE request aborted")
+                    gst::warning!(CAT, imp = self, "DELETE request aborted")
                 }
                 WaitError::FutureError(e) => {
-                    gst::error!(CAT, imp: self, "Error on DELETE request : {}", e)
+                    gst::error!(CAT, imp = self, "Error on DELETE request : {}", e)
                 }
             },
         };

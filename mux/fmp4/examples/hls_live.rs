@@ -153,7 +153,7 @@ fn trim_segments(state: &mut StreamState) {
             // safe side
             removal_time: segment
                 .date_time
-                .checked_add_signed(Duration::seconds(20))
+                .checked_add_signed(Duration::try_seconds(20).unwrap())
                 .unwrap(),
             path: segment.path.clone(),
         });
@@ -267,7 +267,7 @@ fn setup_appsink(appsink: &gst_app::AppSink, name: &str, path: &Path, is_video: 
                     drop(map);
 
                     // Remove the header from the buffer list
-                    buffer_list.make_mut().remove(0, 1);
+                    buffer_list.make_mut().remove(0..1);
 
                     // If the list is now empty then it only contained the media header and nothing
                     // else.
@@ -365,19 +365,21 @@ fn setup_appsink(appsink: &gst_app::AppSink, name: &str, path: &Path, is_video: 
 fn probe_encoder(state: Arc<Mutex<State>>, enc: gst::Element) {
     enc.static_pad("src").unwrap().add_probe(
         gst::PadProbeType::EVENT_DOWNSTREAM,
-        move |_pad, info| match info.data {
-            Some(gst::PadProbeData::Event(ref ev)) => match ev.view() {
-                gst::EventView::Caps(e) => {
-                    let mime = gst_pbutils::codec_utils_caps_get_mime_codec(e.caps());
+        move |_pad, info| {
+            let Some(ev) = info.event() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            let gst::EventView::Caps(ev) = ev.view() else {
+                return gst::PadProbeReturn::Ok;
+            };
 
-                    let mut state = state.lock().unwrap();
-                    state.all_mimes.push(mime.unwrap().into());
-                    state.maybe_write_manifest();
-                    gst::PadProbeReturn::Remove
-                }
-                _ => gst::PadProbeReturn::Ok,
-            },
-            _ => gst::PadProbeReturn::Ok,
+            let mime = gst_pbutils::codec_utils_caps_get_mime_codec(ev.caps());
+
+            let mut state = state.lock().unwrap();
+            state.all_mimes.push(mime.unwrap().into());
+            state.maybe_write_manifest();
+
+            gst::PadProbeReturn::Remove
         },
     );
 }
@@ -420,7 +422,6 @@ impl VideoStream {
             .build()?;
         let mux = gst::ElementFactory::make("cmafmux")
             .property("fragment-duration", 2500.mseconds())
-            .property_from_str("header-update-mode", "update")
             .property("write-mehd", true)
             .build()?;
         let appsink = gst_app::AppSink::builder().buffer_list(true).build();
@@ -463,12 +464,12 @@ impl AudioStream {
         let src = gst::ElementFactory::make("audiotestsrc")
             .property("is-live", true)
             .property_from_str("wave", &self.wave)
-            .property("fragment-duration", 2500.mseconds())
             .build()?;
         let enc = gst::ElementFactory::make("avenc_aac").build()?;
         let mux = gst::ElementFactory::make("cmafmux")
             .property_from_str("header-update-mode", "update")
             .property("write-mehd", true)
+            .property("fragment-duration", 2500.mseconds())
             .build()?;
         let appsink = gst_app::AppSink::builder().buffer_list(true).build();
 

@@ -1,4 +1,6 @@
 // Copyright (C) 2019 Amazon.com, Inc. or its affiliates <mkolny@amazon.com>
+// Copyright (C) 2023 Asymptotic Inc
+//      Author: Arun Raghavan <arun@asymptotic.io>
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at
@@ -9,7 +11,35 @@
 use gst::glib;
 use gst::prelude::*;
 
-mod imp;
+mod multipartsink;
+mod putobjectsink;
+
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstS3PutObjectSinkNextFile")]
+pub(crate) enum NextFile {
+    #[enum_value(name = "New file for each buffer", nick = "next-buffer")]
+    Buffer,
+    #[enum_value(name = "New file after each discontinuity", nick = "next-discont")]
+    Discont,
+    #[enum_value(name = "New file at each key frame", nick = "next-key-frame")]
+    KeyFrame,
+    #[enum_value(
+        name = "New file after a force key unit event",
+        nick = "next-key-unit-event"
+    )]
+    KeyUnitEvent,
+    #[enum_value(
+        name = "New file when the configured maximum file size would be exceeded with the next buffer or buffer list",
+        nick = "next-max-size"
+    )]
+    MaxSize,
+    #[enum_value(
+        name = "New file when the configured maximum duration would be exceeded with the next buffer or buffer list",
+        nick = "next-max-duration"
+    )]
+    MaxDuration,
+}
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
@@ -27,7 +57,11 @@ pub(crate) enum OnError {
 }
 
 glib::wrapper! {
-    pub struct S3Sink(ObjectSubclass<imp::S3Sink>) @extends gst_base::BaseSink, gst::Element, gst::Object;
+    pub struct S3Sink(ObjectSubclass<multipartsink::S3Sink>) @extends gst_base::BaseSink, gst::Element, gst::Object, @implements gst::URIHandler;
+}
+
+glib::wrapper! {
+    pub struct S3PutObjectSink(ObjectSubclass<putobjectsink::S3PutObjectSink>) @extends gst_base::BaseSink, gst::Element, gst::Object, @implements gst::URIHandler;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -35,13 +69,20 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "rusotos3sink",
-        gst::Rank::Primary,
+        gst::Rank::PRIMARY,
         S3Sink::static_type(),
     )?;
     gst::Element::register(
         Some(plugin),
         "awss3sink",
-        gst::Rank::Primary,
+        gst::Rank::PRIMARY,
         S3Sink::static_type(),
+    )?;
+    gst::Element::register(
+        Some(plugin),
+        "awss3putobjectsink",
+        // This element should not be autoplugged as it is only useful for specific use cases
+        gst::Rank::NONE,
+        S3PutObjectSink::static_type(),
     )
 }

@@ -14,7 +14,7 @@ use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 use gst_video::VideoFormat;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::{
     io,
     io::Write,
@@ -131,7 +131,7 @@ pub struct GifEnc {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new("gifenc", gst::DebugColorFlags::empty(), Some("GIF encoder"))
 });
 
@@ -144,13 +144,13 @@ impl ObjectSubclass for GifEnc {
 
 impl ObjectImpl for GifEnc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecInt::builder("repeat")
                     .nick("Repeat")
                     .blurb("Repeat (-1 to loop forever, 0 .. n finite repetitions)")
                     .minimum(-1)
-                    .maximum(std::u16::MAX as i32)
+                    .maximum(u16::MAX as i32)
                     .default_value(DEFAULT_REPEAT)
                     .mutable_ready()
                     .build(),
@@ -201,7 +201,7 @@ impl GstObjectImpl for GifEnc {}
 
 impl ElementImpl for GifEnc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "GIF encoder",
                 "Encoder/Video",
@@ -214,7 +214,7 @@ impl ElementImpl for GifEnc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst_video::VideoCapsBuilder::new()
                 .format_list([VideoFormat::Rgb, VideoFormat::Rgba])
                 // frame-delay timing in gif is a multiple of 10ms -> max 100fps
@@ -266,7 +266,7 @@ impl VideoEncoderImpl for GifEnc {
             .map_err(|_| gst::loggable_error!(CAT, "Failed to drain"))?;
 
         let video_info = state.info();
-        gst::debug!(CAT, imp: self, "Setting format {:?}", video_info);
+        gst::debug!(CAT, imp = self, "Setting format {:?}", video_info);
 
         {
             let mut state = State::new(video_info);
@@ -299,7 +299,7 @@ impl VideoEncoderImpl for GifEnc {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Sending frame {}",
             frame.system_frame_number()
         );
@@ -403,7 +403,7 @@ impl VideoEncoderImpl for GifEnc {
 
 impl GifEnc {
     fn flush_encoder(&self) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::debug!(CAT, imp: self, "Flushing");
+        gst::debug!(CAT, imp = self, "Flushing");
 
         let trailer_buffer = self.state.borrow_mut().as_mut().map(|state| {
             // Drop encoder to flush and take flushed data (gif trailer)

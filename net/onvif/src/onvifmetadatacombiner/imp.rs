@@ -4,7 +4,7 @@ use gst::subclass::prelude::*;
 use gst_base::prelude::*;
 use gst_base::subclass::prelude::*;
 use gst_base::AGGREGATOR_FLOW_NEED_DATA;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -25,7 +25,7 @@ pub struct OnvifMetadataCombiner {
     state: Mutex<State>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "onvifmetadatacombiner",
         gst::DebugColorFlags::empty(),
@@ -42,12 +42,11 @@ impl ObjectSubclass for OnvifMetadataCombiner {
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("media").unwrap();
         let media_sink_pad =
-            gst::PadBuilder::<gst_base::AggregatorPad>::from_template(&templ, Some("media"))
-                .build();
+            gst::PadBuilder::<gst_base::AggregatorPad>::from_template(&templ).build();
 
         let templ = klass.pad_template("meta").unwrap();
         let meta_sink_pad =
-            gst::PadBuilder::<gst_base::AggregatorPad>::from_template(&templ, Some("meta")).build();
+            gst::PadBuilder::<gst_base::AggregatorPad>::from_template(&templ).build();
 
         Self {
             media_sink_pad,
@@ -71,7 +70,7 @@ impl GstObjectImpl for OnvifMetadataCombiner {}
 
 impl ElementImpl for OnvifMetadataCombiner {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "ONVIF metadata combiner",
                 "Video/Metadata/Combiner",
@@ -84,7 +83,7 @@ impl ElementImpl for OnvifMetadataCombiner {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let media_caps = gst::Caps::new_any();
             let media_sink_pad_template = gst::PadTemplate::with_gtype(
                 "media",
@@ -134,7 +133,7 @@ impl ElementImpl for OnvifMetadataCombiner {
     ) -> Option<gst::Pad> {
         gst::error!(
             CAT,
-            imp: self,
+            imp = self,
             "onvifmetadatacombiner doesn't expose request pads"
         );
 
@@ -144,7 +143,7 @@ impl ElementImpl for OnvifMetadataCombiner {
     fn release_pad(&self, _pad: &gst::Pad) {
         gst::error!(
             CAT,
-            imp: self,
+            imp = self,
             "onvifmetadatacombiner doesn't expose request pads"
         );
     }
@@ -173,7 +172,7 @@ impl OnvifMetadataCombiner {
             if meta_ts <= end {
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Consuming meta buffer at {} before the media end timestamp {}",
                     meta_ts,
                     end
@@ -183,7 +182,7 @@ impl OnvifMetadataCombiner {
             } else {
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Consumed all meta buffers before the media end timestamp {}",
                     end
                 );
@@ -193,9 +192,9 @@ impl OnvifMetadataCombiner {
 
         let is_eos = self.meta_sink_pad.is_eos();
         if is_eos {
-            gst::debug!(CAT, imp: self, "Meta pad is EOS");
+            gst::debug!(CAT, imp = self, "Meta pad is EOS");
         } else {
-            gst::trace!(CAT, imp: self, "Need more meta until time {}", end);
+            gst::trace!(CAT, imp = self, "Need more meta until time {}", end);
         }
 
         Ok(is_eos)
@@ -210,7 +209,7 @@ impl OnvifMetadataCombiner {
             Some(duration) => {
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Current media buffer has a duration, using it: {}",
                     duration
                 );
@@ -224,7 +223,7 @@ impl OnvifMetadataCombiner {
 
                             gst::trace!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "calculated duration for current media buffer from next buffer: {}",
                                 duration
                             );
@@ -234,7 +233,7 @@ impl OnvifMetadataCombiner {
                         None => {
                             gst::trace!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "could not calculate duration for current media buffer"
                             );
                             Some(gst::ClockTime::ZERO)
@@ -243,14 +242,14 @@ impl OnvifMetadataCombiner {
                 } else if timeout {
                     gst::trace!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "could not calculate duration for current media buffer"
                     );
                     Some(gst::ClockTime::ZERO)
                 } else {
                     gst::trace!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "No next buffer to peek at yet to calculate duration"
                     );
                     None
@@ -274,7 +273,7 @@ impl OnvifMetadataCombiner {
             {
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Handling media buffer with reference timestamp {}",
                     current_media_start
                 );
@@ -285,7 +284,7 @@ impl OnvifMetadataCombiner {
 
                         gst::trace!(
                             CAT,
-                            imp: self,
+                            imp = self,
                             "Consuming meta for media buffer from {}-{}",
                             current_media_start,
                             end
@@ -294,7 +293,7 @@ impl OnvifMetadataCombiner {
                         if self.consume_meta(state, end)? {
                             gst::trace!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "Consumed all meta for media buffer from {}-{}",
                                 current_media_start,
                                 end
@@ -303,7 +302,7 @@ impl OnvifMetadataCombiner {
                         } else if timeout {
                             gst::warning!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "Timed out but did not receive all meta for media buffer from {}-{} yet",
                                 current_media_start,
                                 end
@@ -312,7 +311,7 @@ impl OnvifMetadataCombiner {
                         } else {
                             gst::trace!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "Waiting for more meta for media buffer from {}-{}",
                                 current_media_start,
                                 end
@@ -324,7 +323,7 @@ impl OnvifMetadataCombiner {
                     None => {
                         gst::trace!(
                             CAT,
-                            imp: self,
+                            imp = self,
                             "Can't calculate media buffer duration yet, waiting for next"
                         );
 
@@ -335,14 +334,14 @@ impl OnvifMetadataCombiner {
             } else {
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Returning media buffer without reference timestamp"
                 );
 
                 Ok(Some(current_media_buffer))
             }
         } else {
-            gst::trace!(CAT, imp: self, "No media buffer queued currently");
+            gst::trace!(CAT, imp = self, "No media buffer queued currently");
             Ok(None)
         }
     }
@@ -350,7 +349,7 @@ impl OnvifMetadataCombiner {
 
 impl AggregatorImpl for OnvifMetadataCombiner {
     fn aggregate(&self, timeout: bool) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::trace!(CAT, imp: self, "aggregate, timeout: {}", timeout);
+        gst::trace!(CAT, imp = self, "aggregate, timeout: {}", timeout);
 
         let mut state = self.state.lock().unwrap();
 
@@ -379,16 +378,16 @@ impl AggregatorImpl for OnvifMetadataCombiner {
                 .pts()
                 .opt_add(buffer.duration().unwrap_or(gst::ClockTime::ZERO));
 
-            gst::log!(CAT, imp: self, "Updating position: {:?}", position);
+            gst::log!(CAT, imp = self, "Updating position: {:?}", position);
 
             self.obj().set_position(position);
 
             self.finish_buffer(buffer)
         } else if self.media_sink_pad.is_eos() {
-            gst::debug!(CAT, imp: self, "EOS");
+            gst::debug!(CAT, imp = self, "EOS");
             Err(gst::FlowError::Eos)
         } else {
-            gst::trace!(CAT, imp: self, "Need more data");
+            gst::trace!(CAT, imp = self, "Need more data");
             Err(AGGREGATOR_FLOW_NEED_DATA)
         }
     }
@@ -423,7 +422,7 @@ impl AggregatorImpl for OnvifMetadataCombiner {
         match event.view() {
             EventView::Caps(e) => {
                 if aggregator_pad.upcast_ref::<gst::Pad>() == &self.media_sink_pad {
-                    gst::info!(CAT, imp: self, "Pushing caps {}", e.caps());
+                    gst::info!(CAT, imp = self, "Pushing caps {}", e.caps());
                     self.obj().set_src_caps(&e.caps_owned());
                 }
 

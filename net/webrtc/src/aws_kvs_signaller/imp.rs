@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::protocol as p;
-use crate::webrtcsink::WebRTCSink;
+use crate::signaller::{Signallable, SignallableImpl};
 use crate::RUNTIME;
 use anyhow::{anyhow, Error};
 use async_tungstenite::tungstenite::Message as WsMessage;
@@ -10,23 +10,22 @@ use futures::prelude::*;
 use gst::glib;
 use gst::glib::prelude::*;
 use gst::subclass::prelude::*;
-use once_cell::sync::Lazy;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use tokio::task;
 
 use aws_config::default_provider::credentials::DefaultCredentialsChain;
+use aws_credential_types::{provider::ProvideCredentials, Credentials};
 use aws_sdk_kinesisvideo::{
-    model::{ChannelProtocol, ChannelRole, SingleMasterChannelEndpointConfiguration},
-    Client, Endpoint,
+    types::{ChannelProtocol, ChannelRole, SingleMasterChannelEndpointConfiguration},
+    Client,
 };
 use aws_sdk_kinesisvideosignaling::Client as SignalingClient;
-use aws_sig_auth::signer::{self, HttpSignatureType, OperationSigningConfig, RequestConfig};
-use aws_smithy_http::body::SdkBody;
-use aws_types::credentials::ProvideCredentials;
-use aws_types::region::{Region, SigningRegion};
-use aws_types::{Credentials, SigningService};
-use chrono::prelude::*;
+use aws_sigv4::http_request::{
+    sign, SignableBody, SignableRequest, SignatureLocation, SigningSettings,
+};
+use aws_sigv4::sign::v4;
 use data_encoding::BASE64;
 use http::Uri;
 use std::time::{Duration, SystemTime};
@@ -34,7 +33,11 @@ use std::time::{Duration, SystemTime};
 const DEFAULT_AWS_REGION: &str = "us-east-1";
 const DEFAULT_PING_TIMEOUT: i32 = 30;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+#[allow(deprecated)]
+pub static AWS_BEHAVIOR_VERSION: LazyLock<aws_config::BehaviorVersion> =
+    LazyLock::new(aws_config::BehaviorVersion::v2023_11_09);
+
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "webrtc-aws-kvs-signaller",
         gst::DebugColorFlags::empty(),
@@ -82,7 +85,7 @@ pub struct Signaller {
 }
 
 impl Signaller {
-    fn handle_message(element: &WebRTCSink, msg: String) {
+    fn handle_message(&self, msg: String) {
         if let Ok(msg) = serde_json::from_str::<p::IncomingMessage>(&msg) {
             match BASE64.decode(&msg.message_payload.into_bytes()) {
                 Ok(payload) => {
@@ -96,21 +99,24 @@ impl Signaller {
                                     msg.sender_client_id,
                                     sdp_msg.sdp
                                 );
-                                if let Err(err) = element.start_session(
-                                    &msg.sender_client_id,
-                                    &msg.sender_client_id,
-                                    Some(&gst_webrtc::WebRTCSessionDescription::new(
-                                        gst_webrtc::WebRTCSDPType::Offer,
-                                        gst_sdp::SDPMessage::parse_buffer(sdp_msg.sdp.as_bytes())
+                                self.obj().emit_by_name::<()>(
+                                    "session-requested",
+                                    &[
+                                        &msg.sender_client_id,
+                                        &msg.sender_client_id,
+                                        &Some(gst_webrtc::WebRTCSessionDescription::new(
+                                            gst_webrtc::WebRTCSDPType::Offer,
+                                            gst_sdp::SDPMessage::parse_buffer(
+                                                sdp_msg.sdp.as_bytes(),
+                                            )
                                             .unwrap(),
-                                    )),
-                                ) {
-                                    gst::warning!(CAT, obj: element, "{err}");
-                                }
+                                        )),
+                                    ],
+                                );
                             } else {
                                 gst::warning!(
                                     CAT,
-                                    obj: element,
+                                    imp = self,
                                     "Failed to parse SDP_OFFER: {payload}"
                                 );
                             }
@@ -125,18 +131,19 @@ impl Signaller {
                                     ice_msg.sdp_m_line_index,
                                     ice_msg.sdp_mid
                                 );
-                                if let Err(err) = element.handle_ice(
-                                    &msg.sender_client_id,
-                                    Some(ice_msg.sdp_m_line_index),
-                                    Some(ice_msg.sdp_mid),
-                                    &ice_msg.candidate,
-                                ) {
-                                    gst::warning!(CAT, obj: element, "{err}");
-                                }
+                                self.obj().emit_by_name::<()>(
+                                    "handle-ice",
+                                    &[
+                                        &msg.sender_client_id,
+                                        &ice_msg.sdp_m_line_index,
+                                        &Some(ice_msg.sdp_mid),
+                                        &ice_msg.candidate,
+                                    ],
+                                );
                             } else {
                                 gst::warning!(
                                     CAT,
-                                    obj: element,
+                                    imp = self,
                                     "Failed to parse ICE_CANDIDATE: {payload}"
                                 );
                             }
@@ -144,7 +151,7 @@ impl Signaller {
                         _ => {
                             gst::log!(
                                 CAT,
-                                obj: element,
+                                imp = self,
                                 "Ignoring unsupported message type {}",
                                 msg.message_type
                             );
@@ -154,20 +161,24 @@ impl Signaller {
                 Err(e) => {
                     gst::error!(
                         CAT,
-                        obj: element,
+                        imp = self,
                         "Failed to decode message payload from server: {e}"
                     );
-                    element.handle_signalling_error(
-                        anyhow!("Failed to decode message payload from server: {e}").into(),
+                    self.obj().emit_by_name::<()>(
+                        "error",
+                        &[&format!(
+                            "{:?}",
+                            anyhow!("Failed to decode message payload from server: {e}")
+                        )],
                     );
                 }
             }
         } else {
-            gst::log!(CAT, obj: element, "Unknown message from server: [{msg}]");
+            gst::log!(CAT, imp = self, "Unknown message from server: [{msg}]");
         }
     }
 
-    async fn connect(&self, element: &WebRTCSink) -> Result<(), Error> {
+    async fn connect(&self) -> Result<(), Error> {
         let settings = self.settings.lock().unwrap().clone();
 
         let connector = if let Some(path) = settings.cafile {
@@ -180,7 +191,11 @@ impl Signaller {
             None
         };
 
-        let region = Region::new(DEFAULT_AWS_REGION);
+        let region = aws_config::meta::region::RegionProviderChain::default_provider()
+            .or_else(DEFAULT_AWS_REGION)
+            .region()
+            .await
+            .unwrap();
         let access_key = settings.access_key.as_ref();
         let secret_access_key = settings.secret_access_key.as_ref();
         let session_token = settings.session_token.clone();
@@ -189,7 +204,7 @@ impl Signaller {
             (Some(key), Some(secret_key)) => {
                 gst::debug!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Using provided access and secret access key"
                 );
                 Ok(Credentials::new(
@@ -201,7 +216,7 @@ impl Signaller {
                 ))
             }
             _ => {
-                gst::debug!(CAT, imp: self, "Using default AWS credentials");
+                gst::debug!(CAT, imp = self, "Using default AWS credentials");
                 let cred = DefaultCredentialsChain::builder()
                     .region(region.clone())
                     .build()
@@ -217,10 +232,12 @@ impl Signaller {
             Ok(credentials) => credentials,
         };
 
-        let Some(channel_name) = settings.channel_name else { anyhow::bail!("Channel name cannot be None!"); };
+        let Some(channel_name) = settings.channel_name else {
+            anyhow::bail!("Channel name cannot be None!");
+        };
 
         let client = Client::new(
-            &aws_config::from_env()
+            &aws_config::defaults(*AWS_BEHAVIOR_VERSION)
                 .credentials_provider(credentials.clone())
                 .load()
                 .await,
@@ -232,11 +249,15 @@ impl Signaller {
             .send()
             .await?;
 
-        let Some(cinfo) = resp.channel_info() else { anyhow::bail!("No description found for {channel_name}"); };
+        let Some(cinfo) = resp.channel_info() else {
+            anyhow::bail!("No description found for {channel_name}");
+        };
 
         gst::debug!(CAT, "Channel description: {cinfo:?}");
 
-        let Some(channel_arn) = cinfo.channel_arn() else { anyhow::bail!("No channel ARN found for {channel_name}"); };
+        let Some(channel_arn) = cinfo.channel_arn() else {
+            anyhow::bail!("No channel ARN found for {channel_name}");
+        };
 
         let config = SingleMasterChannelEndpointConfiguration::builder()
             .set_protocols(Some(vec![ChannelProtocol::Wss, ChannelProtocol::Https]))
@@ -252,41 +273,31 @@ impl Signaller {
 
         gst::debug!(CAT, "Endpoints: {:?}", resp.resource_endpoint_list());
 
-        let endpoint_wss_uri =
-            match resp
-                .resource_endpoint_list()
-                .unwrap()
-                .iter()
-                .find_map(|endpoint| {
-                    if endpoint.protocol == Some(ChannelProtocol::Wss) {
-                        Some(endpoint.resource_endpoint().unwrap().to_owned())
-                    } else {
-                        None
-                    }
-                }) {
-                Some(endpoint_uri_str) => Uri::from_maybe_shared(endpoint_uri_str).unwrap(),
-                None => {
-                    anyhow::bail!("No WSS endpoint found for {channel_name}");
-                }
-            };
+        let endpoint_wss_uri = match resp.resource_endpoint_list().iter().find_map(|endpoint| {
+            if endpoint.protocol == Some(ChannelProtocol::Wss) {
+                Some(endpoint.resource_endpoint().unwrap().to_owned())
+            } else {
+                None
+            }
+        }) {
+            Some(endpoint_uri_str) => Uri::from_maybe_shared(endpoint_uri_str).unwrap(),
+            None => {
+                anyhow::bail!("No WSS endpoint found for {channel_name}");
+            }
+        };
 
-        let endpoint_https_uri =
-            match resp
-                .resource_endpoint_list()
-                .unwrap()
-                .iter()
-                .find_map(|endpoint| {
-                    if endpoint.protocol == Some(ChannelProtocol::Https) {
-                        Some(endpoint.resource_endpoint().unwrap().to_owned())
-                    } else {
-                        None
-                    }
-                }) {
-                Some(endpoint_uri_str) => Uri::from_maybe_shared(endpoint_uri_str).unwrap(),
-                None => {
-                    anyhow::bail!("No HTTPS endpoint found for {channel_name}");
-                }
-            };
+        let endpoint_https_uri = match resp.resource_endpoint_list().iter().find_map(|endpoint| {
+            if endpoint.protocol == Some(ChannelProtocol::Https) {
+                Some(endpoint.resource_endpoint().unwrap().to_owned())
+            } else {
+                None
+            }
+        }) {
+            Some(endpoint_uri_str) => endpoint_uri_str,
+            None => {
+                anyhow::bail!("No HTTPS endpoint found for {channel_name}");
+            }
+        };
 
         gst::debug!(
             CAT,
@@ -296,12 +307,12 @@ impl Signaller {
         );
 
         let signaling_config = aws_sdk_kinesisvideosignaling::config::Builder::from(
-            &aws_config::from_env()
+            &aws_config::defaults(*AWS_BEHAVIOR_VERSION)
                 .credentials_provider(credentials.clone())
                 .load()
                 .await,
         )
-        .endpoint_resolver(Endpoint::immutable_uri(endpoint_https_uri.clone())?)
+        .endpoint_url(endpoint_https_uri)
         .build();
 
         let signaling_client = SignalingClient::from_conf(signaling_config);
@@ -314,7 +325,6 @@ impl Signaller {
 
         let ice_servers: Vec<String> = resp
             .ice_server_list()
-            .unwrap()
             .iter()
             .filter_map(|server| {
                 Option::zip(server.username(), server.password())
@@ -323,7 +333,6 @@ impl Signaller {
             .flat_map(|(username, password, server)| {
                 server
                     .uris()
-                    .unwrap()
                     .iter()
                     .filter_map(move |uri| {
                         uri.split_once(':').map(|(protocol, host)| {
@@ -339,11 +348,10 @@ impl Signaller {
             .collect();
 
         gst::info!(CAT, "Ice servers: {:?}", ice_servers);
-
-        element.connect_closure(
-            "consumer-added",
+        self.obj().connect_closure(
+            "webrtcbin-ready",
             false,
-            glib::closure!(|_webrtcsink: &gst::Element,
+            glib::closure!(|_signaller: &super::AwsKvsSignaller,
                             _consumer_identifier: &str,
                             webrtcbin: &gst::Element| {
                 webrtcbin.set_property(
@@ -357,20 +365,20 @@ impl Signaller {
             }),
         );
 
-        let current_time = Utc::now();
-
-        let signer = signer::SigV4Signer::new();
-        let mut operation_config = OperationSigningConfig::default_config();
-        operation_config.signature_type = HttpSignatureType::HttpRequestQueryParams;
-        operation_config.expires_in = Some(Duration::from_secs(5 * 60)); // See commit a3db85d.
-
-        let request_config = RequestConfig {
-            request_ts: SystemTime::from(current_time),
-            region: &SigningRegion::from(region.clone()),
-            service: &SigningService::from_static("kinesisvideo"),
-            payload_override: None,
-        };
-
+        let mut signing_settings = SigningSettings::default();
+        signing_settings.signature_location = SignatureLocation::QueryParams;
+        signing_settings.expires_in = Some(Duration::from_secs(5 * 60));
+        let identity = credentials.clone().into();
+        let region_string = region.to_string();
+        let signing_params = v4::SigningParams::builder()
+            .identity(&identity)
+            .region(&region_string)
+            .name("kinesisvideo")
+            .time(SystemTime::now())
+            .settings(signing_settings)
+            .build()
+            .unwrap()
+            .into();
         let transcribe_uri = Uri::builder()
             .scheme("wss")
             .authority(endpoint_wss_uri.authority().unwrap().to_owned())
@@ -380,25 +388,26 @@ impl Signaller {
             ))
             .build()
             .map_err(|err| {
-                gst::error!(CAT, imp: self, "Failed to build HTTP request URI: {err}");
+                gst::error!(CAT, imp = self, "Failed to build HTTP request URI: {err}");
                 anyhow!("Failed to build HTTP request URI: {err}")
             })?;
+
+        // Convert the HTTP request into a signable request
+        let signable_request = SignableRequest::new(
+            "GET",
+            transcribe_uri.to_string(),
+            std::iter::empty(),
+            SignableBody::Bytes(&[]),
+        )
+        .expect("signable request");
+
         let mut request = http::Request::builder()
             .uri(transcribe_uri)
-            .body(SdkBody::empty())
+            .body(aws_smithy_types::body::SdkBody::empty())
             .expect("Failed to build valid request");
-
-        let _signature = signer
-            .sign(
-                &operation_config,
-                &request_config,
-                &credentials,
-                &mut request,
-            )
-            .map_err(|err| {
-                gst::error!(CAT, imp: self, "Failed to sign HTTP request: {err}");
-                anyhow!("Failed to sign HTTP request: {err}")
-            })?;
+        let (signing_instructions, _signature) =
+            sign(signable_request, &signing_params)?.into_parts();
+        signing_instructions.apply_to_request_http1x(&mut request);
 
         let url = request.uri().to_string();
 
@@ -407,7 +416,7 @@ impl Signaller {
         let (ws, _) =
             async_tungstenite::tokio::connect_async_with_tls_connector(url, connector).await?;
 
-        gst::info!(CAT, obj: element, "connected");
+        gst::info!(CAT, imp = self, "connected");
 
         // Channel for asynchronously sending out websocket message
         let (mut ws_sink, mut ws_stream) = ws.split();
@@ -416,9 +425,10 @@ impl Signaller {
         // up of messages as with unbounded
         let (mut _websocket_sender, mut websocket_receiver) =
             mpsc::channel::<p::OutgoingMessage>(1000);
-        let element_clone = element.downgrade();
+        let imp = self.downgrade();
         let ping_timeout = settings.ping_timeout;
         let send_task_handle = task::spawn(async move {
+            let mut res = Ok(());
             loop {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(ping_timeout as u64),
@@ -427,60 +437,68 @@ impl Signaller {
                 .await
                 {
                     Ok(Some(msg)) => {
-                        if let Some(element) = element_clone.upgrade() {
+                        if let Some(imp) = imp.upgrade() {
                             gst::trace!(
                                 CAT,
-                                obj: element,
+                                imp = imp,
                                 "Sending websocket message {}",
                                 serde_json::to_string(&msg).unwrap()
                             );
                         }
-                        ws_sink
+                        res = ws_sink
                             .send(WsMessage::Text(serde_json::to_string(&msg).unwrap()))
-                            .await?;
+                            .await;
                     }
                     Ok(None) => {
                         break;
                     }
                     Err(_) => {
-                        ws_sink.send(WsMessage::Ping(vec![])).await?;
+                        res = ws_sink.send(WsMessage::Ping(vec![])).await;
                     }
+                }
+
+                if let Err(ref err) = res {
+                    if let Some(imp) = imp.upgrade() {
+                        gst::error!(CAT, imp = imp, "Quitting send loop: {err}");
+                    } else {
+                        gst::error!(CAT, "Quitting send loop: {err}");
+                    }
+
+                    break;
                 }
             }
 
-            if let Some(element) = element_clone.upgrade() {
-                gst::info!(CAT, obj: element, "Done sending");
+            if let Some(imp) = imp.upgrade() {
+                gst::debug!(CAT, imp = imp, "Done sending");
+            } else {
+                gst::debug!(CAT, "Done sending");
             }
 
-            ws_sink.send(WsMessage::Close(None)).await?;
-            ws_sink.close().await?;
+            let _ = ws_sink.close().await;
 
-            Ok::<(), Error>(())
+            res.map_err(Into::into)
         });
 
-        let element_clone = element.downgrade();
+        let imp = self.downgrade();
         let receive_task_handle = task::spawn(async move {
             while let Some(msg) = tokio_stream::StreamExt::next(&mut ws_stream).await {
-                if let Some(element) = element_clone.upgrade() {
+                if let Some(imp) = imp.upgrade() {
                     match msg {
                         Ok(WsMessage::Text(msg)) => {
                             gst::trace!(CAT, "received message [{msg}]");
-                            Signaller::handle_message(&element, msg);
+                            imp.handle_message(msg);
                         }
                         Ok(WsMessage::Close(reason)) => {
-                            gst::info!(
-                                CAT,
-                                obj: element,
-                                "websocket connection closed: {:?}",
-                                reason
-                            );
-                            element.shutdown();
+                            gst::info!(CAT, imp = imp, "websocket connection closed: {:?}", reason);
+                            imp.obj().emit_by_name::<()>("shutdown", &[]);
                             break;
                         }
                         Ok(_) => (),
                         Err(err) => {
-                            element
-                                .handle_signalling_error(anyhow!("Error receiving: {err}").into());
+                            imp.obj().emit_by_name::<()>(
+                                "error",
+                                &[&format!("{:?}", anyhow!("Error receiving: {err}"))],
+                            );
                             break;
                         }
                     }
@@ -489,8 +507,8 @@ impl Signaller {
                 }
             }
 
-            if let Some(element) = element_clone.upgrade() {
-                gst::info!(CAT, obj: element, "Stopped websocket receiving");
+            if let Some(imp) = imp.upgrade() {
+                gst::info!(CAT, imp = imp, "Stopped websocket receiving");
             }
         });
 
@@ -501,24 +519,22 @@ impl Signaller {
 
         Ok(())
     }
+}
 
-    pub fn start(&self, element: &WebRTCSink) {
+impl SignallableImpl for Signaller {
+    fn start(&self) {
         let this = self.obj().clone();
-        let element_clone = element.clone();
+        let imp = self.downgrade();
         task::spawn(async move {
-            let this = this.imp();
-            if let Err(err) = this.connect(&element_clone).await {
-                element_clone.handle_signalling_error(err.into());
+            if let Some(imp) = imp.upgrade() {
+                if let Err(err) = imp.connect().await {
+                    this.emit_by_name::<()>("error", &[&format!("{:?}", anyhow!(err))]);
+                }
             }
         });
     }
 
-    pub fn handle_sdp(
-        &self,
-        element: &WebRTCSink,
-        session_id: &str,
-        sdp: &gst_webrtc::WebRTCSessionDescription,
-    ) {
+    fn send_sdp(&self, session_id: &str, sdp: &gst_webrtc::WebRTCSessionDescription) {
         let state = self.state.lock().unwrap();
 
         let msg = p::OutgoingMessage {
@@ -535,23 +551,25 @@ impl Signaller {
         };
 
         if let Some(mut sender) = state.websocket_sender.clone() {
-            let element = element.downgrade();
+            let imp = self.downgrade();
             RUNTIME.spawn(async move {
                 if let Err(err) = sender.send(msg).await {
-                    if let Some(element) = element.upgrade() {
-                        element.handle_signalling_error(anyhow!("Error: {err}").into());
+                    if let Some(imp) = imp.upgrade() {
+                        imp.obj().emit_by_name::<()>(
+                            "error",
+                            &[&format!("{:?}", anyhow!("Error: {err}"))],
+                        );
                     }
                 }
             });
         }
     }
 
-    pub fn handle_ice(
+    fn add_ice(
         &self,
-        element: &WebRTCSink,
         session_id: &str,
         candidate: &str,
-        sdp_m_line_index: Option<u32>,
+        sdp_m_line_index: u32,
         _sdp_mid: Option<String>,
     ) {
         let state = self.state.lock().unwrap();
@@ -561,8 +579,8 @@ impl Signaller {
             message_payload: BASE64.encode(
                 &serde_json::to_string(&p::OutgoingIceCandidate {
                     candidate: candidate.to_string(),
-                    sdp_mid: sdp_m_line_index.unwrap().to_string(),
-                    sdp_m_line_index: sdp_m_line_index.unwrap(),
+                    sdp_mid: sdp_m_line_index.to_string(),
+                    sdp_m_line_index,
                 })
                 .unwrap()
                 .into_bytes(),
@@ -571,46 +589,45 @@ impl Signaller {
         };
 
         if let Some(mut sender) = state.websocket_sender.clone() {
-            let element = element.downgrade();
+            let imp = self.downgrade();
             RUNTIME.spawn(async move {
                 if let Err(err) = sender.send(msg).await {
-                    if let Some(element) = element.upgrade() {
-                        element.handle_signalling_error(anyhow!("Error: {err}").into());
+                    if let Some(imp) = imp.upgrade() {
+                        imp.obj().emit_by_name::<()>(
+                            "error",
+                            &[&format!("{:?}", anyhow!("Error: {err}"))],
+                        );
                     }
                 }
             });
         }
     }
 
-    pub fn stop(&self, element: &WebRTCSink) {
-        gst::info!(CAT, obj: element, "Stopping now");
+    fn stop(&self) {
+        gst::info!(CAT, imp = self, "Stopping now");
 
         let mut state = self.state.lock().unwrap();
         let send_task_handle = state.send_task_handle.take();
         let receive_task_handle = state.receive_task_handle.take();
         if let Some(mut sender) = state.websocket_sender.take() {
-            let element = element.downgrade();
+            let imp = self.downgrade();
             RUNTIME.block_on(async move {
                 sender.close_channel();
 
                 if let Some(handle) = send_task_handle {
                     if let Err(err) = handle.await {
-                        if let Some(element) = element.upgrade() {
-                            gst::warning!(
-                                CAT,
-                                obj: element,
-                                "Error while joining send task: {err}"
-                            );
+                        if let Some(imp) = imp.upgrade() {
+                            gst::warning!(CAT, imp = imp, "Error while joining send task: {err}");
                         }
                     }
                 }
 
                 if let Some(handle) = receive_task_handle {
                     if let Err(err) = handle.await {
-                        if let Some(element) = element.upgrade() {
+                        if let Some(imp) = imp.upgrade() {
                             gst::warning!(
                                 CAT,
-                                obj: element,
+                                imp = imp,
                                 "Error while joining receive task: {err}"
                             );
                         }
@@ -620,8 +637,8 @@ impl Signaller {
         }
     }
 
-    pub fn end_session(&self, element: &WebRTCSink, session_id: &str) {
-        gst::info!(CAT, obj: element, "Signalling session {session_id} ended");
+    fn end_session(&self, session_id: &str) {
+        gst::info!(CAT, imp = self, "Signalling session {session_id} ended");
 
         // We can seemingly not do anything beyond that
     }
@@ -632,12 +649,19 @@ impl ObjectSubclass for Signaller {
     const NAME: &'static str = "GstAwsKvsWebRTCSinkSignaller";
     type Type = super::AwsKvsSignaller;
     type ParentType = glib::Object;
+    type Interfaces = (Signallable,);
 }
 
 impl ObjectImpl for Signaller {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
+                glib::ParamSpecBoolean::builder("manual-sdp-munging")
+                    .nick("Manual SDP munging")
+                    .blurb("Whether the signaller manages SDP munging itself")
+                    .default_value(false)
+                    .read_only()
+                    .build(),
                 glib::ParamSpecString::builder("address")
                     .nick("Address")
                     .blurb("Address of the signalling server")
@@ -666,7 +690,7 @@ impl ObjectImpl for Signaller {
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
         match pspec.name() {
             "address" => {
-                let address: Option<_> = value.get().expect("type checked upstream");
+                let address: Option<_> = value.get().unwrap();
 
                 if let Some(address) = address {
                     gst::info!(CAT, "Signaller address set to {address}");
@@ -684,23 +708,23 @@ impl ObjectImpl for Signaller {
             }
             "access-key" => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.access_key = value.get().expect("type checked upstream");
+                settings.access_key = value.get().unwrap();
             }
             "secret-access-key" => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.secret_access_key = value.get().expect("type checked upstream");
+                settings.secret_access_key = value.get().unwrap();
             }
             "session-token" => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.session_token = value.get().expect("type checked upstream");
+                settings.session_token = value.get().unwrap();
             }
             "channel-name" => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.channel_name = value.get().expect("type checked upstream");
+                settings.channel_name = value.get().unwrap();
             }
             "ping-timeout" => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.ping_timeout = value.get().expect("type checked upstream");
+                settings.ping_timeout = value.get().unwrap();
             }
             _ => unimplemented!(),
         }
@@ -708,6 +732,7 @@ impl ObjectImpl for Signaller {
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
         match pspec.name() {
+            "manual-sdp-munging" => false.to_value(),
             "address" => self.settings.lock().unwrap().address.to_value(),
             "cafile" => {
                 let settings = self.settings.lock().unwrap();

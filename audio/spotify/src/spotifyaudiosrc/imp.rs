@@ -6,10 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex};
 
-use futures::future::{AbortHandle, Abortable, Aborted};
-use once_cell::sync::Lazy;
+use futures::future::{AbortHandle, Abortable};
+use std::sync::LazyLock;
 use tokio::{runtime, task::JoinHandle};
 
 use gst::glib;
@@ -17,7 +17,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::subclass::{base_src::CreateSuccess, prelude::*};
 
-use librespot::playback::{
+use librespot_playback::{
     audio_backend::{Sink, SinkResult},
     config::PlayerConfig,
     convert::Converter,
@@ -27,8 +27,9 @@ use librespot::playback::{
 };
 
 use super::Bitrate;
+use crate::common::SetupThread;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "spotifyaudiosrc",
         gst::DebugColorFlags::empty(),
@@ -36,7 +37,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     )
 });
 
-static RUNTIME: Lazy<runtime::Runtime> = Lazy::new(|| {
+static RUNTIME: LazyLock<runtime::Runtime> = LazyLock::new(|| {
     runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(1)
@@ -52,7 +53,7 @@ enum Message {
 }
 
 struct State {
-    player: Player,
+    player: Arc<Player>,
 
     /// receiver sending buffer to streaming thread
     receiver: mpsc::Receiver<Message>,
@@ -68,14 +69,9 @@ struct Settings {
 
 #[derive(Default)]
 pub struct SpotifyAudioSrc {
-    setup_thread: Mutex<Option<SetupThread>>,
+    setup_thread: Mutex<SetupThread>,
     state: Arc<Mutex<Option<State>>>,
     settings: Mutex<Settings>,
-}
-
-struct SetupThread {
-    thread_handle: std::thread::JoinHandle<Result<anyhow::Result<()>, Aborted>>,
-    abort_handle: AbortHandle,
 }
 
 #[glib::object_subclass]
@@ -88,7 +84,7 @@ impl ObjectSubclass for SpotifyAudioSrc {
 
 impl ObjectImpl for SpotifyAudioSrc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             let mut props = crate::common::Settings::properties();
             let default = Settings::default();
 
@@ -130,7 +126,7 @@ impl GstObjectImpl for SpotifyAudioSrc {}
 
 impl ElementImpl for SpotifyAudioSrc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Spotify source",
                 "Source/Audio",
@@ -143,7 +139,7 @@ impl ElementImpl for SpotifyAudioSrc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("application/ogg").build();
 
             let src_pad_template = gst::PadTemplate::new(
@@ -172,23 +168,20 @@ impl BaseSrcImpl for SpotifyAudioSrc {
         }
 
         {
-            let setup_thread = self.setup_thread.lock().unwrap();
-            if setup_thread.is_some() {
-                // already starting
-                return Ok(());
+            // If not started yet and not cancelled, start the setup
+            let mut setup_thread = self.setup_thread.lock().unwrap();
+            assert!(!matches!(&*setup_thread, SetupThread::Cancelled));
+            if matches!(&*setup_thread, SetupThread::None) {
+                self.start_setup(&mut setup_thread);
             }
-            self.start_setup(setup_thread);
         }
 
         Ok(())
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
-        // stop the setup if it's not completed yet
-        self.cancel_setup();
-
         if let Some(state) = self.state.lock().unwrap().take() {
-            gst::debug!(CAT, imp: self, "stopping");
+            gst::debug!(CAT, imp = self, "stopping");
             state.player.stop();
             state.player_channel_handle.abort();
             // FIXME: not sure why this is needed to unblock BufferSink::write(), dropping State should drop the receiver
@@ -199,9 +192,17 @@ impl BaseSrcImpl for SpotifyAudioSrc {
     }
 
     fn unlock(&self) -> Result<(), gst::ErrorMessage> {
-        self.cancel_setup();
+        let mut setup_thread = self.setup_thread.lock().unwrap();
+        setup_thread.abort();
+        Ok(())
+    }
 
-        self.parent_unlock()
+    fn unlock_stop(&self) -> Result<(), gst::ErrorMessage> {
+        let mut setup_thread = self.setup_thread.lock().unwrap();
+        if matches!(&*setup_thread, SetupThread::Cancelled) {
+            *setup_thread = SetupThread::None;
+        }
+        Ok(())
     }
 }
 
@@ -216,30 +217,47 @@ impl PushSrcImpl for SpotifyAudioSrc {
         };
 
         if !state_set {
-            let setup_thread = self.setup_thread.lock().unwrap();
-            if setup_thread.is_none() {
-                // unlock() could potentially cancel the setup, and create() can be called after unlock() without going through start() again.
-                self.start_setup(setup_thread);
+            // If not started yet and not cancelled, start the setup
+            let mut setup_thread = self.setup_thread.lock().unwrap();
+            if matches!(&*setup_thread, SetupThread::Cancelled) {
+                return Err(gst::FlowError::Flushing);
+            }
+
+            if matches!(&*setup_thread, SetupThread::None) {
+                self.start_setup(&mut setup_thread);
             }
         }
 
         {
             // wait for the setup to be completed
             let mut setup_thread = self.setup_thread.lock().unwrap();
-            if let Some(setup) = setup_thread.take() {
-                let res = setup.thread_handle.join().unwrap();
+            if let SetupThread::Pending {
+                ref mut thread_handle,
+                ..
+            } = *setup_thread
+            {
+                let thread_handle = thread_handle.take().expect("Waiting multiple times");
+                drop(setup_thread);
+                let res = thread_handle.join().unwrap();
 
                 match res {
                     Err(_aborted) => {
-                        gst::debug!(CAT, imp: self, "setup has been cancelled");
+                        gst::debug!(CAT, imp = self, "setup has been cancelled");
+                        setup_thread = self.setup_thread.lock().unwrap();
+                        *setup_thread = SetupThread::Cancelled;
                         return Err(gst::FlowError::Flushing);
                     }
                     Ok(Err(err)) => {
-                        gst::error!(CAT, imp: self, "failed to start: {err:?}");
+                        gst::error!(CAT, imp = self, "failed to start: {err:?}");
                         gst::element_imp_error!(self, gst::ResourceError::Settings, ["{err:?}"]);
+                        setup_thread = self.setup_thread.lock().unwrap();
+                        *setup_thread = SetupThread::None;
                         return Err(gst::FlowError::Error);
                     }
-                    Ok(Ok(_)) => {}
+                    Ok(Ok(_)) => {
+                        setup_thread = self.setup_thread.lock().unwrap();
+                        *setup_thread = SetupThread::Done;
+                    }
                 }
             }
         }
@@ -249,15 +267,15 @@ impl PushSrcImpl for SpotifyAudioSrc {
 
         match state.receiver.recv().unwrap() {
             Message::Buffer(buffer) => {
-                gst::log!(CAT, imp: self, "got buffer of size {}", buffer.size());
+                gst::log!(CAT, imp = self, "got buffer of size {}", buffer.size());
                 Ok(CreateSuccess::NewBuffer(buffer))
             }
             Message::Eos => {
-                gst::debug!(CAT, imp: self, "eos");
+                gst::debug!(CAT, imp = self, "eos");
                 Err(gst::FlowError::Eos)
             }
             Message::Unavailable => {
-                gst::error!(CAT, imp: self, "track is not available");
+                gst::error!(CAT, imp = self, "track is not available");
                 gst::element_imp_error!(
                     self,
                     gst::ResourceError::NotFound,
@@ -275,11 +293,10 @@ struct BufferSink {
 
 impl Sink for BufferSink {
     fn write(&mut self, packet: AudioPacket, _converter: &mut Converter) -> SinkResult<()> {
-        let oggdata = match packet {
-            AudioPacket::OggData(data) => data,
-            AudioPacket::Samples(_) => unimplemented!(),
+        let buffer = match packet {
+            AudioPacket::Samples(_) => unreachable!(),
+            AudioPacket::Raw(ogg) => gst::Buffer::from_slice(ogg),
         };
-        let buffer = gst::Buffer::from_slice(oggdata);
 
         // ignore if sending fails as that means the source element is being shutdown
         let _ = self.sender.send(Message::Buffer(buffer));
@@ -306,7 +323,7 @@ impl URIHandlerImpl for SpotifyAudioSrc {
     }
 
     fn set_uri(&self, uri: &str) -> Result<(), glib::Error> {
-        gst::debug!(CAT, imp: self, "set URI: {}", uri);
+        gst::debug!(CAT, imp = self, "set URI: {}", uri);
 
         let url = url::Url::parse(uri)
             .map_err(|e| glib::Error::new(gst::URIError::BadUri, &format!("{e:?}")))?;
@@ -314,11 +331,11 @@ impl URIHandlerImpl for SpotifyAudioSrc {
         // allow to configure auth and cache settings from the URI
         for (key, value) in url.query_pairs() {
             match key.as_ref() {
-                "username" | "password" | "cache-credentials" | "cache-files" => {
+                "access-token" | "cache-credentials" | "cache-files" => {
                     self.obj().set_property(&key, value.as_ref());
                 }
                 _ => {
-                    gst::warning!(CAT, imp: self, "unsupported query: {}={}", key, value);
+                    gst::warning!(CAT, imp = self, "unsupported query: {}={}", key, value);
                 }
             }
         }
@@ -331,7 +348,9 @@ impl URIHandlerImpl for SpotifyAudioSrc {
 }
 
 impl SpotifyAudioSrc {
-    fn start_setup(&self, mut setup_thread: MutexGuard<Option<SetupThread>>) {
+    fn start_setup(&self, setup_thread: &mut SetupThread) {
+        assert!(matches!(setup_thread, SetupThread::None));
+
         let self_ = self.to_owned();
 
         // run the runtime from another thread to prevent the "start a runtime from within a runtime" panic
@@ -344,10 +363,10 @@ impl SpotifyAudioSrc {
             })
         });
 
-        setup_thread.replace(SetupThread {
-            thread_handle,
+        *setup_thread = SetupThread::Pending {
+            thread_handle: Some(thread_handle),
             abort_handle,
-        });
+        };
     }
 
     async fn setup(&self) -> anyhow::Result<()> {
@@ -372,7 +391,7 @@ impl SpotifyAudioSrc {
 
             let session = common.connect_session(src.clone(), &CAT).await?;
             let track = common.track_id()?;
-            gst::debug!(CAT, imp: self, "Requesting bitrate {:?}", bitrate);
+            gst::debug!(CAT, imp = self, "Requesting bitrate {:?}", bitrate);
 
             (session, track, bitrate)
         };
@@ -387,10 +406,10 @@ impl SpotifyAudioSrc {
         let (sender, receiver) = mpsc::sync_channel(2);
         let sender_clone = sender.clone();
 
-        let (mut player, mut player_event_channel) =
-            Player::new(player_config, session, Box::new(NoOpVolume), || {
-                Box::new(BufferSink { sender })
-            });
+        let player = Player::new(player_config, session, Box::new(NoOpVolume), || {
+            Box::new(BufferSink { sender })
+        });
+        let mut player_event_channel = player.get_player_event_channel();
 
         player.load(track, true, 0);
 
@@ -419,13 +438,5 @@ impl SpotifyAudioSrc {
         });
 
         Ok(())
-    }
-
-    fn cancel_setup(&self) {
-        let mut setup_thread = self.setup_thread.lock().unwrap();
-
-        if let Some(setup) = setup_thread.take() {
-            setup.abort_handle.abort();
-        }
     }
 }

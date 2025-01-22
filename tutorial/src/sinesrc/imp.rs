@@ -19,16 +19,15 @@ use byte_slice_cast::*;
 
 use std::ops::Rem;
 use std::sync::Mutex;
-use std::u32;
 
 use num_traits::cast::NumCast;
 use num_traits::float::Float;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 // This module contains the private implementation details of our element
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rssinesrc",
         gst::DebugColorFlags::empty(),
@@ -166,7 +165,7 @@ impl ObjectSubclass for SineSrc {
 impl ObjectImpl for SineSrc {
     // Metadata for the properties
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("samples-per-buffer")
                     .nick("Samples Per Buffer")
@@ -228,7 +227,7 @@ impl ObjectImpl for SineSrc {
                 let samples_per_buffer = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing samples-per-buffer from {} to {}",
                     settings.samples_per_buffer,
                     samples_per_buffer
@@ -245,7 +244,7 @@ impl ObjectImpl for SineSrc {
                 let freq = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing freq from {} to {}",
                     settings.freq,
                     freq
@@ -257,7 +256,7 @@ impl ObjectImpl for SineSrc {
                 let volume = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing volume from {} to {}",
                     settings.volume,
                     volume
@@ -269,7 +268,7 @@ impl ObjectImpl for SineSrc {
                 let mute = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing mute from {} to {}",
                     settings.mute,
                     mute
@@ -281,7 +280,7 @@ impl ObjectImpl for SineSrc {
                 let is_live = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing is-live from {} to {}",
                     settings.is_live,
                     is_live
@@ -326,11 +325,11 @@ impl GstObjectImpl for SineSrc {}
 // Implementation of gst::Element virtual methods
 impl ElementImpl for SineSrc {
     // Set the element specific metadata. This information is what
-    // is visible from gst-inspect-1.0 and can also be programatically
+    // is visible from gst-inspect-1.0 and can also be programmatically
     // retrieved from the gst::Registry after initial registration
     // without having to load the plugin in memory.
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Sine Wave Source",
                 "Source/Audio",
@@ -347,7 +346,7 @@ impl ElementImpl for SineSrc {
     // already provide information to GStreamer about all possible
     // pads that could exist for this type.
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             // On the src pad, we can produce F32/F64 with any sample rate
             // and any number of channels
             let caps = gst_audio::AudioCapsBuilder::new_interleaved()
@@ -401,7 +400,7 @@ impl BaseSrcImpl for SineSrc {
             gst::loggable_error!(CAT, "Failed to build `AudioInfo` from caps {}", caps)
         })?;
 
-        gst::debug!(CAT, imp: self, "Configuring for caps {}", caps);
+        gst::debug!(CAT, imp = self, "Configuring for caps {}", caps);
 
         self.obj()
             .set_blocksize(info.bpf() * (self.settings.lock().unwrap()).samples_per_buffer);
@@ -452,7 +451,7 @@ impl BaseSrcImpl for SineSrc {
         *self.state.lock().unwrap() = Default::default();
         self.unlock_stop()?;
 
-        gst::info!(CAT, imp: self, "Started");
+        gst::info!(CAT, imp = self, "Started");
 
         Ok(())
     }
@@ -463,7 +462,7 @@ impl BaseSrcImpl for SineSrc {
         *self.state.lock().unwrap() = Default::default();
         self.unlock()?;
 
-        gst::info!(CAT, imp: self, "Stopped");
+        gst::info!(CAT, imp = self, "Stopped");
 
         Ok(())
     }
@@ -483,7 +482,7 @@ impl BaseSrcImpl for SineSrc {
                     let latency = gst::ClockTime::SECOND
                         .mul_div_floor(settings.samples_per_buffer as u64, info.rate() as u64)
                         .unwrap();
-                    gst::debug!(CAT, imp: self, "Returning latency {}", latency);
+                    gst::debug!(CAT, imp = self, "Returning latency {}", latency);
                     q.set(settings.is_live, latency, gst::ClockTime::NONE);
                     true
                 } else {
@@ -528,7 +527,7 @@ impl BaseSrcImpl for SineSrc {
         // and for calculating the timestamps, etc.
 
         if segment.rate() < 0.0 {
-            gst::error!(CAT, imp: self, "Reverse playback not supported");
+            gst::error!(CAT, imp = self, "Reverse playback not supported");
             return false;
         }
 
@@ -562,7 +561,7 @@ impl BaseSrcImpl for SineSrc {
 
             gst::debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Seeked to {}-{:?} (accum: {}) for segment {:?}",
                 sample_offset,
                 sample_stop,
@@ -584,7 +583,7 @@ impl BaseSrcImpl for SineSrc {
             if state.info.is_none() {
                 gst::error!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Can only seek in Default format if sample rate is known"
                 );
                 return false;
@@ -598,7 +597,7 @@ impl BaseSrcImpl for SineSrc {
 
             gst::debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Seeked to {}-{:?} (accum: {}) for segment {:?}",
                 sample_offset,
                 sample_stop,
@@ -617,7 +616,7 @@ impl BaseSrcImpl for SineSrc {
         } else {
             gst::error!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Can't seek in format {:?}",
                 segment.format()
             );
@@ -629,7 +628,7 @@ impl BaseSrcImpl for SineSrc {
     fn unlock(&self) -> Result<(), gst::ErrorMessage> {
         // This should unblock the create() function ASAP, so we
         // just unschedule the clock it here, if any.
-        gst::debug!(CAT, imp: self, "Unlocking");
+        gst::debug!(CAT, imp = self, "Unlocking");
         let mut clock_wait = self.clock_wait.lock().unwrap();
         if let Some(clock_id) = clock_wait.clock_id.take() {
             clock_id.unschedule();
@@ -642,7 +641,7 @@ impl BaseSrcImpl for SineSrc {
     fn unlock_stop(&self) -> Result<(), gst::ErrorMessage> {
         // This signals that unlocking is done, so we can reset
         // all values again.
-        gst::debug!(CAT, imp: self, "Unlock stop");
+        gst::debug!(CAT, imp = self, "Unlock stop");
         let mut clock_wait = self.clock_wait.lock().unwrap();
         clock_wait.flushing = false;
 
@@ -675,7 +674,7 @@ impl PushSrcImpl for SineSrc {
         // point but at most samples_per_buffer samples per buffer
         let n_samples = if let Some(sample_stop) = state.sample_stop {
             if sample_stop <= state.sample_offset {
-                gst::log!(CAT, imp: self, "At EOS");
+                gst::log!(CAT, imp = self, "At EOS");
                 return Err(gst::FlowError::Eos);
             }
 
@@ -768,7 +767,7 @@ impl PushSrcImpl for SineSrc {
             // so that we immediately stop waiting on e.g. shutdown.
             let mut clock_wait = self.clock_wait.lock().unwrap();
             if clock_wait.flushing {
-                gst::debug!(CAT, imp: self, "Flushing");
+                gst::debug!(CAT, imp = self, "Flushing");
                 return Err(gst::FlowError::Flushing);
             }
 
@@ -778,24 +777,24 @@ impl PushSrcImpl for SineSrc {
 
             gst::log!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Waiting until {}, now {}",
                 wait_until,
                 clock.time().display(),
             );
             let (res, jitter) = id.wait();
-            gst::log!(CAT, imp: self, "Waited res {:?} jitter {}", res, jitter);
+            gst::log!(CAT, imp = self, "Waited res {:?} jitter {}", res, jitter);
             self.clock_wait.lock().unwrap().clock_id.take();
 
             // If the clock ID was unscheduled, unlock() was called
             // and we should return Flushing immediately.
             if res == Err(gst::ClockError::Unscheduled) {
-                gst::debug!(CAT, imp: self, "Flushing");
+                gst::debug!(CAT, imp = self, "Flushing");
                 return Err(gst::FlowError::Flushing);
             }
         }
 
-        gst::debug!(CAT, imp: self, "Produced buffer {:?}", buffer);
+        gst::debug!(CAT, imp = self, "Produced buffer {:?}", buffer);
 
         Ok(CreateSuccess::NewBuffer(buffer))
     }

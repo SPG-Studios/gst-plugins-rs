@@ -6,7 +6,6 @@
  *
  * Since: plugins-rs-0.9
  */
-
 #[allow(dead_code)]
 mod ndi;
 #[allow(dead_code)]
@@ -25,15 +24,18 @@ mod ndisrc;
 mod ndisrcdemux;
 mod ndisrcmeta;
 
+mod ndi_cc_meta;
+
 #[cfg(feature = "doc")]
 use gst::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
-#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum, Default)]
 #[repr(u32)]
 #[enum_type(name = "GstNdiTimestampMode")]
 pub enum TimestampMode {
+    #[default]
     #[enum_value(name = "Auto", nick = "auto")]
     Auto = 0,
     #[enum_value(name = "Receive Time / Timecode", nick = "receive-time-vs-timecode")]
@@ -46,6 +48,8 @@ pub enum TimestampMode {
     Timestamp = 4,
     #[enum_value(name = "Receive Time", nick = "receive-time")]
     ReceiveTime = 5,
+    #[enum_value(name = "Clocked", nick = "clocked")]
+    Clocked = 6,
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
@@ -147,10 +151,10 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     Ok(())
 }
 
-static TIMECODE_CAPS: Lazy<gst::Caps> =
-    Lazy::new(|| gst::Caps::new_empty_simple("timestamp/x-ndi-timecode"));
-static TIMESTAMP_CAPS: Lazy<gst::Caps> =
-    Lazy::new(|| gst::Caps::new_empty_simple("timestamp/x-ndi-timestamp"));
+static TIMECODE_CAPS: LazyLock<gst::Caps> =
+    LazyLock::new(|| gst::Caps::new_empty_simple("timestamp/x-ndi-timecode"));
+static TIMESTAMP_CAPS: LazyLock<gst::Caps> =
+    LazyLock::new(|| gst::Caps::new_empty_simple("timestamp/x-ndi-timestamp"));
 
 gst::plugin_define!(
     ndi,

@@ -13,10 +13,10 @@ use gst::glib;
 use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
-use once_cell::sync::Lazy;
 use rav1e::color;
 use rav1e::config;
 use rav1e::data;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, glib::Enum)]
@@ -226,7 +226,7 @@ pub struct Rav1Enc {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rav1enc",
         gst::DebugColorFlags::empty(),
@@ -243,7 +243,7 @@ impl ObjectSubclass for Rav1Enc {
 
 impl ObjectImpl for Rav1Enc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("speed-preset")
                     .nick("Speed Preset")
@@ -278,7 +278,7 @@ impl ObjectImpl for Rav1Enc {
                     .build(),
                 glib::ParamSpecInt::builder("bitrate")
                     .nick("Bitrate")
-                    .blurb("Bitrate")
+                    .blurb("Bitrate in bits per second")
                     .minimum(0)
                     .default_value(DEFAULT_BITRATE)
                     .mutable_ready()
@@ -292,7 +292,7 @@ impl ObjectImpl for Rav1Enc {
                 glib::ParamSpecUInt::builder("min-quantizer")
                     .nick("Min Quantizer")
                     .blurb("Min Quantizer")
-                    .maximum(std::u8::MAX as u32)
+                    .maximum(u8::MAX as u32)
                     .default_value(DEFAULT_MIN_QUANTIZER as u32)
                     .mutable_ready()
                     .build(),
@@ -495,7 +495,7 @@ impl GstObjectImpl for Rav1Enc {}
 
 impl ElementImpl for Rav1Enc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "rav1e AV1 encoder",
                 "Encoder/Video",
@@ -508,7 +508,7 @@ impl ElementImpl for Rav1Enc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst_video::VideoCapsBuilder::new()
                 .format_list([
                     gst_video::VideoFormat::I420,
@@ -575,7 +575,7 @@ impl VideoEncoderImpl for Rav1Enc {
             .map_err(|_| gst::loggable_error!(CAT, "Failed to drain"))?;
 
         let video_info = state.info();
-        gst::debug!(CAT, imp: self, "Setting format {:?}", video_info);
+        gst::debug!(CAT, imp = self, "Setting format {:?}", video_info);
 
         let settings = self.settings.lock().unwrap();
 
@@ -825,13 +825,13 @@ impl VideoEncoderImpl for Rav1Enc {
     }
 
     fn flush(&self) -> bool {
-        gst::debug!(CAT, imp: self, "Flushing");
+        gst::debug!(CAT, imp = self, "Flushing");
 
         let mut state_guard = self.state.borrow_mut();
         if let Some(ref mut state) = *state_guard {
             state.context.flush();
             while let Ok(_) | Err(data::EncoderStatus::Encoded) = state.context.receive_packet() {
-                gst::debug!(CAT, imp: self, "Dropping packet on flush",);
+                gst::debug!(CAT, imp = self, "Dropping packet on flush",);
             }
         }
 
@@ -839,7 +839,7 @@ impl VideoEncoderImpl for Rav1Enc {
     }
 
     fn finish(&self) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::debug!(CAT, imp: self, "Finishing");
+        gst::debug!(CAT, imp = self, "Finishing");
 
         let mut state_guard = self.state.borrow_mut();
         if let Some(ref mut state) = *state_guard {
@@ -861,7 +861,7 @@ impl VideoEncoderImpl for Rav1Enc {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Sending frame {}",
             frame.system_frame_number()
         );
@@ -887,7 +887,12 @@ impl VideoEncoderImpl for Rav1Enc {
                 .contains(gst_video::VideoCodecFrameFlags::FORCE_KEYFRAME),
         ) {
             Ok(_) => {
-                gst::debug!(CAT, imp: self, "Sent frame {}", frame.system_frame_number());
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Sent frame {}",
+                    frame.system_frame_number()
+                );
             }
             Err(data::EncoderStatus::Failure) => {
                 gst::element_imp_error!(self, gst::CoreError::Failed, ["Failed to send frame"]);
@@ -907,7 +912,7 @@ impl Rav1Enc {
                 Ok((packet_type, packet_number, frame_number, packet_data)) => {
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Received packet {} of size {}, frame type {:?}",
                         packet_number,
                         packet_data.len(),
@@ -927,10 +932,10 @@ impl Rav1Enc {
                     instance.finish_frame(frame)?;
                 }
                 Err(data::EncoderStatus::Encoded) => {
-                    gst::debug!(CAT, imp: self, "Encoded but not output frame yet",);
+                    gst::debug!(CAT, imp = self, "Encoded but not output frame yet",);
                 }
                 Err(data::EncoderStatus::NeedMoreData) => {
-                    gst::debug!(CAT, imp: self, "Encoded but need more data",);
+                    gst::debug!(CAT, imp = self, "Encoded but need more data",);
                     return Ok(gst::FlowSuccess::Ok);
                 }
                 Err(data::EncoderStatus::Failure) => {
@@ -942,7 +947,12 @@ impl Rav1Enc {
                     return Err(gst::FlowError::Error);
                 }
                 Err(err) => {
-                    gst::debug!(CAT, imp: self, "Soft error when receiving frame: {:?}", err);
+                    gst::debug!(
+                        CAT,
+                        imp = self,
+                        "Soft error when receiving frame: {:?}",
+                        err
+                    );
                     return Ok(gst::FlowSuccess::Ok);
                 }
             }

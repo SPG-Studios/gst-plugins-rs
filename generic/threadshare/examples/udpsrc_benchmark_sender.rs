@@ -20,13 +20,13 @@
 use gst::glib;
 use gst::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::net;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{env, thread, time};
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-udpsrc-benchmark-sender",
         gst::DebugColorFlags::empty(),
@@ -94,12 +94,9 @@ fn send_test_buffers(n_streams: u16, num_buffers: Option<i32>) {
             .property("context-wait", 20u32)
             .property("is-live", true)
             .property("do-timestamp", true)
+            .property_if_some("num-buffers", num_buffers)
             .build()
             .unwrap();
-
-        if let Some(num_buffers) = num_buffers {
-            src.set_property("num-buffers", num_buffers);
-        }
 
         #[cfg(feature = "tuning")]
         if i == 0 {
@@ -129,12 +126,9 @@ fn send_rtp_buffers(n_streams: u16, num_buffers: Option<i32>) {
             .property("context-wait", 20u32)
             .property("is-live", true)
             .property("do-timestamp", true)
+            .property_if_some("num-buffers", num_buffers)
             .build()
             .unwrap();
-
-        if let Some(num_buffers) = num_buffers {
-            src.set_property("num-buffers", num_buffers);
-        }
 
         #[cfg(feature = "tuning")]
         if i == 0 {
@@ -170,31 +164,32 @@ fn run(pipeline: gst::Pipeline) {
 
     let bus = pipeline.bus().unwrap();
     let l_clone = l.clone();
-    bus.add_watch(move |_, msg| {
-        use gst::MessageView;
-        match msg.view() {
-            MessageView::Eos(_) => {
-                gst::info!(CAT, "Received eos");
-                l_clone.quit();
+    let _bus_watch = bus
+        .add_watch(move |_, msg| {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Eos(_) => {
+                    gst::info!(CAT, "Received eos");
+                    l_clone.quit();
 
-                glib::Continue(false)
-            }
-            MessageView::Error(msg) => {
-                gst::error!(
-                    CAT,
-                    "Error from {:?}: {} ({:?})",
-                    msg.src().map(|s| s.path_string()),
-                    msg.error(),
-                    msg.debug()
-                );
-                l_clone.quit();
+                    glib::ControlFlow::Break
+                }
+                MessageView::Error(msg) => {
+                    gst::error!(
+                        CAT,
+                        "Error from {:?}: {} ({:?})",
+                        msg.src().map(|s| s.path_string()),
+                        msg.error(),
+                        msg.debug()
+                    );
+                    l_clone.quit();
 
-                glib::Continue(false)
+                    glib::ControlFlow::Break
+                }
+                _ => glib::ControlFlow::Continue,
             }
-            _ => glib::Continue(true),
-        }
-    })
-    .expect("Failed to add bus watch");
+        })
+        .expect("Failed to add bus watch");
 
     pipeline.set_state(gst::State::Playing).unwrap();
     l.run();

@@ -6,13 +6,11 @@
 //! A collection of GStreamer plugins which leverage the `threadshare` [`runtime`].
 //!
 //! [`runtime`]: runtime/index.html
-
 /**
  * plugin-threadshare:
  *
  * Since: plugins-rs-0.4.0
  */
-
 #[macro_use]
 pub mod runtime;
 
@@ -27,6 +25,8 @@ pub mod socket;
 mod tcpclientsrc;
 mod udpsink;
 mod udpsrc;
+
+pub mod net;
 
 use gst::glib;
 

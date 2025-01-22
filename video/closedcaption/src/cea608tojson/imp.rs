@@ -25,16 +25,20 @@
 //  * The Chunk object could have an "indent" field, that would get translated
 //    to tab offsets for small bandwidth savings
 
+use cea608_types::tables::Channel;
+use cea608_types::tables::MidRow;
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use crate::ffi;
-use crate::ttutils::{Cea608Mode, Chunk, Line, Lines, TextStyle};
+use cea608_types::{Cea608, Cea608State as Cea608StateTracker};
+
+use crate::cea608utils::*;
+use crate::ttutils::{Chunk, Line, Lines};
 
 use atomic_refcell::AtomicRefCell;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -195,7 +199,6 @@ impl Default for Settings {
 
 struct State {
     mode: Option<Cea608Mode>,
-    last_cc_data: Option<u16>,
     rows: BTreeMap<u32, Row>,
     first_pts: Option<gst::ClockTime>,
     current_pts: Option<gst::ClockTime>,
@@ -205,13 +208,13 @@ struct State {
     cursor: Cursor,
     pending_lines: Option<TimestampedLines>,
     settings: Settings,
+    cea608_state: Cea608StateTracker,
 }
 
 impl Default for State {
     fn default() -> Self {
         State {
             mode: None,
-            last_cc_data: None,
             rows: BTreeMap::new(),
             first_pts: gst::ClockTime::NONE,
             current_pts: gst::ClockTime::NONE,
@@ -226,6 +229,7 @@ impl Default for State {
             },
             pending_lines: None,
             settings: Settings::default(),
+            cea608_state: Cea608StateTracker::default(),
         }
     }
 }
@@ -238,7 +242,7 @@ pub struct Cea608ToJson {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "cea608tojson",
         gst::DebugColorFlags::empty(),
@@ -246,174 +250,31 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     )
 });
 
-fn is_basicna(cc_data: u16) -> bool {
-    0x0000 != (0x6000 & cc_data)
-}
-
-fn is_preamble(cc_data: u16) -> bool {
-    0x1040 == (0x7040 & cc_data)
-}
-
-fn is_midrowchange(cc_data: u16) -> bool {
-    0x1120 == (0x7770 & cc_data)
-}
-
-fn is_specialna(cc_data: u16) -> bool {
-    0x1130 == (0x7770 & cc_data)
-}
-
-fn is_xds(cc_data: u16) -> bool {
-    0x0000 == (0x7070 & cc_data) && 0x0000 != (0x0F0F & cc_data)
-}
-
-fn is_westeu(cc_data: u16) -> bool {
-    0x1220 == (0x7660 & cc_data)
-}
-
-fn is_control(cc_data: u16) -> bool {
-    0x1420 == (0x7670 & cc_data) || 0x1720 == (0x7770 & cc_data)
-}
-
-fn parse_control(cc_data: u16) -> (ffi::eia608_control_t, i32) {
-    unsafe {
-        let mut chan = 0;
-        let cmd = ffi::eia608_parse_control(cc_data, &mut chan);
-
-        (cmd, chan)
-    }
-}
-
-#[derive(Debug)]
-struct Preamble {
-    row: i32,
-    col: i32,
-    style: TextStyle,
-    chan: i32,
-    underline: i32,
-}
-
-fn parse_preamble(cc_data: u16) -> Preamble {
-    unsafe {
-        let mut row = 0;
-        let mut col = 0;
-        let mut style = 0;
-        let mut chan = 0;
-        let mut underline = 0;
-
-        ffi::eia608_parse_preamble(
-            cc_data,
-            &mut row,
-            &mut col,
-            &mut style,
-            &mut chan,
-            &mut underline,
-        );
-
-        Preamble {
-            row,
-            col,
-            style: style.into(),
-            chan,
-            underline,
-        }
-    }
-}
-
-struct MidrowChange {
-    chan: i32,
-    style: TextStyle,
-    underline: bool,
-}
-
-fn parse_midrowchange(cc_data: u16) -> MidrowChange {
-    unsafe {
-        let mut chan = 0;
-        let mut style = 0;
-        let mut underline = 0;
-
-        ffi::eia608_parse_midrowchange(cc_data, &mut chan, &mut style, &mut underline);
-
-        MidrowChange {
-            chan,
-            style: style.into(),
-            underline: underline > 0,
-        }
-    }
-}
-
-fn eia608_to_utf8(cc_data: u16) -> (Option<char>, Option<char>, i32) {
-    unsafe {
-        let mut chan = 0;
-        let mut char1 = [0u8; 5usize];
-        let mut char2 = [0u8; 5usize];
-
-        let n_chars = ffi::eia608_to_utf8(
-            cc_data,
-            &mut chan,
-            char1.as_mut_ptr() as *mut _,
-            char2.as_mut_ptr() as *mut _,
-        );
-
-        let char1 = if n_chars > 0 {
-            Some(
-                std::ffi::CStr::from_bytes_with_nul_unchecked(&char1)
-                    .to_string_lossy()
-                    .chars()
-                    .next()
-                    .unwrap(),
-            )
-        } else {
-            None
-        };
-
-        let char2 = if n_chars > 1 {
-            Some(
-                std::ffi::CStr::from_bytes_with_nul_unchecked(&char2)
-                    .to_string_lossy()
-                    .chars()
-                    .next()
-                    .unwrap(),
-            )
-        } else {
-            None
-        };
-
-        (char1, char2, chan)
-    }
-}
-
-fn eia608_to_text(cc_data: u16) -> String {
-    unsafe {
-        let bufsz = ffi::eia608_to_text(std::ptr::null_mut(), 0, cc_data);
-        let mut data = Vec::with_capacity((bufsz + 1) as usize);
-        ffi::eia608_to_text(data.as_ptr() as *mut _, (bufsz + 1) as usize, cc_data);
-        data.set_len(bufsz as usize);
-        String::from_utf8_unchecked(data)
-    }
-}
-
 fn dump(
     imp: &Cea608ToJson,
-    cc_data: u16,
+    cc_data: [u8; 2],
     pts: impl Into<Option<gst::ClockTime>>,
     duration: impl Into<Option<gst::ClockTime>>,
 ) {
     let pts = pts.into();
     let end = pts.opt_add(duration.into());
 
-    if cc_data != 0x8080 {
+    if cc_data != [0x80, 0x80] {
+        let Ok(code) = cea608_types::tables::Code::from_data(cc_data) else {
+            return;
+        };
         gst::debug!(
             CAT,
-            imp: imp,
-            "{} -> {}: {}",
+            imp = imp,
+            "{} -> {}: {:?}",
             pts.display(),
             end.display(),
-            eia608_to_text(cc_data)
+            code
         );
     } else {
         gst::trace!(
             CAT,
-            imp: imp,
+            imp = imp,
             "{} -> {}: padding",
             pts.display(),
             end.display()
@@ -456,7 +317,7 @@ impl State {
     }
 
     fn drain(&mut self, imp: &Cea608ToJson, flush: bool) -> Option<TimestampedLines> {
-        gst::log!(CAT, imp: imp, "Draining");
+        gst::log!(CAT, imp = imp, "Draining");
 
         let pts = if self.settings.unbuffered {
             self.current_pts
@@ -492,6 +353,7 @@ impl State {
             }
 
             self.rows.clear();
+            self.cea608_state.reset();
         } else {
             for row in self.rows.values() {
                 if !row.is_empty() {
@@ -531,7 +393,7 @@ impl State {
 
     fn drain_pending(&mut self, imp: &Cea608ToJson) -> Option<TimestampedLines> {
         if let Some(mut pending) = self.pending_lines.take() {
-            gst::log!(CAT, imp: imp, "Draining pending");
+            gst::log!(CAT, imp = imp, "Draining pending");
             pending.duration = self
                 .current_pts
                 .opt_add(self.current_duration)
@@ -544,23 +406,21 @@ impl State {
         }
     }
 
-    fn decode_preamble(&mut self, imp: &Cea608ToJson, cc_data: u16) -> Option<TimestampedLines> {
-        let preamble = parse_preamble(cc_data);
+    fn handle_preamble(
+        &mut self,
+        imp: &Cea608ToJson,
+        preamble: cea608_types::tables::PreambleAddressCode,
+    ) -> Option<TimestampedLines> {
+        gst::log!(CAT, imp = imp, "preamble: {:?}", preamble);
 
-        if preamble.chan != 0 {
-            return None;
-        }
-
-        gst::log!(CAT, imp: imp, "preamble: {:?}", preamble);
-
-        let drain_roll_up = self.cursor.row != preamble.row as u32;
+        let drain_roll_up = self.cursor.row != preamble.row() as u32;
 
         // In unbuffered mode, we output the whole roll-up window
         // and need to move it when the preamble relocates it
         // https://www.law.cornell.edu/cfr/text/47/79.101 (f)(1)(ii)
         if self.settings.unbuffered {
             if let Some(mode) = self.mode {
-                if mode.is_rollup() && self.cursor.row != preamble.row as u32 {
+                if mode.is_rollup() && self.cursor.row != preamble.row() as u32 {
                     let offset = match mode {
                         Cea608Mode::RollUp2 => 1,
                         Cea608Mode::RollUp3 => 2,
@@ -569,7 +429,7 @@ impl State {
                     };
 
                     let current_top_row = self.cursor.row.saturating_sub(offset);
-                    let new_row_offset = preamble.row - self.cursor.row as i32;
+                    let new_row_offset = preamble.row() as i32 - self.cursor.row as i32;
 
                     for row in current_top_row..self.cursor.row {
                         if let Some(mut row) = self.rows.remove(&row) {
@@ -584,10 +444,22 @@ impl State {
             }
         }
 
-        self.cursor.row = preamble.row as u32;
-        self.cursor.col = preamble.col as usize;
-        self.cursor.style = preamble.style;
-        self.cursor.underline = preamble.underline != 0;
+        self.cursor.row = preamble.row() as u32;
+        self.cursor.col = preamble.column() as usize;
+        self.cursor.underline = preamble.underline();
+        self.cursor.style = if preamble.italics() {
+            TextStyle::ItalicWhite
+        } else {
+            match preamble.color() {
+                cea608_types::tables::Color::White => TextStyle::White,
+                cea608_types::tables::Color::Green => TextStyle::Green,
+                cea608_types::tables::Color::Blue => TextStyle::Blue,
+                cea608_types::tables::Color::Cyan => TextStyle::Cyan,
+                cea608_types::tables::Color::Red => TextStyle::Red,
+                cea608_types::tables::Color::Yellow => TextStyle::Yellow,
+                cea608_types::tables::Color::Magenta => TextStyle::Magenta,
+            }
+        };
 
         if let Some(mode) = self.mode {
             match mode {
@@ -630,20 +502,62 @@ impl State {
         }
     }
 
-    fn decode_control(&mut self, imp: &Cea608ToJson, cc_data: u16) -> Option<TimestampedLines> {
-        let (cmd, chan) = parse_control(cc_data);
+    fn handle_text(&mut self, imp: &Cea608ToJson, text: cea608_types::Text) {
+        if let Some(row) = self.rows.get_mut(&self.cursor.row) {
+            if text.needs_backspace {
+                row.pop(&mut self.cursor);
+            }
 
-        gst::log!(CAT, imp: imp, "Command for CC {}", chan);
+            if (text.char1.is_some() || text.char2.is_some()) && self.first_pts.is_none() {
+                if let Some(mode) = self.mode {
+                    if mode.is_rollup() || mode == Cea608Mode::PaintOn {
+                        self.first_pts = self.current_pts;
+                    }
+                }
+            }
 
-        if chan != 0 {
+            if let Some(c) = text.char1 {
+                row.push(&mut self.cursor, c);
+            }
+
+            if let Some(c) = text.char2 {
+                row.push(&mut self.cursor, c);
+            }
+        } else {
+            gst::warning!(CAT, imp = imp, "No row to append decoded text to!");
+        }
+    }
+
+    fn handle_midrowchange(&mut self, midrowchange: MidRow) {
+        if let Some(row) = self.rows.get_mut(&self.cursor.row) {
+            row.push_midrow(
+                &mut self.cursor,
+                midrowchange.into(),
+                midrowchange.underline(),
+            );
+        }
+    }
+
+    fn handle_cc_data(
+        &mut self,
+        imp: &Cea608ToJson,
+        pts: Option<gst::ClockTime>,
+        duration: Option<gst::ClockTime>,
+        cc_data: [u8; 2],
+    ) -> Option<TimestampedLines> {
+        let Ok(Some(cea608)) = self.cea608_state.decode(cc_data) else {
+            return None;
+        };
+
+        self.current_pts = pts;
+        self.current_duration = duration;
+
+        if cea608.channel() != Channel::ONE {
             return None;
         }
 
-        match cmd {
-            ffi::eia608_control_t_eia608_control_resume_direct_captioning => {
-                return self.update_mode(imp, Cea608Mode::PaintOn);
-            }
-            ffi::eia608_control_t_eia608_control_erase_display_memory => {
+        match cea608 {
+            Cea608::EraseDisplay(_chan) => {
                 return match self.mode {
                     Some(Cea608Mode::PopOn) => {
                         self.clear = Some(true);
@@ -656,17 +570,9 @@ impl State {
                     }
                 };
             }
-            ffi::eia608_control_t_eia608_control_roll_up_2 => {
-                return self.update_mode(imp, Cea608Mode::RollUp2);
-            }
-            ffi::eia608_control_t_eia608_control_roll_up_3 => {
-                return self.update_mode(imp, Cea608Mode::RollUp3);
-            }
-            ffi::eia608_control_t_eia608_control_roll_up_4 => {
-                return self.update_mode(imp, Cea608Mode::RollUp4);
-            }
-            ffi::eia608_control_t_eia608_control_carriage_return => {
-                gst::log!(CAT, imp: imp, "carriage return");
+            Cea608::NewMode(_chan, mode) => return self.update_mode(imp, mode.into()),
+            Cea608::CarriageReturn(_chan) => {
+                gst::log!(CAT, imp = imp, "carriage return");
 
                 if let Some(mode) = self.mode {
                     // https://www.law.cornell.edu/cfr/text/47/79.101 (f)(2)(i) (f)(3)(i)
@@ -703,20 +609,17 @@ impl State {
                     }
                 }
             }
-            ffi::eia608_control_t_eia608_control_backspace => {
+            Cea608::Backspace(_chan) => {
                 if let Some(row) = self.rows.get_mut(&self.cursor.row) {
                     row.pop(&mut self.cursor);
                 }
             }
-            ffi::eia608_control_t_eia608_control_resume_caption_loading => {
-                return self.update_mode(imp, Cea608Mode::PopOn);
-            }
-            ffi::eia608_control_t_eia608_control_erase_non_displayed_memory => {
+            Cea608::EraseNonDisplay(_chan) => {
                 if self.mode == Some(Cea608Mode::PopOn) {
                     self.rows.clear();
                 }
             }
-            ffi::eia608_control_t_eia608_control_end_of_caption => {
+            Cea608::EndOfCaption(_chan) => {
                 // https://www.law.cornell.edu/cfr/text/47/79.101 (f)(2)
                 self.update_mode(imp, Cea608Mode::PopOn);
                 self.first_pts = self.current_pts;
@@ -729,107 +632,26 @@ impl State {
                 };
                 return ret;
             }
-            ffi::eia608_control_t_eia608_tab_offset_0
-            | ffi::eia608_control_t_eia608_tab_offset_1
-            | ffi::eia608_control_t_eia608_tab_offset_2
-            | ffi::eia608_control_t_eia608_tab_offset_3 => {
-                self.cursor.col += (cmd - ffi::eia608_control_t_eia608_tab_offset_0) as usize;
+            Cea608::TabOffset(_chan, count) => {
+                self.cursor.col += count as usize;
                 // C.13 Right Margin Limitation
                 self.cursor.col = std::cmp::min(self.cursor.col, 31);
             }
-            // TODO
-            ffi::eia608_control_t_eia608_control_alarm_off
-            | ffi::eia608_control_t_eia608_control_delete_to_end_of_row => {}
-            ffi::eia608_control_t_eia608_control_alarm_on
-            | ffi::eia608_control_t_eia608_control_text_restart
-            | ffi::eia608_control_t_eia608_control_text_resume_text_display => {}
-            _ => {
-                gst::warning!(CAT, imp: imp, "Unknown command {}!", cmd);
-            }
-        }
-
-        None
-    }
-
-    fn decode_text(&mut self, imp: &Cea608ToJson, cc_data: u16) {
-        let (char1, char2, chan) = eia608_to_utf8(cc_data);
-
-        if chan != 0 {
-            return;
-        }
-
-        if let Some(row) = self.rows.get_mut(&self.cursor.row) {
-            if is_westeu(cc_data) {
-                row.pop(&mut self.cursor);
-            }
-
-            if (char1.is_some() || char2.is_some()) && self.first_pts.is_none() {
+            Cea608::Text(text) => {
                 if let Some(mode) = self.mode {
-                    if mode.is_rollup() || mode == Cea608Mode::PaintOn {
-                        self.first_pts = self.current_pts;
+                    self.mode?;
+                    gst::log!(CAT, imp = imp, "text");
+                    self.handle_text(imp, text);
+
+                    if mode.is_rollup() && self.settings.unbuffered {
+                        return self.drain(imp, false);
                     }
                 }
             }
-
-            if let Some(c) = char1 {
-                row.push(&mut self.cursor, c);
-            }
-
-            if let Some(c) = char2 {
-                row.push(&mut self.cursor, c);
-            }
-        } else {
-            gst::warning!(CAT, imp: imp, "No row to append decoded text to!");
-        }
-    }
-
-    fn decode_midrowchange(&mut self, cc_data: u16) {
-        if let Some(row) = self.rows.get_mut(&self.cursor.row) {
-            let midrowchange = parse_midrowchange(cc_data);
-
-            if midrowchange.chan == 0 {
-                row.push_midrow(&mut self.cursor, midrowchange.style, midrowchange.underline);
-            }
-        }
-    }
-
-    fn handle_cc_data(
-        &mut self,
-        imp: &Cea608ToJson,
-        pts: Option<gst::ClockTime>,
-        duration: Option<gst::ClockTime>,
-        cc_data: u16,
-    ) -> Option<TimestampedLines> {
-        if (is_specialna(cc_data) || is_control(cc_data)) && Some(cc_data) == self.last_cc_data {
-            gst::log!(CAT, imp: imp, "Skipping duplicate");
-            return None;
-        }
-
-        self.last_cc_data = Some(cc_data);
-        self.current_pts = pts;
-        self.current_duration = duration;
-
-        if is_xds(cc_data) {
-            gst::log!(CAT, imp: imp, "XDS, ignoring");
-        } else if is_control(cc_data) {
-            gst::log!(CAT, imp: imp, "control!");
-            return self.decode_control(imp, cc_data);
-        } else if is_basicna(cc_data) || is_specialna(cc_data) || is_westeu(cc_data) {
-            if let Some(mode) = self.mode {
-                self.mode?;
-                gst::log!(CAT, imp: imp, "text");
-                self.decode_text(imp, cc_data);
-
-                if mode.is_rollup() && self.settings.unbuffered {
-                    return self.drain(imp, false);
-                }
-            }
-        } else if is_preamble(cc_data) {
-            gst::log!(CAT, imp: imp, "preamble");
-            return self.decode_preamble(imp, cc_data);
-        } else if is_midrowchange(cc_data) {
-            gst::log!(CAT, imp: imp, "midrowchange");
-            self.decode_midrowchange(cc_data);
+            // TODO: implement
+            Cea608::DeleteToEndOfRow(_chan) => (),
+            Cea608::Preamble(_chan, preamble) => return self.handle_preamble(imp, preamble),
+            Cea608::MidRowChange(_chan, change) => self.handle_midrowchange(change),
         }
         None
     }
@@ -837,7 +659,7 @@ impl State {
 
 impl Cea608ToJson {
     fn output(&self, lines: TimestampedLines) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::debug!(CAT, imp: self, "outputting: {:?}", lines);
+        gst::debug!(CAT, imp = self, "outputting: {:?}", lines);
 
         let json = serde_json::to_string(&lines.lines).map_err(|err| {
             gst::element_imp_error!(
@@ -856,7 +678,7 @@ impl Cea608ToJson {
             buf_mut.set_duration(lines.duration);
         }
 
-        gst::log!(CAT, imp: self, "Pushing {:?}", buf);
+        gst::log!(CAT, imp = self, "Pushing {:?}", buf);
 
         self.srcpad.push(buf)
     }
@@ -866,35 +688,35 @@ impl Cea608ToJson {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::trace!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::trace!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         let mut state = self.state.borrow_mut();
 
         let pts = buffer.pts();
         if pts.is_none() {
-            gst::error!(CAT, obj: pad, "Require timestamped buffers");
+            gst::error!(CAT, obj = pad, "Require timestamped buffers");
             return Err(gst::FlowError::Error);
         }
 
         let duration = buffer.duration();
         if duration.is_none() {
-            gst::error!(CAT, obj: pad, "Require buffers with duration");
+            gst::error!(CAT, obj = pad, "Require buffers with duration");
             return Err(gst::FlowError::Error);
         }
 
         let data = buffer.map_readable().map_err(|_| {
-            gst::error!(CAT, obj: pad, "Can't map buffer readable");
+            gst::error!(CAT, obj = pad, "Can't map buffer readable");
 
             gst::FlowError::Error
         })?;
 
         if data.len() < 2 {
-            gst::error!(CAT, obj: pad, "Invalid closed caption packet size");
+            gst::error!(CAT, obj = pad, "Invalid closed caption packet size");
 
             return Ok(gst::FlowSuccess::Ok);
         }
 
-        let cc_data = (data[0] as u16) << 8 | data[1] as u16;
+        let cc_data = [data[0], data[1]];
 
         dump(self, cc_data, pts, duration);
 
@@ -917,7 +739,7 @@ impl Cea608ToJson {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         match event.view() {
             EventView::Caps(..) => {
                 // We send our own caps downstream
@@ -957,7 +779,7 @@ impl ObjectSubclass for Cea608ToJson {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 Cea608ToJson::catch_panic_pad_function(
                     parent,
@@ -976,7 +798,7 @@ impl ObjectSubclass for Cea608ToJson {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .flags(gst::PadFlags::FIXED_CAPS)
             .build();
 
@@ -999,7 +821,7 @@ impl ObjectImpl for Cea608ToJson {
     }
 
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecBoolean::builder("unbuffered")
                 .nick("Unbuffered")
                 .blurb(
@@ -1039,7 +861,7 @@ impl GstObjectImpl for Cea608ToJson {}
 
 impl ElementImpl for Cea608ToJson {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "CEA-608 to TT",
                 "Generic",
@@ -1052,7 +874,7 @@ impl ElementImpl for Cea608ToJson {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("application/x-json").build();
 
             let src_pad_template = gst::PadTemplate::new(
@@ -1086,7 +908,7 @@ impl ElementImpl for Cea608ToJson {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused => {

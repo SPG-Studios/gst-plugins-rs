@@ -9,9 +9,7 @@
 use gst::glib;
 use gst::prelude::*;
 
-use gio::prelude::*;
 use gtk::prelude::*;
-use gtk::Inhibit;
 use std::cell::RefCell;
 
 fn create_pipeline() -> (
@@ -219,14 +217,12 @@ fn create_ui(app: &gtk::Application) {
     let video_sink_weak = video_sink.downgrade();
     let togglerecord_weak = togglerecord.downgrade();
     let timeout_id = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        let video_sink = match video_sink_weak.upgrade() {
-            Some(video_sink) => video_sink,
-            None => return glib::Continue(true),
+        let Some(video_sink) = video_sink_weak.upgrade() else {
+            return glib::ControlFlow::Break;
         };
 
-        let togglerecord = match togglerecord_weak.upgrade() {
-            Some(togglerecord) => togglerecord,
-            None => return glib::Continue(true),
+        let Some(togglerecord) = togglerecord_weak.upgrade() else {
+            return glib::ControlFlow::Break;
         };
 
         let position = video_sink
@@ -241,14 +237,13 @@ fn create_ui(app: &gtk::Application) {
             .unwrap_or(gst::ClockTime::ZERO);
         recorded_duration_label.set_text(&format!("Recorded: {recording_duration:.1}"));
 
-        glib::Continue(true)
+        glib::ControlFlow::Continue
     });
 
     let togglerecord_weak = togglerecord.downgrade();
     record_button.connect_clicked(move |button| {
-        let togglerecord = match togglerecord_weak.upgrade() {
-            Some(togglerecord) => togglerecord,
-            None => return,
+        let Some(togglerecord) = togglerecord_weak.upgrade() else {
+            return;
         };
 
         let recording = !togglerecord.property::<bool>("record");
@@ -259,9 +254,8 @@ fn create_ui(app: &gtk::Application) {
 
     let record_button_weak = record_button.downgrade();
     finish_button.connect_clicked(move |button| {
-        let record_button = match record_button_weak.upgrade() {
-            Some(record_button) => record_button,
-            None => return,
+        let Some(record_button) = record_button_weak.upgrade() else {
+            return;
         };
 
         record_button.set_sensitive(false);
@@ -273,52 +267,51 @@ fn create_ui(app: &gtk::Application) {
 
     let app_weak = app.downgrade();
     window.connect_close_request(move |_| {
-        let app = match app_weak.upgrade() {
-            Some(app) => app,
-            None => return Inhibit(false),
+        let Some(app) = app_weak.upgrade() else {
+            return glib::Propagation::Stop;
         };
 
         app.quit();
-        Inhibit(false)
+        glib::Propagation::Stop
     });
 
     let bus = pipeline.bus().unwrap();
     let app_weak = app.downgrade();
-    bus.add_watch_local(move |_, msg| {
-        use gst::MessageView;
+    let bus_watch = bus
+        .add_watch_local(move |_, msg| {
+            use gst::MessageView;
 
-        let app = match app_weak.upgrade() {
-            Some(app) => app,
-            None => return glib::Continue(false),
-        };
+            let Some(app) = app_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
 
-        match msg.view() {
-            MessageView::Eos(..) => app.quit(),
-            MessageView::Error(err) => {
-                println!(
-                    "Error from {:?}: {} ({:?})",
-                    msg.src().map(|s| s.path_string()),
-                    err.error(),
-                    err.debug()
-                );
-                app.quit();
-            }
-            _ => (),
-        };
+            match msg.view() {
+                MessageView::Eos(..) => app.quit(),
+                MessageView::Error(err) => {
+                    println!(
+                        "Error from {:?}: {} ({:?})",
+                        msg.src().map(|s| s.path_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                    app.quit();
+                }
+                _ => (),
+            };
 
-        glib::Continue(true)
-    })
-    .expect("Failed to add bus watch");
+            glib::ControlFlow::Continue
+        })
+        .expect("Failed to add bus watch");
 
     pipeline.set_state(gst::State::Playing).unwrap();
 
     // Pipeline reference is owned by the closure below, so will be
     // destroyed once the app is destroyed
     let timeout_id = RefCell::new(Some(timeout_id));
+    let bus_watch = RefCell::new(Some(bus_watch));
     app.connect_shutdown(move |_| {
+        drop(bus_watch.borrow_mut().take());
         pipeline.set_state(gst::State::Null).unwrap();
-
-        bus.remove_watch().unwrap();
 
         if let Some(timeout_id) = timeout_id.borrow_mut().take() {
             timeout_id.remove();

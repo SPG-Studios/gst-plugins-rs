@@ -14,14 +14,14 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct HsvFilter(ObjectSubclass<imp::HsvFilter>) @extends gst_base::BaseTransform, gst::Element, gst::Object;
+    pub struct HsvFilter(ObjectSubclass<imp::HsvFilter>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "hsvfilter",
-        gst::Rank::None,
+        gst::Rank::NONE,
         HsvFilter::static_type(),
     )
 }

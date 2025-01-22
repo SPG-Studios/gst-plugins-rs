@@ -14,8 +14,8 @@ use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use std::sync::LazyLock;
 
 use super::CompressionLevel;
 use super::FilterType;
@@ -23,7 +23,7 @@ use super::FilterType;
 const DEFAULT_COMPRESSION_LEVEL: CompressionLevel = CompressionLevel::Default;
 const DEFAULT_FILTER_TYPE: FilterType = FilterType::NoFilter;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rspngenc",
         gst::DebugColorFlags::empty(),
@@ -65,7 +65,7 @@ impl ObjectSubclass for PngEncoder {
 
 impl ObjectImpl for PngEncoder {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecEnum::builder_with_default(
                     "compression-level",
@@ -121,7 +121,7 @@ impl GstObjectImpl for PngEncoder {}
 
 impl ElementImpl for PngEncoder {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "PNG encoder",
                 "Encoder/Video",
@@ -134,7 +134,7 @@ impl ElementImpl for PngEncoder {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst_video::VideoCapsBuilder::new()
                 .format_list([
                     gst_video::VideoFormat::Gray8,
@@ -178,7 +178,7 @@ impl VideoEncoderImpl for PngEncoder {
         state: &gst_video::VideoCodecState<'static, gst_video::video_codec_state::Readable>,
     ) -> Result<(), gst::LoggableError> {
         let video_info = state.info();
-        gst::debug!(CAT, imp: self, "Setting format {:?}", video_info);
+        gst::debug!(CAT, imp = self, "Setting format {:?}", video_info);
 
         *self.state.lock() = Some(State { video_info });
 
@@ -201,7 +201,7 @@ impl VideoEncoderImpl for PngEncoder {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Sending frame {}",
             frame.system_frame_number()
         );
@@ -232,7 +232,7 @@ impl VideoEncoderImpl for PngEncoder {
         encoder.set_filter(png::FilterType::from(settings.filter));
 
         let mut writer = encoder.write_header().map_err(|e| {
-            gst::error!(CAT, imp: self, "Failed to create encoder: {e}");
+            gst::error!(CAT, imp = self, "Failed to create encoder: {e}");
             gst::element_imp_error!(self, gst::CoreError::Failed, ["{e}"]);
             gst::FlowError::Error
         })?;
@@ -241,14 +241,14 @@ impl VideoEncoderImpl for PngEncoder {
             let input_buffer = frame.input_buffer().expect("frame without input buffer");
             let input_map = input_buffer.map_readable().unwrap();
             writer.write_image_data(&input_map).map_err(|e| {
-                gst::error!(CAT, imp: self, "Failed to write image data: {e}");
+                gst::error!(CAT, imp = self, "Failed to write image data: {e}");
                 gst::element_imp_error!(self, gst::CoreError::Failed, ["{e}"]);
                 gst::FlowError::Error
             })?;
         }
 
         writer.finish().map_err(|e| {
-            gst::error!(CAT, imp: self, "Failed to finish encoder: {e}");
+            gst::error!(CAT, imp = self, "Failed to finish encoder: {e}");
             gst::element_imp_error!(self, gst::CoreError::Failed, ["{e}"]);
             gst::FlowError::Error
         })?;

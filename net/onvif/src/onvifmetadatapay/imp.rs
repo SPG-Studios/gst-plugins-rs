@@ -2,7 +2,15 @@ use gst::glib;
 use gst::subclass::prelude::*;
 use gst_rtp::prelude::*;
 use gst_rtp::subclass::prelude::*;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
+
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new(
+        "rtponvifmetadatapay",
+        gst::DebugColorFlags::empty(),
+        Some("RTP ONVIF metadata payloader"),
+    )
+});
 
 #[derive(Default)]
 pub struct OnvifMetadataPay {}
@@ -20,7 +28,7 @@ impl GstObjectImpl for OnvifMetadataPay {}
 
 impl ElementImpl for OnvifMetadataPay {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "ONVIF metadata RTP payloader",
                 "Payloader/Network/RTP",
@@ -33,7 +41,7 @@ impl ElementImpl for OnvifMetadataPay {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst::Caps::builder("application/x-onvif-metadata").build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -186,7 +194,8 @@ impl RTPBasePayloadImpl for OnvifMetadataPay {
     fn set_caps(&self, _caps: &gst::Caps) -> Result<(), gst::LoggableError> {
         self.obj()
             .set_options("application", true, "VND.ONVIF.METADATA", 90000);
-
-        Ok(())
+        self.obj()
+            .set_outcaps(None)
+            .map_err(|_| gst::loggable_error!(CAT, "Failed to set output caps"))
     }
 }

@@ -10,14 +10,15 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::cmp::min;
 use std::sync::Mutex;
 
-use crate::ttutils::{Cea608Mode, Chunk, Line, Lines, TextStyle};
+use crate::cea608utils::*;
+use crate::ttutils::{Chunk, Line, Lines};
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "tttojson",
         gst::DebugColorFlags::empty(),
@@ -122,7 +123,7 @@ impl TtToJson {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Caps(_) => {
@@ -142,7 +143,7 @@ impl GstObjectImpl for TtToJson {}
 
 impl ElementImpl for TtToJson {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Timed text to JSON encoder",
                 "Encoder/ClosedCaption",
@@ -155,7 +156,7 @@ impl ElementImpl for TtToJson {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("text/x-raw")
                 .field("format", "utf8")
                 .build();
@@ -191,7 +192,7 @@ impl ObjectSubclass for TtToJson {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 TtToJson::catch_panic_pad_function(
                     parent,
@@ -209,7 +210,7 @@ impl ObjectSubclass for TtToJson {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src")).build();
+        let srcpad = gst::Pad::from_template(&templ);
 
         Self {
             srcpad,
@@ -221,7 +222,7 @@ impl ObjectSubclass for TtToJson {
 
 impl ObjectImpl for TtToJson {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecEnum::builder_with_default("mode", DEFAULT_MODE)
                     .nick("Mode")

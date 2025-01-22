@@ -12,12 +12,11 @@ use gst::subclass::prelude::*;
 use gst_base::subclass::prelude::*;
 
 use crate::ccutils::{extract_cdp, ParseError, ParseErrorCode};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::sync::Mutex;
-use std::u64;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ccdetect",
         gst::DebugColorFlags::empty(),
@@ -76,7 +75,7 @@ impl CCDetect {
         if data.len() % 3 != 0 {
             gst::warning!(
                 CAT,
-                imp: self,
+                imp = self,
                 "cc_data length is not a multiple of 3, truncating"
             );
         }
@@ -90,7 +89,7 @@ impl CCDetect {
             let cc_type = triple[0] & 0x03;
             gst::trace!(
                 CAT,
-                imp: self,
+                imp = self,
                 "triple:{} have ccp:{} 608:{} 708:{} data:{:02x},{:02x},{:02x} cc_valid:{} cc_type:{:02b}",
                 i * 3,
                 started_ccp,
@@ -164,7 +163,7 @@ impl CCDetect {
 
             gst::trace!(
                 CAT,
-                imp: self,
+                imp = self,
                 "packet contains {:?} current settings {:?} and state {:?}",
                 cc_packet,
                 settings,
@@ -200,7 +199,7 @@ impl CCDetect {
 
             gst::trace!(
                 CAT,
-                imp: self,
+                imp = self,
                 "changed to settings {:?} state {:?}",
                 settings,
                 state
@@ -227,7 +226,7 @@ impl ObjectSubclass for CCDetect {
 
 impl ObjectImpl for CCDetect {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt64::builder("window")
                     .nick("Window")
@@ -287,7 +286,7 @@ impl GstObjectImpl for CCDetect {}
 
 impl ElementImpl for CCDetect {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Closed Caption Detect",
                 "Filter/Video/ClosedCaption/Detect",
@@ -300,7 +299,7 @@ impl ElementImpl for CCDetect {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let mut caps = gst::Caps::new_empty();
             {
                 let caps = caps.get_mut().unwrap();
@@ -363,7 +362,7 @@ impl BaseTransformImpl for CCDetect {
         let cc_packet = match self.detect(format, map.as_slice()) {
             Ok(v) => v,
             Err(e) => {
-                gst::warning!(CAT, imp: self, "{e}");
+                gst::warning!(CAT, imp = self, "{e}");
                 gst::element_imp_warning!(self, gst::StreamError::Decode, ["{e}"]);
                 CCPacketContents {
                     cc608: false,

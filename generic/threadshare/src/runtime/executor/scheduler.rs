@@ -27,7 +27,7 @@ use super::{CallOnDrop, JoinHandle, Reactor};
 use crate::runtime::RUNTIME_CAT;
 
 thread_local! {
-    static CURRENT_SCHEDULER: RefCell<Option<HandleWeak>> = RefCell::new(None);
+    static CURRENT_SCHEDULER: RefCell<Option<HandleWeak>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug)]
@@ -218,14 +218,12 @@ impl Scheduler {
             tasks_checked = 0;
             while tasks_checked < Self::MAX_SUCCESSIVE_TASKS {
                 if let Ok(runnable) = self.tasks.pop_runnable() {
-                    panic::catch_unwind(|| runnable.run()).map_err(|err| {
+                    panic::catch_unwind(|| runnable.run()).inspect_err(|_err| {
                         gst::error!(
                             RUNTIME_CAT,
                             "A task has panicked within Context {}",
                             self.context_name
                         );
-
-                        err
                     })?;
 
                     tasks_checked += 1;
@@ -301,9 +299,7 @@ impl Scheduler {
                 .borrow()
                 .as_ref()
                 .and_then(HandleWeak::upgrade)
-                .map_or(false, |cur| {
-                    std::ptr::eq(self, Arc::as_ptr(&cur.0.scheduler))
-                })
+                .is_some_and(|cur| std::ptr::eq(self, Arc::as_ptr(&cur.0.scheduler)))
         })
     }
 }
@@ -394,7 +390,7 @@ impl Handle {
 
     /// Executes the provided function relatively to this [`Scheduler`]'s [`Reactor`].
     ///
-    /// Usefull to initialze i/o sources and timers from outside
+    /// Useful to initialize i/o sources and timers from outside
     /// of a [`Scheduler`].
     ///
     /// # Panic

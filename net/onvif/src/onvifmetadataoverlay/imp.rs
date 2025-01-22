@@ -4,12 +4,12 @@ use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use pango::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "onvifmetadataoverlay",
         gst::DebugColorFlags::empty(),
@@ -110,7 +110,7 @@ impl OnvifMetadataOverlay {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "upstream has meta: {}, downstream accepts meta: {}",
             upstream_has_meta,
             downstream_accepts_meta
@@ -133,7 +133,7 @@ impl OnvifMetadataOverlay {
                 .find_allocation_meta::<gst_video::VideoOverlayCompositionMeta>()
                 .is_some();
 
-            gst::debug!(CAT, imp: self, "attach meta: {}", attach);
+            gst::debug!(CAT, imp = self, "attach meta: {}", attach);
 
             self.state.lock().unwrap().attach = attach;
 
@@ -316,7 +316,7 @@ impl OnvifMetadataOverlay {
 
             gst::debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Rendering shape with tag {:?} x {} y {} width {} height {}",
                 shape.tag,
                 shape.x,
@@ -334,7 +334,7 @@ impl OnvifMetadataOverlay {
             ) {
                 Some(ret) => ret,
                 None => {
-                    gst::error!(CAT, imp: self, "Failed to render buffer");
+                    gst::error!(CAT, imp = self, "Failed to render buffer");
                     state.composition = None;
                     return;
                 }
@@ -360,7 +360,7 @@ impl OnvifMetadataOverlay {
         pad: &gst::Pad,
         mut buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::trace!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::trace!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         if self.srcpad.check_reconfigure() {
             if let Err(err) = self.negotiate() {
@@ -384,7 +384,7 @@ impl OnvifMetadataOverlay {
             let mut shapes: Vec<Shape> = Vec::new();
 
             if let Ok(frames) = s.get::<gst::BufferList>("frames") {
-                gst::log!(CAT, imp: self, "Overlaying {} frames", frames.len());
+                gst::log!(CAT, imp = self, "Overlaying {} frames", frames.len());
 
                 // Metadata for multiple frames may be attached to this frame, either because:
                 //
@@ -399,6 +399,12 @@ impl OnvifMetadataOverlay {
                 // by object id.
 
                 let mut object_ids = HashSet::new();
+
+                // Default values for translation and scaling
+                let mut x_translate: f64 = 0.0;
+                let mut y_translate: f64 = 0.0;
+                let mut x_scale: f64 = 1.0;
+                let mut y_scale: f64 = 1.0;
 
                 for buffer in frames.iter().rev() {
                     let buffer = buffer.map_readable().map_err(|_| {
@@ -441,6 +447,108 @@ impl OnvifMetadataOverlay {
                         if object.name == "Frame"
                             && object.namespace.as_deref() == Some(crate::ONVIF_METADATA_SCHEMA)
                         {
+                            for transformation in object
+                                .children
+                                .iter()
+                                .filter_map(|n| n.as_element())
+                                .filter(|e| {
+                                    e.name == "Transformation"
+                                        && e.namespace.as_deref()
+                                            == Some(crate::ONVIF_METADATA_SCHEMA)
+                                })
+                            {
+                                gst::trace!(
+                                    CAT,
+                                    imp = self,
+                                    "Handling transformation {:?}",
+                                    transformation
+                                );
+
+                                let translate = match transformation
+                                    .get_child(("Translate", crate::ONVIF_METADATA_SCHEMA))
+                                {
+                                    Some(translate) => translate,
+                                    None => {
+                                        gst::warning!(
+                                            CAT,
+                                            imp = self,
+                                            "Transform with no Translate node"
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                x_translate = match translate
+                                    .attributes
+                                    .get("x")
+                                    .and_then(|val| val.parse().ok())
+                                {
+                                    Some(val) => val,
+                                    None => {
+                                        gst::warning!(
+                                            CAT,
+                                            imp = self,
+                                            "Translate with no x attribute"
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                y_translate = match translate
+                                    .attributes
+                                    .get("y")
+                                    .and_then(|val| val.parse().ok())
+                                {
+                                    Some(val) => val,
+                                    None => {
+                                        gst::warning!(
+                                            CAT,
+                                            imp = self,
+                                            "Translate with no y attribute"
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                let scale = match transformation
+                                    .get_child(("Scale", crate::ONVIF_METADATA_SCHEMA))
+                                {
+                                    Some(translate) => translate,
+                                    None => {
+                                        gst::warning!(
+                                            CAT,
+                                            imp = self,
+                                            "Transform with no Scale node"
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                x_scale = match scale
+                                    .attributes
+                                    .get("x")
+                                    .and_then(|val| val.parse().ok())
+                                {
+                                    Some(val) => val,
+                                    None => {
+                                        gst::warning!(CAT, imp = self, "Scale with no x attribute");
+                                        continue;
+                                    }
+                                };
+
+                                y_scale = match scale
+                                    .attributes
+                                    .get("y")
+                                    .and_then(|val| val.parse().ok())
+                                {
+                                    Some(val) => val,
+                                    None => {
+                                        gst::warning!(CAT, imp = self, "Scale with no y attribute");
+                                        continue;
+                                    }
+                                };
+                            }
+
                             for object in object
                                 .children
                                 .iter()
@@ -451,14 +559,14 @@ impl OnvifMetadataOverlay {
                                             == Some(crate::ONVIF_METADATA_SCHEMA)
                                 })
                             {
-                                gst::trace!(CAT, imp: self, "Handling object {:?}", object);
+                                gst::trace!(CAT, imp = self, "Handling object {:?}", object);
 
                                 let object_id = match object.attributes.get("ObjectId") {
                                     Some(id) => id.to_string(),
                                     None => {
                                         gst::warning!(
                                             CAT,
-                                            imp: self,
+                                            imp = self,
                                             "XML Object with no ObjectId"
                                         );
                                         continue;
@@ -503,7 +611,7 @@ impl OnvifMetadataOverlay {
                                     None => {
                                         gst::warning!(
                                             CAT,
-                                            imp: self,
+                                            imp = self,
                                             "XML Shape with no BoundingBox"
                                         );
                                         continue;
@@ -519,7 +627,7 @@ impl OnvifMetadataOverlay {
                                     None => {
                                         gst::warning!(
                                             CAT,
-                                            imp: self,
+                                            imp = self,
                                             "BoundingBox with no left attribute"
                                         );
                                         continue;
@@ -535,7 +643,7 @@ impl OnvifMetadataOverlay {
                                     None => {
                                         gst::warning!(
                                             CAT,
-                                            imp: self,
+                                            imp = self,
                                             "BoundingBox with no right attribute"
                                         );
                                         continue;
@@ -551,7 +659,7 @@ impl OnvifMetadataOverlay {
                                     None => {
                                         gst::warning!(
                                             CAT,
-                                            imp: self,
+                                            imp = self,
                                             "BoundingBox with no top attribute"
                                         );
                                         continue;
@@ -567,17 +675,21 @@ impl OnvifMetadataOverlay {
                                     None => {
                                         gst::warning!(
                                             CAT,
-                                            imp: self,
+                                            imp = self,
                                             "BoundingBox with no bottom attribute"
                                         );
                                         continue;
                                     }
                                 };
 
-                                let x1 = width / 2 + ((left * (width / 2) as f64) as i32);
-                                let y1 = height / 2 - ((top * (height / 2) as f64) as i32);
-                                let x2 = width / 2 + ((right * (width / 2) as f64) as i32);
-                                let y2 = height / 2 - ((bottom * (height / 2) as f64) as i32);
+                                let x1 = ((1.0 + x_translate) * width as f64 / 2.0) as i32
+                                    + ((left * x_scale * (width / 2) as f64) as i32);
+                                let x2 = ((1.0 + x_translate) * width as f64 / 2.0) as i32
+                                    + ((right * x_scale * (width / 2) as f64) as i32);
+                                let y1 = ((1.0 + y_translate) * height as f64 / 2.0) as i32
+                                    + ((top * y_scale * (height / 2) as f64) as i32);
+                                let y2 = ((1.0 + y_translate) * height as f64 / 2.0) as i32
+                                    + ((bottom * y_scale * (height / 2) as f64) as i32);
 
                                 let w = (x2 - x1) as u32;
                                 let h = (y2 - y1) as u32;
@@ -603,7 +715,7 @@ impl OnvifMetadataOverlay {
                                                 None => {
                                                     gst::warning!(
                                                         CAT,
-                                                        imp: self,
+                                                        imp = self,
                                                         "Point with no x attribute"
                                                     );
                                                     continue;
@@ -619,7 +731,7 @@ impl OnvifMetadataOverlay {
                                                 None => {
                                                     gst::warning!(
                                                         CAT,
-                                                        imp: self,
+                                                        imp = self,
                                                         "Point with no y attribute"
                                                     );
                                                     continue;
@@ -669,7 +781,7 @@ impl OnvifMetadataOverlay {
                 .unwrap();
 
                 if composition.blend(&mut frame).is_err() {
-                    gst::error!(CAT, obj: pad, "Failed to blend composition");
+                    gst::error!(CAT, obj = pad, "Failed to blend composition");
                 }
             }
         }
@@ -681,7 +793,7 @@ impl OnvifMetadataOverlay {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Caps(c) => {
@@ -715,7 +827,7 @@ impl ObjectSubclass for OnvifMetadataOverlay {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 OnvifMetadataOverlay::catch_panic_pad_function(
                     parent,
@@ -735,7 +847,7 @@ impl ObjectSubclass for OnvifMetadataOverlay {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .flags(gst::PadFlags::PROXY_CAPS)
             .flags(gst::PadFlags::PROXY_ALLOCATION)
             .build();
@@ -751,7 +863,7 @@ impl ObjectSubclass for OnvifMetadataOverlay {
 
 impl ObjectImpl for OnvifMetadataOverlay {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecString::builder("font-desc")
                 .nick("Font Description")
                 .blurb("Pango font description of font to be used for rendering")
@@ -795,7 +907,7 @@ impl GstObjectImpl for OnvifMetadataOverlay {}
 
 impl ElementImpl for OnvifMetadataOverlay {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "ONVIF Metadata overlay",
                 "Video/Overlay",
@@ -808,7 +920,7 @@ impl ElementImpl for OnvifMetadataOverlay {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_video::VideoFormat::iter_raw()
                 .into_video_caps()
                 .unwrap()
@@ -840,7 +952,7 @@ impl ElementImpl for OnvifMetadataOverlay {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused | gst::StateChange::PausedToReady => {

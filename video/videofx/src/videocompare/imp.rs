@@ -13,14 +13,14 @@ use gst::subclass::prelude::*;
 use gst::{glib, glib::prelude::*, prelude::*};
 use gst_base::prelude::*;
 use gst_base::AggregatorPad;
-use gst_video::prelude::VideoAggregatorPadExtManual;
+use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 use gst_video::subclass::AggregateFramesToken;
 use gst_video::VideoFormat;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::{Arc, Mutex};
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "videocompare",
         gst::DebugColorFlags::empty(),
@@ -73,7 +73,7 @@ impl ObjectSubclass for VideoCompare {
 
 impl ObjectImpl for VideoCompare {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecEnum::builder_with_default("hash-algo", DEFAULT_HASH_ALGO)
                     .nick("Hashing Algorithm")
@@ -101,7 +101,7 @@ impl ObjectImpl for VideoCompare {
                 if settings.hash_algo != hash_algo {
                     gst::info!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Changing hash-algo from {:?} to {:?}",
                         settings.hash_algo,
                         hash_algo
@@ -117,7 +117,7 @@ impl ObjectImpl for VideoCompare {
                 if settings.max_distance_threshold != max_distance_threshold {
                     gst::info!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Changing max-dist-threshold from {} to {}",
                         settings.max_distance_threshold,
                         max_distance_threshold
@@ -143,7 +143,7 @@ impl GstObjectImpl for VideoCompare {}
 
 impl ElementImpl for VideoCompare {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Image comparison",
                 "Filter/Video",
@@ -156,7 +156,7 @@ impl ElementImpl for VideoCompare {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_video::VideoCapsBuilder::new()
                 .format_list([VideoFormat::Rgb, VideoFormat::Rgba])
                 .build();
@@ -222,7 +222,7 @@ impl AggregatorImpl for VideoCompare {
                 let pad = pad.clone().upcast::<gst::Pad>();
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Reference sink pad selected: {}",
                     pad.name()
                 );
@@ -242,7 +242,7 @@ impl AggregatorImpl for VideoCompare {
         if !sink_caps.can_intersect(caps) {
             gst::error!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Proposed src caps ({:?}) not supported, needs to intersect with the reference sink caps ({:?})",
                 caps,
                 sink_caps
@@ -250,7 +250,7 @@ impl AggregatorImpl for VideoCompare {
             return Err(gst::FlowError::NotNegotiated);
         }
 
-        gst::info!(CAT, imp: self, "Caps for src pad: {:?}", sink_caps);
+        gst::info!(CAT, imp = self, "Caps for src pad: {:?}", sink_caps);
         Ok(sink_caps)
     }
 }
@@ -273,7 +273,7 @@ impl VideoAggregatorImpl for VideoCompare {
                         .unwrap()
                 })
                 .ok_or_else(|| {
-                    gst::warning!(CAT, imp: self, "No reference sink pad exists");
+                    gst::warning!(CAT, imp = self, "No reference sink pad exists");
                     gst::FlowError::Eos
                 })?
         };
@@ -286,7 +286,7 @@ impl VideoAggregatorImpl for VideoCompare {
                 } else {
                     gst::warning!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "The reference sink pad '{}' has not produced a buffer, image comparison not possible",
                         reference_pad.name()
                     );
@@ -309,7 +309,7 @@ impl VideoAggregatorImpl for VideoCompare {
         // output the reference buffer
         outbuf.remove_all_memory();
         buffer
-            .copy_into(outbuf, gst::BufferCopyFlags::all(), 0, None)
+            .copy_into(outbuf, gst::BufferCopyFlags::all(), ..)
             .map_err(|_| gst::FlowError::Error)?;
 
         // Use current frame as the reference to the comparison
@@ -339,7 +339,7 @@ impl VideoAggregatorImpl for VideoCompare {
             {
                 gst::error!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Video streams do not have the same sizes (add videoscale and force the sizes to be equal on all sink pads)",
                 );
                 return Err(gst::FlowError::NotNegotiated);
@@ -365,7 +365,7 @@ impl VideoAggregatorImpl for VideoCompare {
         {
             gst::debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Image detected {}",
                 message.running_time.unwrap().display()
             );
@@ -378,7 +378,7 @@ impl VideoAggregatorImpl for VideoCompare {
         } else {
             gst::debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Compared images and could not find any frame with distance lower than the threshold of {}: {:?}",
                 max_distance_threshold,
                 message

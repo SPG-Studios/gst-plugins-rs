@@ -5,7 +5,7 @@
 
 use futures::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::HashMap;
 use std::io;
@@ -27,8 +27,8 @@ use crate::runtime::RUNTIME_CAT;
 //
 // Also, we want to be able to `acquire` a `Context` outside of an `async` context.
 // These `Mutex`es must be `lock`ed for a short period.
-static CONTEXTS: Lazy<Mutex<HashMap<Arc<str>, ContextWeak>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static CONTEXTS: LazyLock<Mutex<HashMap<Arc<str>, ContextWeak>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Blocks on `future` in one way or another if possible.
 ///
@@ -215,7 +215,7 @@ impl Context {
 
     /// Executes the provided function relatively to this [`Context`].
     ///
-    /// Usefull to initialze i/o sources and timers from outside
+    /// Useful to initialize i/o sources and timers from outside
     /// of a [`Context`].
     ///
     /// # Panic
@@ -511,7 +511,7 @@ mod tests {
         });
 
         // Panic: task has failed
-        // (enforced by `async-task`, see comment in `Future` impl for `JoinHanlde`).
+        // (enforced by `async-task`, see comment in `Future` impl for `JoinHandle`).
         futures::executor::block_on(join_handle).unwrap_err();
     }
 

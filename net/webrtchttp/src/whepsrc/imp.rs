@@ -8,22 +8,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::utils::{
-    build_reqwest_client, parse_redirect_location, set_ice_servers, wait, wait_async, WaitError,
-    RUNTIME,
+    self, build_reqwest_client, parse_redirect_location, set_ice_servers, wait, wait_async,
+    WaitError, RUNTIME,
 };
 use crate::IceTransportPolicy;
 use async_recursion::async_recursion;
 use bytes::Bytes;
-use futures::future;
 use gst::{glib, prelude::*, subclass::prelude::*};
 use gst_sdp::*;
 use gst_webrtc::*;
-use once_cell::sync::Lazy;
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::StatusCode;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "whepsrc",
         gst::DebugColorFlags::empty(),
@@ -37,8 +36,8 @@ const DEFAULT_TIMEOUT: u32 = 15;
 
 #[derive(Debug, Clone)]
 struct Settings {
-    video_caps: gst::Caps,
-    audio_caps: gst::Caps,
+    video_caps: Option<gst::Caps>,
+    audio_caps: Option<gst::Caps>,
     turn_server: Option<String>,
     stun_server: Option<String>,
     whep_endpoint: Option<String>,
@@ -51,21 +50,43 @@ struct Settings {
 #[allow(clippy::derivable_impls)]
 impl Default for Settings {
     fn default() -> Self {
+        let video_caps = {
+            let video = [
+                ("VP8", 101),
+                ("VP9", 102),
+                ("H264", 103),
+                ("H265", 104),
+                ("AV1", 105),
+            ];
+
+            let mut video_caps = gst::Caps::new_empty();
+            let caps = video_caps.get_mut().unwrap();
+
+            for (encoding, pt) in video {
+                let s = gst::Structure::builder("application/x-rtp")
+                    .field("media", "video")
+                    .field("payload", pt)
+                    .field("encoding-name", encoding)
+                    .field("clock-rate", 90000)
+                    .build();
+                caps.append_structure(s);
+            }
+
+            Some(video_caps)
+        };
+
+        let audio_caps = Some(
+            gst::Caps::builder("application/x-rtp")
+                .field("media", "audio")
+                .field("encoding-name", "OPUS")
+                .field("payload", 96)
+                .field("clock-rate", 48000)
+                .build(),
+        );
+
         Self {
-            video_caps: [
-                "video/x-vp8",
-                "video/x-h264",
-                "video/x-vp9",
-                "video/x-h265",
-                "video/x-av1",
-            ]
-            .into_iter()
-            .map(gst::Structure::new_empty)
-            .collect::<gst::Caps>(),
-            audio_caps: ["audio/x-opus"]
-                .into_iter()
-                .map(gst::Structure::new_empty)
-                .collect::<gst::Caps>(),
+            video_caps,
+            audio_caps,
             stun_server: None,
             turn_server: None,
             whep_endpoint: None,
@@ -94,7 +115,7 @@ pub struct WhepSrc {
     settings: Mutex<Settings>,
     state: Mutex<State>,
     webrtcbin: gst::Element,
-    canceller: Mutex<Option<future::AbortHandle>>,
+    canceller: Mutex<utils::Canceller>,
     client: reqwest::Client,
 }
 
@@ -113,7 +134,7 @@ impl Default for WhepSrc {
             settings: Mutex::new(Settings::default()),
             state: Mutex::new(State::default()),
             webrtcbin,
-            canceller: Mutex::new(None),
+            canceller: Mutex::new(utils::Canceller::default()),
             client,
         }
     }
@@ -123,7 +144,7 @@ impl GstObjectImpl for WhepSrc {}
 
 impl ElementImpl for WhepSrc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "WHEP Source Bin",
                 "Source/Network/WebRTC",
@@ -135,7 +156,7 @@ impl ElementImpl for WhepSrc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let src_pad_template = gst::PadTemplate::new(
                 "src_%u",
                 gst::PadDirection::Src,
@@ -150,69 +171,92 @@ impl ElementImpl for WhepSrc {
         PAD_TEMPLATES.as_ref()
     }
 
+    #[allow(clippy::single_match)]
     fn change_state(
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        if transition == gst::StateChange::NullToReady {
-            /*
-             * Fail the state change if WHEP endpoint has not been set by the
-             * time ReadyToPaused transition happens. This prevents us from
-             * having to check this everywhere else.
-             */
-            let settings = self.settings.lock().unwrap();
+        match transition {
+            gst::StateChange::NullToReady => {
+                /*
+                 * Fail the state change if WHEP endpoint has not been set by the
+                 * time ReadyToPaused transition happens. This prevents us from
+                 * having to check this everywhere else.
+                 */
+                let settings = self.settings.lock().unwrap();
 
-            if settings.whep_endpoint.is_none() {
-                gst::error!(CAT, imp: self, "WHEP endpoint URL must be set");
-                return Err(gst::StateChangeError);
+                if settings.whep_endpoint.is_none() {
+                    gst::error!(CAT, imp = self, "WHEP endpoint URL must be set");
+                    return Err(gst::StateChangeError);
+                }
+
+                /*
+                 * Check if we have a valid URL. We can be assured any further URL
+                 * handling won't fail due to invalid URLs.
+                 */
+                if let Err(e) =
+                    reqwest::Url::parse(settings.whep_endpoint.as_ref().unwrap().as_str())
+                {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "WHEP endpoint URL could not be parsed: {}",
+                        e
+                    );
+                    return Err(gst::StateChangeError);
+                }
+
+                drop(settings);
             }
 
-            /*
-             * Check if we have a valid URL. We can be assured any further URL
-             * handling won't fail due to invalid URLs.
-             */
-            if let Err(e) = reqwest::Url::parse(settings.whep_endpoint.as_ref().unwrap().as_str()) {
-                gst::error!(
-                    CAT,
-                    imp: self,
-                    "WHEP endpoint URL could not be parsed: {}",
-                    e
-                );
-                return Err(gst::StateChangeError);
-            }
-
-            drop(settings);
-        }
-
-        if transition == gst::StateChange::PausedToReady {
-            if let Some(canceller) = &*self.canceller.lock().unwrap() {
+            gst::StateChange::PausedToReady => {
+                let mut canceller = self.canceller.lock().unwrap();
                 canceller.abort();
             }
-
-            let state = self.state.lock().unwrap();
-            if let State::Running { .. } = *state {
-                drop(state);
-                self.terminate_session();
-            }
-
-            for pad in self.obj().src_pads() {
-                gst::debug!(CAT, imp: self, "Removing pad: {}", pad.name());
-
-                // No need to deactivate pad here. Parent GstBin will deactivate
-                // the pad. Only remove the pad.
-                if let Err(e) = self.obj().remove_pad(&pad) {
-                    gst::error!(CAT, imp: self, "Failed to remove pad {}: {}", pad.name(), e);
-                }
-            }
+            _ => (),
         }
 
-        self.parent_change_state(transition)
+        let res = self.parent_change_state(transition)?;
+
+        match transition {
+            gst::StateChange::PausedToReady => {
+                {
+                    let mut canceller = self.canceller.lock().unwrap();
+                    *canceller = utils::Canceller::None;
+                }
+
+                let state = self.state.lock().unwrap();
+                if let State::Running { .. } = *state {
+                    drop(state);
+                    self.terminate_session();
+                }
+
+                for pad in self.obj().src_pads() {
+                    gst::debug!(CAT, imp = self, "Removing pad: {}", pad.name());
+
+                    // No need to deactivate pad here. Parent GstBin will deactivate
+                    // the pad. Only remove the pad.
+                    if let Err(e) = self.obj().remove_pad(&pad) {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Failed to remove pad {}: {}",
+                            pad.name(),
+                            e
+                        );
+                    }
+                }
+            }
+            _ => (),
+        }
+
+        Ok(res)
     }
 }
 
 impl ObjectImpl for WhepSrc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecBoxed::builder::<gst::Caps>("video-caps")
                     .nick("Video caps")
@@ -264,15 +308,13 @@ impl ObjectImpl for WhepSrc {
                 let mut settings = self.settings.lock().unwrap();
                 settings.video_caps = value
                     .get::<Option<gst::Caps>>()
-                    .expect("type checked upstream")
-                    .unwrap_or_else(gst::Caps::new_empty);
+                    .expect("type checked upstream");
             }
             "audio-caps" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.audio_caps = value
                     .get::<Option<gst::Caps>>()
-                    .expect("type checked upstream")
-                    .unwrap_or_else(gst::Caps::new_empty);
+                    .expect("type checked upstream");
             }
             "stun-server" => {
                 let mut settings = self.settings.lock().unwrap();
@@ -410,7 +452,7 @@ impl WhepSrc {
     fn handle_future_error(&self, err: WaitError) {
         match err {
             WaitError::FutureAborted => {
-                gst::warning!(CAT, imp: self, "Future aborted")
+                gst::warning!(CAT, imp = self, "Future aborted")
             }
             WaitError::FutureError(err) => {
                 self.raise_error(gst::ResourceError::Failed, err.to_string())
@@ -426,19 +468,18 @@ impl WhepSrc {
         let self_weak = self.downgrade();
         self.webrtcbin
             .connect_notify(Some("ice-gathering-state"), move |webrtcbin, _pspec| {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return,
+                let Some(self_) = self_weak.upgrade() else {
+                    return;
                 };
 
                 let state = webrtcbin.property::<WebRTCICEGatheringState>("ice-gathering-state");
 
                 match state {
                     WebRTCICEGatheringState::Gathering => {
-                        gst::info!(CAT, imp: self_, "ICE gathering started")
+                        gst::info!(CAT, imp = self_, "ICE gathering started")
                     }
                     WebRTCICEGatheringState::Complete => {
-                        gst::info!(CAT, imp: self_, "ICE gathering completed");
+                        gst::info!(CAT, imp = self_, "ICE gathering completed");
 
                         let self_ref = self_.ref_counted();
 
@@ -458,9 +499,8 @@ impl WhepSrc {
         let self_weak = self.downgrade();
         self.webrtcbin
             .connect_notify(Some("ice-connection-state"), move |webrtcbin, _pspec| {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return,
+                let Some(self_) = self_weak.upgrade() else {
+                    return;
                 };
 
                 let state = webrtcbin.property::<WebRTCICEConnectionState>("ice-connection-state");
@@ -468,13 +508,13 @@ impl WhepSrc {
                 match state {
                     WebRTCICEConnectionState::New => (),
                     WebRTCICEConnectionState::Checking => {
-                        gst::info!(CAT, imp: self_, "ICE connecting...")
+                        gst::info!(CAT, imp = self_, "ICE connecting...")
                     }
                     WebRTCICEConnectionState::Connected => {
-                        gst::info!(CAT, imp: self_, "ICE connected")
+                        gst::info!(CAT, imp = self_, "ICE connected")
                     }
                     WebRTCICEConnectionState::Completed => {
-                        gst::info!(CAT, imp: self_, "ICE completed")
+                        gst::info!(CAT, imp = self_, "ICE completed")
                     }
                     WebRTCICEConnectionState::Failed => {
                         self_.terminate_session();
@@ -489,9 +529,8 @@ impl WhepSrc {
         let self_weak = self.downgrade();
         self.webrtcbin
             .connect_notify(Some("connection-state"), move |webrtcbin, _pspec| {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return,
+                let Some(self_) = self_weak.upgrade() else {
+                    return;
                 };
 
                 let state = webrtcbin.property::<WebRTCPeerConnectionState>("connection-state");
@@ -499,10 +538,10 @@ impl WhepSrc {
                 match state {
                     WebRTCPeerConnectionState::New => (),
                     WebRTCPeerConnectionState::Connecting => {
-                        gst::info!(CAT, imp: self_, "PeerConnection connecting...")
+                        gst::info!(CAT, imp = self_, "PeerConnection connecting...")
                     }
                     WebRTCPeerConnectionState::Connected => {
-                        gst::info!(CAT, imp: self_, "PeerConnection connected")
+                        gst::info!(CAT, imp = self_, "PeerConnection connected")
                     }
                     WebRTCPeerConnectionState::Disconnected => (),
                     WebRTCPeerConnectionState::Failed => {
@@ -520,23 +559,20 @@ impl WhepSrc {
 
         let self_weak = self.downgrade();
         self.webrtcbin.connect_pad_added(move |_, pad| {
-            let self_ = match self_weak.upgrade() {
-                Some(self_) => self_,
-                None => return,
+            let Some(self_) = self_weak.upgrade() else {
+                return;
             };
 
             gst::debug!(
                 CAT,
-                imp: self_,
+                imp = self_,
                 "Pad added with name: {} and caps: {:?}",
                 pad.name(),
                 pad.current_caps()
             );
 
             let templ = self_.obj().pad_template("src_%u").unwrap();
-            let src_pad = gst::GhostPad::builder_with_template(&templ, Some(&pad.name()))
-                .build_with_target(pad)
-                .unwrap();
+            let src_pad = gst::GhostPad::from_template_with_target(&templ, pad).unwrap();
 
             src_pad.set_target(Some(pad)).unwrap();
             src_pad
@@ -549,11 +585,7 @@ impl WhepSrc {
         let self_weak = self.downgrade();
         self.webrtcbin.connect("on-negotiation-needed", false, {
             move |_| {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return None,
-                };
-
+                let self_ = self_weak.upgrade()?;
                 let settings = self_.settings.lock().unwrap();
 
                 let endpoint =
@@ -596,7 +628,7 @@ impl WhepSrc {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Setting remote description: {:?}",
             remote_sdp.sdp().as_text()
         );
@@ -613,7 +645,7 @@ impl WhepSrc {
                 let m_line_index = 0u32;
                 let c = format!("candidate:{candidate}");
 
-                gst::debug!(CAT, imp: self, "Adding ICE candidate from offer: {:?}", c);
+                gst::debug!(CAT, imp = self, "Adding ICE candidate from offer: {:?}", c);
 
                 self.webrtcbin
                     .emit_by_name::<()>("add-ice-candidate", &[&m_line_index, &c]);
@@ -628,7 +660,6 @@ impl WhepSrc {
         redirects: u8,
     ) {
         let endpoint;
-        let timeout;
         let use_link_headers;
 
         {
@@ -636,17 +667,16 @@ impl WhepSrc {
             endpoint =
                 reqwest::Url::parse(settings.whep_endpoint.as_ref().unwrap().as_str()).unwrap();
             use_link_headers = settings.use_link_headers;
-            timeout = settings.timeout;
             drop(settings);
         }
 
         match resp.status() {
             StatusCode::OK | StatusCode::NO_CONTENT => {
-                gst::info!(CAT, imp: self, "SDP offer successfully send");
+                gst::info!(CAT, imp = self, "SDP offer successfully send");
             }
 
             StatusCode::CREATED => {
-                gst::debug!(CAT, imp: self, "Response headers: {:?}", resp.headers());
+                gst::debug!(CAT, imp = self, "Response headers: {:?}", resp.headers());
 
                 if use_link_headers {
                     if let Err(e) = set_ice_servers(&self.webrtcbin, resp.headers()) {
@@ -681,7 +711,7 @@ impl WhepSrc {
 
                 let url = reqwest::Url::parse(endpoint.as_str()).unwrap();
 
-                gst::debug!(CAT, imp: self, "WHEP resource: {:?}", location);
+                gst::debug!(CAT, imp = self, "WHEP resource: {:?}", location);
 
                 let url = match url.join(location) {
                     Ok(joined_url) => joined_url,
@@ -694,29 +724,26 @@ impl WhepSrc {
                     }
                 };
 
-                match wait_async(&self.canceller, resp.bytes(), timeout).await {
-                    Ok(res) => match res {
-                        Ok(ans_bytes) => {
-                            let mut state = self.state.lock().unwrap();
-                            *state = match *state {
-                                State::Post { redirects: _r } => State::Running {
-                                    whep_resource: url.to_string(),
-                                },
-                                _ => {
-                                    self.raise_error(
-                                        gst::ResourceError::Failed,
-                                        "Expected to be in POST state".to_string(),
-                                    );
-                                    return;
-                                }
-                            };
-                            drop(state);
+                match resp.bytes().await {
+                    Ok(ans_bytes) => {
+                        let mut state = self.state.lock().unwrap();
+                        *state = match *state {
+                            State::Post { redirects: _r } => State::Running {
+                                whep_resource: url.to_string(),
+                            },
+                            _ => {
+                                self.raise_error(
+                                    gst::ResourceError::Failed,
+                                    "Expected to be in POST state".to_string(),
+                                );
+                                return;
+                            }
+                        };
+                        drop(state);
 
-                            self.sdp_message_parse(ans_bytes)
-                        }
-                        Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
-                    },
-                    Err(err) => self.handle_future_error(err),
+                        self.sdp_message_parse(ans_bytes)
+                    }
+                    Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
                 }
             }
 
@@ -750,16 +777,12 @@ impl WhepSrc {
 
                             gst::warning!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "Redirecting endpoint to {}",
                                 redirect_url.as_str()
                             );
 
-                            if let Err(err) =
-                                wait_async(&self.canceller, self.do_post(sess_desc), timeout).await
-                            {
-                                self.handle_future_error(err);
-                            }
+                            self.do_post(sess_desc, redirect_url).await
                         }
                         Err(e) => self.raise_error(gst::ResourceError::Failed, e.to_string()),
                     }
@@ -772,11 +795,9 @@ impl WhepSrc {
             }
 
             s => {
-                match wait_async(&self.canceller, resp.bytes(), timeout).await {
+                match resp.bytes().await {
                     Ok(r) => {
-                        let res = r
-                            .map(|x| x.escape_ascii().to_string())
-                            .unwrap_or_else(|_| "(no further details)".to_string());
+                        let res = r.escape_ascii().to_string();
 
                         // FIXME: Check and handle 'Retry-After' header in case of server error
                         self.raise_error(
@@ -784,7 +805,7 @@ impl WhepSrc {
                             format!("Unexpected response: {} - {}", s.as_str(), res),
                         );
                     }
-                    Err(err) => self.handle_future_error(err),
+                    Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
                 }
             }
         }
@@ -793,9 +814,8 @@ impl WhepSrc {
     fn generate_offer(&self) {
         let self_weak = self.downgrade();
         let promise = gst::Promise::with_change_func(move |reply| {
-            let self_ = match self_weak.upgrade() {
-                Some(self_) => self_,
-                None => return,
+            let Some(self_) = self_weak.upgrade() else {
+                return;
             };
 
             let reply = match reply {
@@ -824,7 +844,7 @@ impl WhepSrc {
             {
                 gst::debug!(
                     CAT,
-                    imp: self_,
+                    imp = self_,
                     "Setting local description: {:?}",
                     offer_sdp.sdp().as_text()
                 );
@@ -852,31 +872,37 @@ impl WhepSrc {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Audio caps: {:?} Video caps: {:?}",
             settings.audio_caps,
             settings.video_caps
         );
 
+        if settings.audio_caps.is_none() && settings.video_caps.is_none() {
+            self.raise_error(
+                gst::ResourceError::Failed,
+                "One of audio-caps or video-caps must be set".to_string(),
+            );
+            return;
+        }
+
         /*
          * Since we will be recvonly we need to add a transceiver without which
          * WebRTC bin does not generate ICE candidates.
          */
-        self.webrtcbin.emit_by_name::<WebRTCRTPTransceiver>(
-            "add-transceiver",
-            &[
-                &WebRTCRTPTransceiverDirection::Recvonly,
-                &settings.audio_caps,
-            ],
-        );
+        if let Some(audio_caps) = &settings.audio_caps {
+            self.webrtcbin.emit_by_name::<WebRTCRTPTransceiver>(
+                "add-transceiver",
+                &[&WebRTCRTPTransceiverDirection::Recvonly, &audio_caps],
+            );
+        }
 
-        self.webrtcbin.emit_by_name::<WebRTCRTPTransceiver>(
-            "add-transceiver",
-            &[
-                &WebRTCRTPTransceiverDirection::Recvonly,
-                &settings.video_caps,
-            ],
-        );
+        if let Some(video_caps) = &settings.video_caps {
+            self.webrtcbin.emit_by_name::<WebRTCRTPTransceiver>(
+                "add-transceiver",
+                &[&WebRTCRTPTransceiverDirection::Recvonly, &video_caps],
+            );
+        }
 
         drop(settings);
 
@@ -887,7 +913,7 @@ impl WhepSrc {
     fn initial_post_request(&self, endpoint: reqwest::Url) {
         let state = self.state.lock().unwrap();
 
-        gst::info!(CAT, imp: self, "WHEP endpoint url: {}", endpoint.as_str());
+        gst::info!(CAT, imp = self, "WHEP endpoint url: {}", endpoint.as_str());
 
         match *state {
             State::Post { .. } => (),
@@ -909,7 +935,7 @@ impl WhepSrc {
             .webrtcbin
             .property::<Option<WebRTCSessionDescription>>("local-description");
 
-        let offer_sdp = match local_desc {
+        let sess_desc = match local_desc {
             None => {
                 gst::element_imp_error!(
                     self,
@@ -918,49 +944,51 @@ impl WhepSrc {
                 );
                 return;
             }
-            Some(offer) => offer,
+            Some(mut local_desc) => {
+                local_desc.set_type(WebRTCSDPType::Offer);
+                local_desc
+            }
         };
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Sending offer SDP: {:?}",
-            offer_sdp.sdp().as_text()
+            sess_desc.sdp().as_text()
         );
 
-        let sess_desc = WebRTCSessionDescription::new(WebRTCSDPType::Offer, offer_sdp.sdp());
-
         let timeout;
+        let endpoint;
+
         {
             let settings = self.settings.lock().unwrap();
             timeout = settings.timeout;
+            endpoint =
+                reqwest::Url::parse(settings.whep_endpoint.as_ref().unwrap().as_str()).unwrap();
             drop(settings);
         }
 
-        if let Err(e) = wait_async(&self.canceller, self.do_post(sess_desc), timeout).await {
+        if let Err(e) =
+            wait_async(&self.canceller, self.do_post(sess_desc, endpoint), timeout).await
+        {
             self.handle_future_error(e);
         }
     }
 
     #[async_recursion]
-    async fn do_post(&self, offer: WebRTCSessionDescription) {
+    async fn do_post(&self, offer: WebRTCSessionDescription, endpoint: reqwest::Url) {
         let auth_token;
-        let endpoint;
-        let timeout;
 
         {
             let settings = self.settings.lock().unwrap();
-            endpoint =
-                reqwest::Url::parse(settings.whep_endpoint.as_ref().unwrap().as_str()).unwrap();
             auth_token = settings.auth_token.clone();
-            timeout = settings.timeout;
             drop(settings);
         }
 
         let sdp = offer.sdp();
         let body = sdp.as_text().unwrap();
 
-        gst::info!(CAT, imp: self, "Using endpoint {}", endpoint.as_str());
+        gst::info!(CAT, imp = self, "Using endpoint {}", endpoint.as_str());
 
         let mut headermap = HeaderMap::new();
         headermap.insert(
@@ -979,56 +1007,42 @@ impl WhepSrc {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Url for HTTP POST request: {}",
             endpoint.as_str()
         );
 
-        let res = wait_async(
-            &self.canceller,
-            self.client
-                .request(reqwest::Method::POST, endpoint.clone())
-                .headers(headermap)
-                .body(body)
-                .send(),
-            timeout,
-        )
-        .await;
+        let resp = self
+            .client
+            .request(reqwest::Method::POST, endpoint.clone())
+            .headers(headermap)
+            .body(body)
+            .send()
+            .await;
 
-        match res {
-            Ok(resp) => match resp {
-                Ok(r) => {
-                    #[allow(unused_mut)]
-                    let mut redirects;
+        match resp {
+            Ok(r) => {
+                #[allow(unused_mut)]
+                let mut redirects;
 
-                    {
-                        let state = self.state.lock().unwrap();
-                        redirects = match *state {
-                            State::Post { redirects } => redirects,
-                            _ => {
-                                self.raise_error(
-                                    gst::ResourceError::Failed,
-                                    "Trying to do POST in unexpected state".to_string(),
-                                );
-                                return;
-                            }
-                        };
-                        drop(state);
-                    }
-
-                    if let Err(e) = wait_async(
-                        &self.canceller,
-                        self.parse_endpoint_response(offer, r, redirects),
-                        timeout,
-                    )
-                    .await
-                    {
-                        self.handle_future_error(e);
-                    }
+                {
+                    let state = self.state.lock().unwrap();
+                    redirects = match *state {
+                        State::Post { redirects } => redirects,
+                        _ => {
+                            self.raise_error(
+                                gst::ResourceError::Failed,
+                                "Trying to do POST in unexpected state".to_string(),
+                            );
+                            return;
+                        }
+                    };
+                    drop(state);
                 }
-                Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
-            },
-            Err(err) => self.handle_future_error(err),
+
+                self.parse_endpoint_response(offer, r, redirects).await
+            }
+            Err(err) => self.raise_error(gst::ResourceError::Failed, err.to_string()),
         }
     }
 
@@ -1065,7 +1079,7 @@ impl WhepSrc {
 
         drop(settings);
 
-        gst::debug!(CAT, imp: self, "DELETE request on {}", resource_url);
+        gst::debug!(CAT, imp = self, "DELETE request on {}", resource_url);
 
         /* DELETE request goes to the WHEP resource URL. See section 3 of the specification. */
         let client = build_reqwest_client(reqwest::redirect::Policy::default());
@@ -1086,14 +1100,14 @@ impl WhepSrc {
         let res = wait(&self.canceller, future, timeout);
         match res {
             Ok(r) => {
-                gst::debug!(CAT, imp: self, "Response to DELETE : {}", r.status());
+                gst::debug!(CAT, imp = self, "Response to DELETE : {}", r.status());
             }
             Err(e) => match e {
                 WaitError::FutureAborted => {
-                    gst::warning!(CAT, imp: self, "DELETE request aborted")
+                    gst::warning!(CAT, imp = self, "DELETE request aborted")
                 }
                 WaitError::FutureError(e) => {
-                    gst::error!(CAT, imp: self, "Error on DELETE request : {}", e)
+                    gst::error!(CAT, imp = self, "Error on DELETE request : {}", e)
                 }
             },
         };

@@ -11,7 +11,7 @@ use gst::subclass::prelude::*;
 
 use gst_rtp::RTPBuffer;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::BTreeMap;
 use std::iter;
@@ -22,7 +22,7 @@ use raptorq::{EncodingPacket, ObjectTransmissionInformation, PayloadId, SourceBl
 
 use crate::fecscheme::{self, DataUnitHeader, RepairPayloadId};
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "raptorqdec",
         gst::DebugColorFlags::empty(),
@@ -165,7 +165,7 @@ impl RaptorqDec {
             if data_packets_num == n {
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "All packets ({}) received, dropping Source Block ({})",
                     data_packets_num,
                     seq_lo
@@ -183,7 +183,7 @@ impl RaptorqDec {
             }
 
             // Build Source Block from received Data Packets and append
-            // Repair Packets that have the same initial sequnce number
+            // Repair Packets that have the same initial sequence number
             let mut source_block = Vec::with_capacity(
                 (data_packets_num + repair_packets_num)
                     .checked_mul(state.symbol_size)
@@ -300,8 +300,8 @@ impl RaptorqDec {
 
                         gst::debug!(
                             CAT,
-                            imp: self,
-                            "Succesfully recovered packet: seqnum: {}, len: {}, ts: {}",
+                            imp = self,
+                            "Successfully recovered packet: seqnum: {}, len: {}, ts: {}",
                             rtpbuf.seq(),
                             rtpbuf.payload_size(),
                             rtpbuf.timestamp(),
@@ -324,20 +324,20 @@ impl RaptorqDec {
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let this_seq = {
             let rtpbuf = RTPBuffer::from_buffer_readable(buffer).map_err(|err| {
-                gst::error!(CAT, imp: self, "Failed to map rtp buffer : {}", err);
+                gst::error!(CAT, imp = self, "Failed to map rtp buffer : {}", err);
                 gst::FlowError::Error
             })?;
 
             gst::trace!(
                 CAT,
-                imp: self,
+                imp = self,
                 "New data packet, seq {}, ts {}",
                 rtpbuf.seq(),
                 rtpbuf.timestamp()
             );
 
             // Expand cyclic sequence numbers to u64, start from u16::MAX so we
-            // never overflow substraction.
+            // never overflow subtraction.
             let seq = rtpbuf.seq();
             let prev_seq = state.extended_media_seq.unwrap_or(65_535 + seq as u64);
 
@@ -388,7 +388,7 @@ impl RaptorqDec {
         for seq in expired {
             gst::trace!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Source Block ({}) dropped, because max wait time has been exceeded",
                 seq as u16
             );
@@ -399,7 +399,7 @@ impl RaptorqDec {
         if thresh > 0 && state.media_packets.len() >= thresh {
             gst::warning!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Too many buffered media packets, resetting decoder. This might \
                  be because we haven't received a repair packet for too long, or \
                  repair packets have no valid timestamps.",
@@ -420,13 +420,13 @@ impl RaptorqDec {
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let rtpbuf = RTPBuffer::from_buffer_readable(&buffer).map_err(|err| {
-            gst::error!(CAT, imp: self, "Failed to map rtp buffer : {}", err);
+            gst::error!(CAT, imp = self, "Failed to map rtp buffer : {}", err);
             gst::FlowError::Error
         })?;
 
         let payload = rtpbuf.payload().unwrap();
         let payload_id = payload[0..7].try_into().map_err(|err| {
-            gst::error!(CAT, imp: self, "Unexpected rtp fec payload : {}", err);
+            gst::error!(CAT, imp = self, "Unexpected rtp fec payload : {}", err);
             gst::FlowError::Error
         })?;
 
@@ -440,7 +440,7 @@ impl RaptorqDec {
 
         gst::trace!(
             CAT,
-            imp: self,
+            imp = self,
             "New repair packet, I: {}, LP: {}, LB: {}",
             i,
             lp,
@@ -448,7 +448,7 @@ impl RaptorqDec {
         );
 
         // Expand cyclic sequence numbers to u64, start from u16::MAX so we
-        // never overflow substraction.
+        // never overflow subtraction.
         let prev_seq = state.extended_repair_seq.unwrap_or(65_535 + i as u64);
         let delta = gst_rtp::compare_seqnum(prev_seq as u16, i);
 
@@ -477,7 +477,7 @@ impl RaptorqDec {
         state
             .repair_packets
             .entry(this_seq)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(RepairPacketItem {
                 payload_id: id,
                 payload: payload[7..].to_vec(), // without PayloadId
@@ -553,7 +553,7 @@ impl RaptorqDec {
 
         let media_packets_reset_threshold = settings.media_packets_reset_threshold as usize;
 
-        gst::debug!(CAT, imp: self, "Configured for caps {}", incaps);
+        gst::debug!(CAT, imp = self, "Configured for caps {}", incaps);
 
         let mut state = self.state.lock().unwrap();
 
@@ -590,7 +590,7 @@ impl ObjectSubclass for RaptorqDec {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 Self::catch_panic_pad_function(
                     parent,
@@ -612,7 +612,7 @@ impl ObjectSubclass for RaptorqDec {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .iterate_internal_links_function(|pad, parent| {
                 Self::catch_panic_pad_function(
                     parent,
@@ -635,7 +635,7 @@ impl ObjectSubclass for RaptorqDec {
 
 impl ObjectImpl for RaptorqDec {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("repair-window-tolerance")
                     .nick("Repair Window Tolerance (ms)")
@@ -729,7 +729,7 @@ impl GstObjectImpl for RaptorqDec {}
 
 impl ElementImpl for RaptorqDec {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "RTP RaptorQ FEC Decoder",
                 "RTP RaptorQ FEC Decoding",
@@ -742,7 +742,7 @@ impl ElementImpl for RaptorqDec {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("application/x-rtp").build();
 
             let srcpad_template = gst::PadTemplate::new(
@@ -763,7 +763,7 @@ impl ElementImpl for RaptorqDec {
 
             let sink_fec_caps = gst::Caps::builder("application/x-rtp")
                 .field("raptor-scheme-id", fecscheme::FEC_SCHEME_ID.to_string())
-                // All fmtp paramters from SDP are string in caps, those are
+                // All fmtp parameters from SDP are string in caps, those are
                 // required parameters that cannot be expressed as string:
                 // .field("kmax", (string) [1, MAX_SOURCE_BLOCK_LEN])
                 // .field("t", (string) [1, MAX_ENCODING_SYMBOL_SIZE])
@@ -788,7 +788,7 @@ impl ElementImpl for RaptorqDec {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused => {
@@ -821,7 +821,8 @@ impl ElementImpl for RaptorqDec {
             return None;
         }
 
-        let sinkpad_fec = gst::Pad::builder_with_template(templ, name)
+        let sinkpad_fec = gst::Pad::builder_from_template(templ)
+            .name_if_some(name)
             .chain_function(|pad, parent, buffer| {
                 Self::catch_panic_pad_function(
                     parent,

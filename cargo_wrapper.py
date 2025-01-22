@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import shlex
 from argparse import ArgumentParser
 from pathlib import Path as P
 
@@ -27,6 +28,12 @@ PARSER.add_argument('--lib-suffixes', nargs="+", default=[])
 PARSER.add_argument('--exe-suffix')
 PARSER.add_argument('--depfile')
 PARSER.add_argument('--disable-doc', action="store_true", default=False)
+
+
+def shlex_join(args):
+    if hasattr(shlex, 'join'):
+        return shlex.join(args)
+    return ' '.join([shlex.quote(arg) for arg in args])
 
 
 def generate_depfile_for(fpath):
@@ -82,6 +89,21 @@ if __name__ == "__main__":
     pkg_config_path.append(str(opts.root_dir / 'meson-uninstalled'))
     env['PKG_CONFIG_PATH'] = os.pathsep.join(pkg_config_path)
 
+    if 'NASM' in env:
+        env['PATH'] = os.pathsep.join([os.path.dirname(env['NASM']), env['PATH']])
+
+    rustc_target = None
+    if 'RUSTC' in env:
+        rustc_cmdline = shlex.split(env['RUSTC'])
+        # grab target from RUSTFLAGS
+        rust_flags = rustc_cmdline[1:] + shlex.split(env.get('RUSTFLAGS', ''))
+        if '--target' in rust_flags:
+            rustc_target_idx = rust_flags.index('--target')
+            _ = rust_flags.pop(rustc_target_idx)  # drop '--target'
+            rustc_target = rust_flags.pop(rustc_target_idx)
+        env['RUSTFLAGS'] = shlex_join(rust_flags)
+        env['RUSTC'] = rustc_cmdline[0]
+
     features = opts.features
     if opts.command == 'build':
         cargo_cmd = ['cargo']
@@ -100,6 +122,8 @@ if __name__ == "__main__":
         print("Unknown command:", opts.command, file=logfile)
         sys.exit(1)
 
+    if rustc_target:
+        cargo_cmd += ['--target', rustc_target]
     if features:
         cargo_cmd += ['--features', ','.join(features)]
     cargo_cmd += ['--target-dir', cargo_target_dir]

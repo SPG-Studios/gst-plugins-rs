@@ -8,21 +8,22 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use futures::future;
-use once_cell::sync::Lazy;
 use std::io::Write;
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::thread::{spawn, JoinHandle};
 use std::time::Duration;
 
 use gst::{element_imp_error, glib, prelude::*, subclass::prelude::*};
 
-use aws_sdk_s3::config;
-use aws_sdk_s3::model::ObjectCannedAcl;
-use aws_sdk_s3::types::ByteStream;
-use aws_sdk_s3::{config::retry::RetryConfig, Client, Credentials, Region};
+use aws_sdk_s3::{
+    config::{self, retry::RetryConfig, Credentials, Region},
+    primitives::ByteStream,
+    types::ObjectCannedAcl,
+    Client,
+};
 use aws_types::sdk_config::SdkConfig;
 
 use crate::s3utils;
@@ -37,6 +38,7 @@ const S3_CHANNEL_SIZE: usize = 32;
 const S3_ACL_DEFAULT: ObjectCannedAcl = ObjectCannedAcl::Private;
 const DEFAULT_RETRY_ATTEMPTS: u32 = 5;
 const DEFAULT_TIMEOUT_IN_MSECS: u64 = 15000;
+const DEFAULT_FORCE_PATH_STYLE: bool = false;
 
 struct Settings {
     access_key: Option<String>,
@@ -55,6 +57,7 @@ struct Settings {
     video_sink: bool,
     config: Option<SdkConfig>,
     endpoint_uri: Option<String>,
+    force_path_style: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +80,7 @@ impl Default for Settings {
             video_sink: false,
             config: None,
             endpoint_uri: None,
+            force_path_style: DEFAULT_FORCE_PATH_STYLE,
         }
     }
 }
@@ -85,10 +89,10 @@ pub struct S3HlsSink {
     settings: Mutex<Settings>,
     state: Mutex<State>,
     hlssink: gst::Element,
-    canceller: Mutex<Option<future::AbortHandle>>,
+    canceller: Mutex<s3utils::Canceller>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "awss3hlssink",
         gst::DebugColorFlags::empty(),
@@ -233,10 +237,10 @@ impl S3HlsSink {
             match rxc.try_recv() {
                 Ok(S3RequestControl::Continue) => (),
                 Ok(S3RequestControl::Pause) => {
-                    gst::debug!(CAT, imp: self, "Pausing S3 request thread.");
+                    gst::debug!(CAT, imp = self, "Pausing S3 request thread.");
                     match rxc.recv() {
                         Ok(S3RequestControl::Continue) => {
-                            gst::debug!(CAT, imp: self, "Continuing S3 request thread.")
+                            gst::debug!(CAT, imp = self, "Continuing S3 request thread.")
                         }
                         // We do not expect another pause request here.
                         Ok(S3RequestControl::Pause) => unreachable!(),
@@ -258,7 +262,7 @@ impl S3HlsSink {
                     let s3_acl = data.s3_acl;
                     let s3_data_len = data.s3_data.len();
 
-                    gst::debug!(CAT, imp: self, "Uploading key {}", s3_key);
+                    gst::debug!(CAT, imp = self, "Uploading key {}", s3_key);
 
                     let put_object_req = s3_client
                         .put_object()
@@ -272,13 +276,12 @@ impl S3HlsSink {
                     match result {
                         Err(err) => {
                             gst::error!(
-                            CAT,
-                            imp: self,
-                            "Put object request for S3 key {} of data length {} failed with error {:?}",
-                            s3_key,
-                            s3_data_len,
-                            err,
-                        );
+                                CAT,
+                                imp = self,
+                                "Put object request for S3 key {} of data length {} failed with error {err}",
+                                s3_key,
+                                s3_data_len,
+                            );
                             element_imp_error!(
                                 self,
                                 gst::ResourceError::Write,
@@ -305,7 +308,7 @@ impl S3HlsSink {
                     let s3_bucket = data.s3_bucket.clone();
                     let s3_key = data.s3_key.clone();
 
-                    gst::debug!(CAT, imp: self, "Deleting key {}", s3_key);
+                    gst::debug!(CAT, imp = self, "Deleting key {}", s3_key);
 
                     let delete_object_req = s3_client
                         .delete_object()
@@ -317,10 +320,9 @@ impl S3HlsSink {
                     if let Err(err) = result {
                         gst::error!(
                             CAT,
-                            imp: self,
-                            "Delete object request for S3 key {} failed with error {:?}",
+                            imp = self,
+                            "Delete object request for S3 key {} failed with error {err}",
                             s3_key,
-                            err
                         );
                         element_imp_error!(
                             self,
@@ -332,14 +334,14 @@ impl S3HlsSink {
                 }
                 Ok(S3Request::Stop) => break,
                 Err(err) => {
-                    gst::error!(CAT, imp: self, "S3 channel error: {}", err);
+                    gst::error!(CAT, imp = self, "S3 channel error: {}", err);
                     element_imp_error!(self, gst::ResourceError::Write, ["S3 channel error"]);
                     break;
                 }
             }
         }
 
-        gst::info!(CAT, imp: self, "Exiting S3 request thread",);
+        gst::info!(CAT, imp = self, "Exiting S3 request thread",);
     }
 
     fn s3client_from_settings(&self) -> Client {
@@ -376,6 +378,7 @@ impl S3HlsSink {
         let sdk_config = settings.config.as_ref().expect("SDK config must be set");
 
         let config_builder = config::Builder::from(sdk_config)
+            .force_path_style(settings.force_path_style)
             .region(settings.s3_region.clone())
             .retry_config(RetryConfig::standard().with_max_attempts(settings.retry_attempts));
 
@@ -394,23 +397,32 @@ impl S3HlsSink {
         let s3_tx = settings.s3_tx.clone();
 
         if let (Some(handle), Some(tx)) = (s3_handle, s3_tx) {
-            gst::info!(CAT, imp: self, "Stopping S3 request thread");
+            gst::info!(CAT, imp = self, "Stopping S3 request thread");
             match tx.send(S3Request::Stop) {
                 Ok(_) => {
-                    gst::info!(CAT, imp: self, "Joining S3 request thread");
+                    gst::info!(CAT, imp = self, "Joining S3 request thread");
                     if let Err(err) = handle.join() {
-                        gst::error!(CAT, imp: self, "S3 upload thread failed to exit: {:?}", err);
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "S3 upload thread failed to exit: {:?}",
+                            err
+                        );
                     }
                     drop(tx);
                 }
                 Err(err) => {
-                    gst::error!(CAT, imp: self, "Failed to stop S3 request thread: {}", err)
+                    gst::error!(CAT, imp = self, "Failed to stop S3 request thread: {}", err)
                 }
             };
         };
 
         let mut state = self.state.lock().unwrap();
-        *state = State::Stopped
+        *state = State::Stopped;
+
+        let mut canceller = self.canceller.lock().unwrap();
+        canceller.abort();
+        *canceller = s3utils::Canceller::None;
     }
 
     fn create_stats(&self) -> gst::Structure {
@@ -455,14 +467,14 @@ impl ObjectSubclass for S3HlsSink {
             settings: Mutex::new(Settings::default()),
             state: Mutex::new(State::Stopped),
             hlssink,
-            canceller: Mutex::new(None),
+            canceller: Mutex::new(s3utils::Canceller::default()),
         }
     }
 }
 
 impl ObjectImpl for S3HlsSink {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecString::builder("access-key")
                     .nick("Access Key")
@@ -529,6 +541,11 @@ impl ObjectImpl for S3HlsSink {
                     .blurb("The S3 endpoint URI to use")
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecBoolean::builder("force-path-style")
+                    .nick("Force path style")
+                    .blurb("Force client to use path-style addressing for buckets")
+                    .default_value(DEFAULT_FORCE_PATH_STYLE)
+                    .build(),
             ]
         });
 
@@ -540,7 +557,7 @@ impl ObjectImpl for S3HlsSink {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Setting property '{}' to '{:?}'",
             pspec.name(),
             value
@@ -586,6 +603,9 @@ impl ObjectImpl for S3HlsSink {
                     .get::<Option<String>>()
                     .expect("type checked upstream");
             }
+            "force-path-style" => {
+                settings.force_path_style = value.get::<bool>().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -606,6 +626,7 @@ impl ObjectImpl for S3HlsSink {
             "request-timeout" => (settings.request_timeout.as_millis() as u64).to_value(),
             "stats" => self.create_stats().to_value(),
             "endpoint-uri" => settings.endpoint_uri.to_value(),
+            "force-path-style" => settings.force_path_style.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -635,16 +656,12 @@ impl ObjectImpl for S3HlsSink {
         settings.s3_txc = Some(txc);
         drop(settings);
 
-        gst::info!(CAT, imp: self, "Constructed");
+        gst::info!(CAT, imp = self, "Constructed");
 
         self.hlssink.connect("get-playlist-stream", false, {
             let self_weak = self.downgrade();
             move |args| -> Option<glib::Value> {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return None,
-                };
-
+                let self_ = self_weak.upgrade()?;
                 let s3client = self_.s3client_from_settings();
                 let settings = self_.settings.lock().unwrap();
                 let mut state = self_.state.lock().unwrap();
@@ -662,7 +679,7 @@ impl ObjectImpl for S3HlsSink {
                     playlist_tx.clone(),
                 );
 
-                gst::debug!(CAT, imp: self_, "New upload for {}", s3_location);
+                gst::debug!(CAT, imp = self_, "New upload for {}", s3_location);
 
                 Some(
                     gio::WriteOutputStream::new(upload)
@@ -675,11 +692,7 @@ impl ObjectImpl for S3HlsSink {
         self.hlssink.connect("get-fragment-stream", false, {
             let self_weak = self.downgrade();
             move |args| -> Option<glib::Value> {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return None,
-                };
-
+                let self_ = self_weak.upgrade()?;
                 let s3client = self_.s3client_from_settings();
                 let settings = self_.settings.lock().unwrap();
                 let mut state = self_.state.lock().unwrap();
@@ -697,7 +710,7 @@ impl ObjectImpl for S3HlsSink {
                     fragment_tx.clone(),
                 );
 
-                gst::debug!(CAT, imp: self_, "New upload for {}", s3_location);
+                gst::debug!(CAT, imp = self_, "New upload for {}", s3_location);
 
                 Some(
                     gio::WriteOutputStream::new(upload)
@@ -710,11 +723,7 @@ impl ObjectImpl for S3HlsSink {
         self.hlssink.connect("delete-fragment", false, {
             let self_weak = self.downgrade();
             move |args| -> Option<glib::Value> {
-                let self_ = match self_weak.upgrade() {
-                    Some(self_) => self_,
-                    None => return None,
-                };
-
+                let self_ = self_weak.upgrade()?;
                 let s3_client = self_.s3client_from_settings();
                 let settings = self_.settings.lock().unwrap();
 
@@ -728,7 +737,7 @@ impl ObjectImpl for S3HlsSink {
                     s3_location.to_string()
                 };
 
-                gst::debug!(CAT, imp: self_, "Deleting {}", s3_location);
+                gst::debug!(CAT, imp = self_, "Deleting {}", s3_location);
 
                 let delete = S3DeleteReq {
                     s3_client,
@@ -740,11 +749,15 @@ impl ObjectImpl for S3HlsSink {
 
                 // The signature on delete-fragment signal is different for
                 // hlssink2 and hlssink3.
-                if self_.hlssink.factory().unwrap().name().contains("hlssink3") {
+                if self_
+                    .hlssink
+                    .factory()
+                    .is_some_and(|factory| factory.name() == "hlssink3")
+                {
                     if res.is_ok() {
                         Some(true.to_value())
                     } else {
-                        gst::error!(CAT, imp: self_, "Failed deleting {}", s3_location);
+                        gst::error!(CAT, imp = self_, "Failed deleting {}", s3_location);
                         element_imp_error!(
                             self_,
                             gst::ResourceError::Write,
@@ -764,7 +777,7 @@ impl GstObjectImpl for S3HlsSink {}
 
 impl ElementImpl for S3HlsSink {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "S3 HLS Sink",
                 "Generic",
@@ -777,7 +790,7 @@ impl ElementImpl for S3HlsSink {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
 
             let audio_sink_pad_template = gst::PadTemplate::new(
@@ -814,6 +827,13 @@ impl ElementImpl for S3HlsSink {
          */
         let settings = self.settings.lock().unwrap();
 
+        /*
+         * We do not call abort on the canceller in change_state here as
+         * that results in the final playlist and media segment uploads
+         * being aborted leaving the media segments and playlist in an
+         * unplayable state. All finalisation is carried out in `stop`
+         * which is called for ReadyToNull transition.
+         */
         match transition {
             gst::StateChange::ReadyToPaused => {
                 let mut state = self.state.lock().unwrap();
@@ -824,11 +844,11 @@ impl ElementImpl for S3HlsSink {
                 if let Some(tx) = s3_txc {
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Sending continue request to S3 request thread."
                     );
                     if tx.send(S3RequestControl::Continue).is_err() {
-                        gst::error!(CAT, imp: self, "Could not send continue request.");
+                        gst::error!(CAT, imp = self, "Could not send continue request.");
                     }
                 }
             }
@@ -838,13 +858,13 @@ impl ElementImpl for S3HlsSink {
                 if let Some(tx) = s3_txc {
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Sending pause request to S3 request thread."
                     );
                     if settings.s3_upload_handle.is_some()
                         && tx.send(S3RequestControl::Pause).is_err()
                     {
-                        gst::error!(CAT, imp: self, "Could not send pause request.");
+                        gst::error!(CAT, imp = self, "Could not send pause request.");
                     }
                 }
             }
@@ -875,16 +895,14 @@ impl ElementImpl for S3HlsSink {
                 if settings.audio_sink {
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "requested_new_pad: audio pad is already set"
                     );
                     return None;
                 }
 
                 let audio_pad = self.hlssink.request_pad_simple("audio").unwrap();
-                let sink_pad =
-                    gst::GhostPad::from_template_with_target(templ, Some("audio"), &audio_pad)
-                        .unwrap();
+                let sink_pad = gst::GhostPad::from_template_with_target(templ, &audio_pad).unwrap();
                 self.obj().add_pad(&sink_pad).unwrap();
                 sink_pad.set_active(true).unwrap();
                 settings.audio_sink = true;
@@ -895,16 +913,14 @@ impl ElementImpl for S3HlsSink {
                 if settings.video_sink {
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "requested_new_pad: video pad is already set"
                     );
                     return None;
                 }
 
                 let video_pad = self.hlssink.request_pad_simple("video").unwrap();
-                let sink_pad =
-                    gst::GhostPad::from_template_with_target(templ, Some("video"), &video_pad)
-                        .unwrap();
+                let sink_pad = gst::GhostPad::from_template_with_target(templ, &video_pad).unwrap();
                 self.obj().add_pad(&sink_pad).unwrap();
                 sink_pad.set_active(true).unwrap();
                 settings.video_sink = true;
@@ -912,7 +928,7 @@ impl ElementImpl for S3HlsSink {
                 Some(sink_pad.upcast())
             }
             _ => {
-                gst::debug!(CAT, imp: self, "requested_new_pad is not audio or video");
+                gst::debug!(CAT, imp = self, "requested_new_pad is not audio or video");
                 None
             }
         }
@@ -934,7 +950,7 @@ impl BinImpl for S3HlsSink {
                      * unblock the S3 request thread from waiting for a Continue request
                      * on the control channel.
                      */
-                    gst::debug!(CAT, imp: self, "Got EOS, dropping control channel");
+                    gst::debug!(CAT, imp = self, "Got EOS, dropping control channel");
                     drop(txc);
                 }
                 drop(settings);

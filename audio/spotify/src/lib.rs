@@ -14,11 +14,13 @@
  */
 use gst::glib;
 
-mod common;
+pub mod common;
 mod spotifyaudiosrc;
+mod spotifylyricssrc;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     spotifyaudiosrc::register(plugin)?;
+    spotifylyricssrc::register(plugin)?;
     Ok(())
 }
 

@@ -13,14 +13,14 @@ mod imp;
 mod ring_buffer;
 
 glib::wrapper! {
-    pub struct AudioEcho(ObjectSubclass<imp::AudioEcho>) @extends gst_base::BaseTransform, gst::Element, gst::Object;
+    pub struct AudioEcho(ObjectSubclass<imp::AudioEcho>) @extends gst_audio::AudioFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "rsaudioecho",
-        gst::Rank::None,
+        gst::Rank::NONE,
         AudioEcho::static_type(),
     )
 }

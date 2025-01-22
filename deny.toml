@@ -1,37 +1,29 @@
 [advisories]
+version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-vulnerability = "deny"
-unmaintained = "warn"
-notice = "warn"
 ignore = [
-    # Waiting for https://github.com/librespot-org/librespot/issues/937
-    "RUSTSEC-2021-0059",
-    "RUSTSEC-2021-0060",
-    "RUSTSEC-2021-0061",
-    "RUSTSEC-2021-0145",
-    # https://github.com/chronotope/chrono/issues/499
-    "RUSTSEC-2020-0071",
+    # librespot depends on a vulnerable version of rsa
+    "RUSTSEC-2023-0071",
     # sodiumoxide is deprecated
+    # https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/530
     "RUSTSEC-2021-0137",
-    # https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/256
-    "RUSTSEC-2022-0048",
 ]
 
 [licenses]
-unlicensed = "deny"
+version = 2
 allow = [
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "OpenSSL",
+  "Zlib",
+  "Unicode-3.0",
   "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MPL-2.0",
 ]
-deny = [
-  "GPL-1.0",
-  "GPL-2.0",
-  "GPL-3.0",
-  "AGPL-1.0",
-  "AGPL-3.0",
-]
-copyleft = "allow"
-allow-osi-fsf-free = "either"
 confidence-threshold = 0.8
 
 [[licenses.clarify]]
@@ -42,104 +34,257 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 }
 ]
 
+# Allow AGPL3 from dssim-core, which is optionally used in gst-plugin-videofx
+[[licenses.exceptions]]
+allow = ["AGPL-3.0"]
+name = "dssim-core"
+version = "3.2"
+
+# Allow LGPL 2.1 for the threadshare plugin as it includes some LGPL code
+[[licenses.exceptions]]
+allow = ["LGPL-2.1"]
+name = "gst-plugin-threadshare"
+
 [bans]
 multiple-versions = "deny"
 highlight = "all"
 wildcards = "allow"
 
-# ignore duplicated deps because of chrono, cookie, cookie_store, hyper,
-# hyperx, reqwest depending on old time
-# https://github.com/chronotope/chrono/issues/400
-# https://github.com/pfernie/cookie_store/issues/11
-# https://github.com/hyperium/hyper/pull/2139
-# https://github.com/dekellum/hyperx/issues/21
-# https://github.com/seanmonstar/reqwest/issues/934
-[[bans.skip]]
-name = "time"
-version = "0.1"
-
-# ignore duplicated rustc_version dependency because rav1e depends on an old version
-[[bans.skip]]
-name = "rustc_version"
-version = "0.3"
-[[bans.skip]]
-name = "semver"
-version = "0.11"
-
-# ignore duplicated crc dependency because ffv1 depends on an old version
-# https://github.com/rust-av/ffv1/issues/21
-[[bans.skip]]
-name = "crc"
-version = "1.8"
-
 # Ignore various duplicated dependencies because librespot depends on an old versions
 [[bans.skip]]
-name = "block-buffer"
-version = "0.9"
-[[bans.skip]]
-name = "digest"
-version = "0.9"
-[[bans.skip]]
-name = "sha-1"
-version = "0.9"
-[[bans.skip]]
-name = "env_logger"
-version = "0.9"
-[[bans.skip]]
-name = "hmac"
-version = "0.11"
-
-# ignore duplicated wasi dependency because various crates depends on an old version
-[[bans.skip]]
-name = "wasi"
-version = "0.10"
-
-# ignore duplicated spin dependency because various crates depend on an old version
-[[bans.skip]]
-name = "spin"
-version = "0.5"
-
-# cookie_store depends on older idna
-# https://github.com/pfernie/cookie_store/commit/b9c710f45550c5c8997f18a83e6fcc5998cf1726
-[[bans.skip]]
-name = "idna"
-version = "0.2"
-
-# image depends on older gif
-# https://github.com/image-rs/image/pull/1826
-[[bans.skip]]
-name = "gif"
-version = "0.11"
-
-# field-offset and nix depend on an older memoffset
-# https://github.com/Diggsey/rust-field-offset/pull/23
-# https://github.com/nix-rust/nix/pull/1885
-[[bans.skip]]
-name = "memoffset"
-version = "0.6"
-
-# Various crates depend on an older version of hermit-abi
-[[bans.skip]]
 name = "hermit-abi"
-version = "0.1"
+version = "0.3"
 [[bans.skip]]
-name = "hermit-abi"
-version = "0.2"
+name = "quick-xml"
+version = "0.36"
 
 # Various crates depend on an older version of base64
 [[bans.skip]]
 name = "base64"
 version = "0.13"
+[[bans.skip]]
+name = "base64"
+version = "0.21"
 
-# Various crates depend on an older version of windows-sys
+# Various crates depend on an older version of bitflags
+[[bans.skip]]
+name = "bitflags"
+version = "1.0"
+
+# tracing-subscriber depends on an older version of regex-syntax
+[[bans.skip]]
+name = "regex-syntax"
+version = "0.6"
+
+# various livekit dependencies depend on an older versions of various crates
+[[bans.skip]]
+name = "itertools"
+version = "0.11"
+[[bans.skip]]
+name = "sync_wrapper"
+version = "0.1"
+[[bans.skip]]
+name = "rustls-native-certs"
+version = "0.7"
+[[bans.skip]]
+name = "hyper-rustls"
+version = "0.26"
+[[bans.skip]]
+name = "tokio-rustls"
+version = "0.25"
+
+# chrono via iana-time-zone depends on old windows-core
+[[bans.skip]]
+name = "windows-core"
+version = "0.52"
+[[bans.skip]]
+name = "windows-result"
+version = "0.1"
+
+# various rav1e / dssim-core depend on old versions of itertools
+[[bans.skip]]
+name = "itertools"
+version = "0.12"
+[[bans.skip]]
+name = "itertools"
+version = "0.13"
+
+# matchers depends on an old version of regex-automata
+[[bans.skip]]
+name = "regex-automata"
+version = "0.1"
+
+# Various crates depend on old versions of the windows crates
+[[bans.skip]]
+name = "windows_x86_64_msvc"
+version = "0.48"
+[[bans.skip]]
+name = "windows_x86_64_gnullvm"
+version = "0.48"
+[[bans.skip]]
+name = "windows_x86_64_gnu"
+version = "0.48"
+[[bans.skip]]
+name = "windows_i686_msvc"
+version = "0.48"
+[[bans.skip]]
+name = "windows_i686_gnu"
+version = "0.48"
+[[bans.skip]]
+name = "windows_aarch64_msvc"
+version = "0.48"
+[[bans.skip]]
+name = "windows_aarch64_gnullvm"
+version = "0.48"
+[[bans.skip]]
+name = "windows-targets"
+version = "0.48"
 [[bans.skip]]
 name = "windows-sys"
-version = "0.42"
+version = "0.48"
 
-# Various crates depend on an older version of socket2
+# Various crates depend on an older version of crypto-bigint
 [[bans.skip]]
-name = "socket2"
+name = "crypto-bigint"
 version = "0.4"
+
+# livekit-api depends on an older version of tokio-tungstenite
+[[bans.skip]]
+name = "tokio-tungstenite"
+version = "0.20"
+[[bans.skip]]
+name = "tungstenite"
+version = "0.20"
+
+# Various crates depend on an older version of http
+[[bans.skip]]
+name = "http"
+version = "0.2"
+
+# Various crates depend on an older version of heck
+[[bans.skip]]
+name = "heck"
+version = "0.4"
+
+# Various crates depend on an older version of hyper / reqwest / headers / etc
+[[bans.skip]]
+name = "hyper"
+version = "0.14"
+[[bans.skip]]
+name = "hyper-tls"
+version = "0.5"
+[[bans.skip]]
+name = "http-body"
+version = "0.4"
+[[bans.skip]]
+name = "headers-core"
+version = "0.2"
+[[bans.skip]]
+name = "headers"
+version = "0.3"
+[[bans.skip]]
+name = "h2"
+version = "0.3"
+[[bans.skip]]
+name = "reqwest"
+version = "0.11"
+[[bans.skip]]
+name = "rustls-pemfile"
+version = "1.0"
+[[bans.skip]]
+name = "system-configuration"
+version = "0.5"
+[[bans.skip]]
+name = "system-configuration-sys"
+version = "0.5"
+
+# The AWS SDK uses old versions of rustls and related crates
+[[bans.skip]]
+name = "rustls"
+version = "0.21"
+[[bans.skip]]
+name = "rustls-native-certs"
+version = "0.6"
+[[bans.skip]]
+name = "rustls-webpki"
+version = "0.101"
+
+# warp depends on an older version of tokio-tungstenite
+[[bans.skip]]
+name = "tokio-tungstenite"
+version = "0.21"
+[[bans.skip]]
+name = "tungstenite"
+version = "0.21"
+
+# various crates depend on an older version of system-deps
+[[bans.skip]]
+name = "system-deps"
+version = "6"
+
+# various crates depend on an older version of windows-sys
+[[bans.skip]]
+name = "windows-sys"
+version = "0.52"
+
+# derived-into-owned (via pcap-file) depends on old syn / quote
+[[bans.skip]]
+name = "syn"
+version = "0.11"
+[[bans.skip]]
+name = "quote"
+version = "0.3"
+
+# dav1d depends on old system-deps which depends on old cfg-expr
+[[bans.skip]]
+name = "cfg-expr"
+version = "0.15"
+
+# tokio-rustls via warp depends on old rustls
+[[bans.skip]]
+name = "rustls"
+version = "0.22"
+
+# aws-smithy-runtime depends on old tokio-rustls
+[[bans.skip]]
+name = "tokio-rustls"
+version = "0.24"
+
+# aws SDK depends on older version of various crypto crates
+[[bans.skip]]
+name = "der"
+version = "0.6"
+[[bans.skip]]
+name = "hyper-rustls"
+version = "0.24"
+[[bans.skip]]
+name = "pkcs8"
+version = "0.9"
+[[bans.skip]]
+name = "rustc-hash"
+version = "1"
+[[bans.skip]]
+name = "signature"
+version = "1"
+[[bans.skip]]
+name = "spki"
+version = "0.6"
+
+# Various crates depend on thiserror 1
+[[bans.skip]]
+name = "thiserror"
+version = "1"
+[[bans.skip]]
+name = "thiserror-impl"
+version = "1"
+
+# native-tls depends on old versions
+[[bans.skip]]
+name = "security-framework"
+version = "2"
+[[bans.skip]]
+name = "core-foundation"
+version = "0.9"
 
 [sources]
 unknown-registry = "deny"

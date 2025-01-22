@@ -7,13 +7,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use bytes::Bytes;
-use futures::future;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use aws_sdk_s3::config;
-use aws_sdk_s3::{config::retry::RetryConfig, Client, Credentials};
+use aws_sdk_s3::{
+    config::{self, retry::RetryConfig, Credentials},
+    Client,
+};
 
 use gst::glib;
 use gst::prelude::*;
@@ -26,6 +27,7 @@ use gst_base::subclass::prelude::*;
 use crate::s3url::*;
 use crate::s3utils::{self, duration_from_millis, duration_to_millis, WaitError};
 
+const DEFAULT_FORCE_PATH_STYLE: bool = false;
 const DEFAULT_RETRY_ATTEMPTS: u32 = 5;
 const DEFAULT_REQUEST_TIMEOUT_MSEC: u64 = 15000;
 const DEFAULT_RETRY_DURATION_MSEC: u64 = 60_000;
@@ -38,7 +40,7 @@ enum StreamingState {
     Started {
         url: GstS3Url,
         client: Client,
-        size: u64,
+        size: Option<u64>,
     },
 }
 
@@ -50,6 +52,7 @@ struct Settings {
     retry_attempts: u32,
     request_timeout: Duration,
     endpoint_uri: Option<String>,
+    force_path_style: bool,
 }
 
 impl Default for Settings {
@@ -63,6 +66,7 @@ impl Default for Settings {
             retry_attempts: DEFAULT_RETRY_ATTEMPTS,
             request_timeout: duration,
             endpoint_uri: None,
+            force_path_style: DEFAULT_FORCE_PATH_STYLE,
         }
     }
 }
@@ -71,10 +75,10 @@ impl Default for Settings {
 pub struct S3Src {
     settings: Mutex<Settings>,
     state: Mutex<StreamingState>,
-    canceller: Mutex<Option<future::AbortHandle>>,
+    canceller: Mutex<s3utils::Canceller>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "awss3src",
         gst::DebugColorFlags::empty(),
@@ -83,14 +87,6 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 });
 
 impl S3Src {
-    fn cancel(&self) {
-        let mut canceller = self.canceller.lock().unwrap();
-
-        if let Some(c) = canceller.take() {
-            c.abort()
-        };
-    }
-
     fn connect(self: &S3Src, url: &GstS3Url) -> Result<Client, gst::ErrorMessage> {
         let settings = self.settings.lock().unwrap();
         let timeout_config = s3utils::timeout_config(settings.request_timeout);
@@ -125,6 +121,7 @@ impl S3Src {
                 })?;
 
         let config_builder = config::Builder::from(&sdk_config)
+            .force_path_style(settings.force_path_style)
             .retry_config(RetryConfig::standard().with_max_attempts(settings.retry_attempts));
 
         let config = if let Some(ref uri) = settings.endpoint_uri {
@@ -166,7 +163,11 @@ impl S3Src {
         }
     }
 
-    fn head(self: &S3Src, client: &Client, url: &GstS3Url) -> Result<u64, gst::ErrorMessage> {
+    fn head(
+        self: &S3Src,
+        client: &Client,
+        url: &GstS3Url,
+    ) -> Result<Option<u64>, gst::ErrorMessage> {
         let head_object = client
             .head_object()
             .set_bucket(Some(url.bucket.clone()))
@@ -175,10 +176,10 @@ impl S3Src {
         let head_object_future = head_object.send();
 
         let output =
-            s3utils::wait(&self.canceller, head_object_future).map_err(|err| match err {
-                WaitError::FutureError(err) => gst::error_msg!(
+            s3utils::wait(&self.canceller, head_object_future).map_err(|err| match &err {
+                WaitError::FutureError(_) => gst::error_msg!(
                     gst::ResourceError::NotFound,
-                    ["Failed to get HEAD object: {:?}", err]
+                    ["Failed to get HEAD object: {err}"]
                 ),
                 WaitError::Cancelled => {
                     gst::error_msg!(
@@ -190,15 +191,15 @@ impl S3Src {
 
         gst::info!(
             CAT,
-            imp: self,
-            "HEAD success, content length = {}",
+            imp = self,
+            "HEAD success, content length = {:?}",
             output.content_length
         );
 
-        Ok(output.content_length as u64)
+        Ok(output.content_length.map(|size| size as u64))
     }
 
-    /* Returns the bytes, Some(error) if one occured, or a None error if interrupted */
+    /* Returns the bytes, Some(error) if one occurred, or a None error if interrupted */
     fn get(self: &S3Src, offset: u64, length: u64) -> Result<Bytes, Option<gst::ErrorMessage>> {
         let state = self.state.lock().unwrap();
 
@@ -225,7 +226,7 @@ impl S3Src {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Requesting range: {}-{}",
             offset,
             offset + length - 1
@@ -234,20 +235,20 @@ impl S3Src {
         let get_object_future = get_object.send();
 
         let mut output =
-            s3utils::wait(&self.canceller, get_object_future).map_err(|err| match err {
-                WaitError::FutureError(err) => Some(gst::error_msg!(
+            s3utils::wait(&self.canceller, get_object_future).map_err(|err| match &err {
+                WaitError::FutureError(_) => Some(gst::error_msg!(
                     gst::ResourceError::Read,
-                    ["Could not read: {}", err]
+                    ["Could not read: {err}"]
                 )),
                 WaitError::Cancelled => None,
             })?;
 
-        gst::debug!(CAT, imp: self, "Read {} bytes", output.content_length);
+        gst::debug!(CAT, imp = self, "Read {:?} bytes", output.content_length);
 
         s3utils::wait_stream(&self.canceller, &mut output.body).map_err(|err| match err {
             WaitError::FutureError(err) => Some(gst::error_msg!(
                 gst::ResourceError::Read,
-                ["Could not read: {}", err]
+                ["Could not read: {err}"]
             )),
             WaitError::Cancelled => None,
         })
@@ -264,7 +265,7 @@ impl ObjectSubclass for S3Src {
 
 impl ObjectImpl for S3Src {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecString::builder("uri")
                     .nick("URI")
@@ -308,6 +309,11 @@ impl ObjectImpl for S3Src {
                 glib::ParamSpecString::builder("endpoint-uri")
                     .nick("S3 endpoint URI")
                     .blurb("The S3 endpoint URI to use")
+                    .build(),
+                glib::ParamSpecBoolean::builder("force-path-style")
+                    .nick("Force path style")
+                    .blurb("Force client to use path-style addressing for buckets")
+                    .default_value(DEFAULT_FORCE_PATH_STYLE)
                     .build(),
             ]
         });
@@ -358,6 +364,9 @@ impl ObjectImpl for S3Src {
                     .get::<Option<String>>()
                     .expect("type checked upstream");
             }
+            "force-path-style" => {
+                settings.force_path_style = value.get::<bool>().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -384,6 +393,7 @@ impl ObjectImpl for S3Src {
             }
             "retry-attempts" => settings.retry_attempts.to_value(),
             "endpoint-uri" => settings.endpoint_uri.to_value(),
+            "force-path-style" => settings.force_path_style.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -402,7 +412,7 @@ impl GstObjectImpl for S3Src {}
 
 impl ElementImpl for S3Src {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Amazon S3 source",
                 "Source/Network",
@@ -415,7 +425,7 @@ impl ElementImpl for S3Src {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
             let src_pad_template = gst::PadTemplate::new(
                 "src",
@@ -459,7 +469,7 @@ impl BaseSrcImpl for S3Src {
         let state = self.state.lock().unwrap();
         match *state {
             StreamingState::Stopped => None,
-            StreamingState::Started { size, .. } => Some(size),
+            StreamingState::Started { size, .. } => size,
         }
     }
 
@@ -501,9 +511,6 @@ impl BaseSrcImpl for S3Src {
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
-        // First, stop any asynchronous tasks if we're running, as they will have the state lock
-        self.cancel();
-
         let mut state = self.state.lock().unwrap();
 
         if let StreamingState::Stopped = *state {
@@ -555,7 +562,7 @@ impl BaseSrcImpl for S3Src {
             Err(None) => Err(gst::FlowError::Flushing),
             /* Actual Error */
             Err(Some(err)) => {
-                gst::error!(CAT, imp: self, "Could not GET: {}", err);
+                gst::error!(CAT, imp = self, "Could not GET: {}", err);
                 Err(gst::FlowError::Error)
             }
         }
@@ -567,7 +574,14 @@ impl BaseSrcImpl for S3Src {
     }
 
     fn unlock(&self) -> Result<(), gst::ErrorMessage> {
-        self.cancel();
+        let mut canceller = self.canceller.lock().unwrap();
+        canceller.abort();
+        Ok(())
+    }
+
+    fn unlock_stop(&self) -> Result<(), gst::ErrorMessage> {
+        let mut canceller = self.canceller.lock().unwrap();
+        *canceller = s3utils::Canceller::None;
         Ok(())
     }
 }

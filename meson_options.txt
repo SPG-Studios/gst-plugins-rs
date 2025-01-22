@@ -6,14 +6,19 @@ option('claxon', type: 'feature', value: 'auto', description: 'Build claxon plug
 option('csound', type: 'feature', value: 'auto', description: 'Build csound plugin')
 option('lewton', type: 'feature', value: 'auto', description: 'Build lewton plugin')
 option('spotify', type: 'feature', value: 'auto', description: 'Build spotify plugin')
+option('speechmatics', type: 'feature', value: 'auto', description: 'Build speechmatics plugin')
 
 # generic
 option('file', type: 'feature', value: 'auto', description: 'Build file plugin')
+option('originalbuffer', type: 'feature', value: 'auto', description: 'Build originalbuffer plugin')
+option('gopbuffer', type: 'feature', value: 'auto', description: 'Build gopbuffer plugin')
 option('sodium', type: 'feature', value: 'auto', description: 'Build sodium plugin')
 option('sodium-source', type: 'combo',
        choices: ['system', 'built-in'], value: 'built-in',
        description: 'Whether to use libsodium from the system or the built-in version from the sodiumoxide crate')
 option('threadshare', type: 'feature', value: 'auto', description: 'Build threadshare plugin')
+option('inter', type: 'feature', value: 'auto', description: 'Build inter plugin')
+option('streamgrouper', type: 'feature', value: 'auto', description: 'Build streamgrouper plugin')
 
 # mux
 option('flavors', type: 'feature', value: 'auto', description: 'Build flavors plugin')
@@ -23,13 +28,17 @@ option('mp4', type: 'feature', value: 'auto', description: 'Build mp4 plugin')
 # net
 option('aws', type: 'feature', value: 'auto', description: 'Build aws plugin')
 option('hlssink3', type: 'feature', value: 'auto', description: 'Build hlssink3 plugin')
+option('mpegtslive', type: 'feature', value: 'auto', description: 'Build mpegtslive plugin')
 option('ndi', type: 'feature', value: 'auto', description: 'Build ndi plugin')
 option('onvif', type: 'feature', value: 'auto', description: 'Build onvif plugin')
 option('raptorq', type: 'feature', value: 'auto', description: 'Build raptorq plugin')
 option('reqwest', type: 'feature', value: 'auto', description: 'Build reqwest plugin')
+option('relationmeta', type: 'feature', value: 'auto', description: 'Build relationmeta plugin')
+option('rtsp', type: 'feature', value: 'auto', description: 'Build rtsp plugin')
 option('rtp', type: 'feature', value: 'auto', description: 'Build rtp plugin')
-option('webrtc', type: 'feature', value: 'auto', description: 'Build webrtc plugin')
+option('webrtc', type: 'feature', value: 'auto', yield: true, description: 'Build webrtc plugin')
 option('webrtchttp', type: 'feature', value: 'auto', description: 'Build webrtchttp plugin')
+option('quinn', type: 'feature', value: 'auto', description: 'Build quinn plugin')
 
 # text
 option('textahead', type: 'feature', value: 'auto', description: 'Build textahead plugin')
@@ -62,3 +71,5 @@ option('doc', type: 'feature', value: 'auto', yield: true,
        description: 'Enable documentation')
 option('examples', type: 'feature', value: 'disabled', yield: true,
        description: 'Build examples')
+option('tests', type : 'feature', value : 'auto', yield : true,
+       description : 'Build and enable unit tests')

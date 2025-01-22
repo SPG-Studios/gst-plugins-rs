@@ -12,9 +12,9 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst::{debug, log, trace};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const PROP_PRIORITY: &str = "priority";
@@ -26,14 +26,23 @@ const PROP_IMMEDIATE_FALLBACK: &str = "immediate-fallback";
 const PROP_LATENCY: &str = "latency";
 const PROP_MIN_UPSTREAM_LATENCY: &str = "min-upstream-latency";
 const PROP_TIMEOUT: &str = "timeout";
+const PROP_STOP_ON_EOS: &str = "stop-on-eos";
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "fallbackswitch",
         gst::DebugColorFlags::empty(),
         Some("Automatic priority-based input selector"),
     )
 });
+
+/* Mutex locking ordering:
+    - self.settings
+    - self.state
+    - self.active_sinkpad
+    - pad.settings
+    - pad.state
+*/
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -50,6 +59,7 @@ struct Settings {
     min_upstream_latency: gst::ClockTime,
     immediate_fallback: bool,
     auto_switch: bool,
+    stop_on_eos: bool,
 }
 
 impl Default for Settings {
@@ -60,6 +70,7 @@ impl Default for Settings {
             min_upstream_latency: gst::ClockTime::ZERO,
             immediate_fallback: false,
             auto_switch: true,
+            stop_on_eos: false,
         }
     }
 }
@@ -74,8 +85,12 @@ struct State {
 
     output_running_time: Option<gst::ClockTime>,
 
-    timeout_running_time: gst::ClockTime,
+    timeout_running_time: Option<gst::ClockTime>,
     timeout_clock_id: Option<gst::ClockId>,
+
+    /// If the src pad is currently busy. Should be checked and waited on using `src_busy_cond`
+    /// before calling anything requiring the stream lock.
+    src_busy: bool,
 }
 
 impl Default for State {
@@ -89,8 +104,10 @@ impl Default for State {
 
             output_running_time: None,
 
-            timeout_running_time: gst::ClockTime::ZERO,
+            timeout_running_time: None,
             timeout_clock_id: None,
+
+            src_busy: false,
         }
     }
 }
@@ -134,11 +151,13 @@ impl GstObjectImpl for FallbackSwitchSinkPad {}
 
 impl ObjectImpl for FallbackSwitchSinkPad {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder(PROP_PRIORITY)
                     .nick("Stream Priority")
-                    .blurb("Selection priority for this stream")
+                    .blurb(
+                        "Selection priority for this stream (lower number has a higher priority)",
+                    )
                     .default_value(SinkSettings::default().priority)
                     .build(),
                 glib::ParamSpecBoolean::builder(PROP_IS_HEALTHY)
@@ -196,9 +215,10 @@ struct SinkState {
     caps_info: CapsInfo,
 
     current_running_time: Option<gst::ClockTime>,
-    eos: bool,
     flushing: bool,
     clock_id: Option<gst::SingleShotClockId>,
+    /// true if the sink pad has received eos
+    eos: bool,
 }
 
 impl Default for SinkState {
@@ -210,9 +230,9 @@ impl Default for SinkState {
             caps_info: CapsInfo::None,
 
             current_running_time: gst::ClockTime::NONE,
-            eos: false,
             flushing: false,
             clock_id: None,
+            eos: false,
         }
     }
 }
@@ -231,8 +251,8 @@ impl SinkState {
     }
     fn reset(&mut self) {
         self.flushing = false;
-        self.eos = false;
         self.caps_info = CapsInfo::None;
+        self.eos = false;
     }
 
     fn clip_buffer(&self, mut buffer: gst::Buffer) -> Option<gst::Buffer> {
@@ -330,7 +350,7 @@ impl SinkState {
         if wait_until < now {
             debug!(
                 CAT,
-                obj: pad,
+                obj = pad,
                 "Skipping buffer wait until {} - clock already {}",
                 wait_until,
                 now
@@ -340,7 +360,7 @@ impl SinkState {
 
         debug!(
             CAT,
-            obj: pad,
+            obj = pad,
             "Scheduling buffer wait until {} = {} + extra {} + base time {}",
             wait_until,
             running_time,
@@ -353,13 +373,52 @@ impl SinkState {
         Some(clock_id)
     }
 
-    fn is_healthy(&self, state: &State, settings: &Settings) -> bool {
-        match self.current_running_time {
-            Some(current_running_time) => {
-                current_running_time >= state.timeout_running_time.saturating_sub(settings.timeout)
-                    && current_running_time <= state.timeout_running_time
+    fn is_healthy(
+        &self,
+        pad: &super::FallbackSwitchSinkPad,
+        state: &State,
+        settings: &Settings,
+        now_running_time: Option<gst::ClockTime>,
+    ) -> bool {
+        /* The pad is healthy if it has received data within the
+         * last 'timeout' duration, which means the pad's current_running_time+timeout
+         * is later than 'now' according to the passed in running time, but not later
+         * than the timeout_running_time that would mean we time out before outputting
+         * that buffer */
+        match (
+            self.current_running_time,
+            now_running_time,
+            state.timeout_running_time,
+        ) {
+            (Some(pad_running_time), Some(now_running_time), Some(global_timeout_running_time)) => {
+                let timeout_running_time = pad_running_time.saturating_add(settings.timeout);
+                log!(
+                    CAT,
+                    obj = pad,
+                    "pad_running_time {} timeout_running_time {} now_running_time {}",
+                    pad_running_time,
+                    timeout_running_time,
+                    now_running_time,
+                );
+
+                timeout_running_time > now_running_time // Must be > not >=
+                    && pad_running_time <= global_timeout_running_time
             }
-            None => false,
+            (Some(pad_running_time), Some(now_running_time), None) => {
+                let timeout_running_time = pad_running_time.saturating_add(settings.timeout);
+                log!(
+                    CAT,
+                    obj = pad,
+                    "pad_running_time {} timeout_running_time {} now_running_time {}",
+                    pad_running_time,
+                    timeout_running_time,
+                    now_running_time,
+                );
+
+                timeout_running_time > now_running_time // Must be > not >=
+            }
+            (Some(_input_running_time), None, _) => true,
+            (None, _, _) => false,
         }
     }
 }
@@ -367,6 +426,7 @@ impl SinkState {
 #[derive(Debug)]
 pub struct FallbackSwitch {
     state: Mutex<State>,
+    src_busy_cond: Condvar,
     settings: Mutex<Settings>,
 
     // Separated from the rest of the `state` because it can be
@@ -394,23 +454,32 @@ impl FallbackSwitch {
         pad_state.cancel_wait();
         drop(pad_state);
 
-        debug!(CAT, obj: pad, "Now active pad");
+        debug!(CAT, obj = pad, "Now active pad");
     }
 
     fn handle_timeout(&self, state: &mut State, settings: &Settings) {
         debug!(
             CAT,
-            imp: self,
+            imp = self,
             "timeout fired - looking for a pad to switch to"
         );
 
         /* Advance the output running time to this timeout */
-        state.output_running_time = Some(state.timeout_running_time);
+        state.output_running_time = state.timeout_running_time;
+
+        if !settings.auto_switch {
+            /* If auto-switching is disabled, don't check for a new
+             * pad */
+            state.timed_out = true;
+            return;
+        }
 
         let active_sinkpad = self.active_sinkpad.lock().clone();
 
         let mut best_priority = 0u32;
         let mut best_pad = None;
+
+        let now_running_time = state.timeout_running_time;
 
         for pad in self.obj().sink_pads() {
             /* Don't consider the active sinkpad */
@@ -419,12 +488,12 @@ impl FallbackSwitch {
             if active_sinkpad.as_ref() == Some(pad) {
                 continue;
             }
-            let pad_state = pad_imp.state.lock();
             let pad_settings = pad_imp.settings.lock().clone();
+            let pad_state = pad_imp.state.lock();
             #[allow(clippy::collapsible_if)]
             /* If this pad has data that arrived within the 'timeout' window
              * before the timeout fired, we can switch to it */
-            if pad_state.is_healthy(state, settings) {
+            if pad_state.is_healthy(pad, state, settings, now_running_time) {
                 if best_pad.is_none() || pad_settings.priority < best_priority {
                     best_pad = Some(pad.clone());
                     best_priority = pad_settings.priority;
@@ -435,7 +504,7 @@ impl FallbackSwitch {
         if let Some(best_pad) = best_pad {
             debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Found viable pad to switch to: {:?}",
                 best_pad
             );
@@ -445,19 +514,25 @@ impl FallbackSwitch {
         }
     }
 
-    fn on_timeout(&self, clock_id: &gst::ClockId, settings: &Settings) {
+    fn on_timeout(&self, clock_id: &gst::ClockId) {
+        let settings = self.settings.lock().clone();
         let mut state = self.state.lock();
 
         if state.timeout_clock_id.as_ref() != Some(clock_id) {
             /* Timeout fired late, ignore it. */
-            debug!(CAT, imp: self, "Late timeout callback. Ignoring");
+            debug!(CAT, imp = self, "Late timeout callback. Ignoring");
             return;
         }
 
         // Ensure sink_chain on an inactive pad can schedule another timeout
         state.timeout_clock_id = None;
 
-        self.handle_timeout(&mut state, settings);
+        self.handle_timeout(&mut state, &settings);
+        let changed = self.update_health_statuses(&state, &settings);
+        drop(state);
+        for pad in changed {
+            pad.notify(PROP_IS_HEALTHY);
+        }
     }
 
     fn cancel_waits(&self) {
@@ -474,32 +549,32 @@ impl FallbackSwitch {
         state: &mut State,
         settings: &Settings,
         running_time: gst::ClockTime,
-    ) {
+    ) -> bool {
         state.cancel_timeout();
 
         let clock = match self.obj().clock() {
-            None => return,
+            None => return false,
             Some(clock) => clock,
         };
 
         let base_time = match self.obj().base_time() {
             Some(base_time) => base_time,
-            None => return,
+            None => return false,
         };
 
         let timeout_running_time = running_time
             .saturating_add(state.upstream_latency + settings.timeout + settings.latency);
         let wait_until = timeout_running_time + base_time;
-        state.timeout_running_time = timeout_running_time;
+        state.timeout_running_time = Some(timeout_running_time);
 
         /* If we're already running behind, fire the timeout immediately */
         let now = clock.time();
-        if now.map_or(false, |now| wait_until <= now) {
+        if now.is_some_and(|now| wait_until <= now) {
             self.handle_timeout(state, settings);
-            return;
+            return true;
         }
 
-        debug!(CAT, imp: self, "Scheduling timeout for {}", wait_until);
+        debug!(CAT, imp = self, "Scheduling timeout for {}", wait_until);
         let timeout_id = clock.new_single_shot_id(wait_until);
 
         state.timeout_clock_id = Some(timeout_id.clone().into());
@@ -508,14 +583,44 @@ impl FallbackSwitch {
         let imp_weak = self.downgrade();
         timeout_id
             .wait_async(move |_clock, _time, clock_id| {
-                let imp = match imp_weak.upgrade() {
-                    None => return,
-                    Some(imp) => imp,
+                let Some(imp) = imp_weak.upgrade() else {
+                    return;
                 };
-                let settings = imp.settings.lock().clone();
-                imp.on_timeout(clock_id, &settings);
+                imp.on_timeout(clock_id);
             })
             .expect("Failed to wait async");
+        false
+    }
+
+    fn update_health_statuses(
+        &self,
+        state: &State,
+        settings: &Settings,
+    ) -> Vec<super::FallbackSwitchSinkPad> {
+        let mut changed = Vec::<super::FallbackSwitchSinkPad>::new();
+
+        /* Iterate over sink pads and update their is_healthy status,
+         * returning a Vec of pads whose health changed and need notifying */
+        for pad in self.obj().sink_pads() {
+            let pad = pad.downcast_ref::<super::FallbackSwitchSinkPad>().unwrap();
+            let pad_imp = pad.imp();
+            let mut pad_state = pad_imp.state.lock();
+
+            /* If this pad has data that arrived within the 'timeout' window
+             * before the timeout fired, we can switch to it */
+            let is_healthy = pad_state.is_healthy(pad, state, settings, state.output_running_time);
+            let health_changed = is_healthy != pad_state.is_healthy;
+            pad_state.is_healthy = is_healthy;
+
+            drop(pad_state);
+
+            if health_changed {
+                log!(CAT, obj = pad, "Health changed to {}", is_healthy);
+                changed.push(pad.clone());
+            }
+        }
+
+        changed
     }
 
     fn sink_activatemode(
@@ -547,16 +652,21 @@ impl FallbackSwitch {
         buffer: gst::Buffer,
         from_gap: Option<&gst::event::Gap>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let mut state = self.state.lock();
         let settings = self.settings.lock().clone();
+        let mut state = self.state.lock();
         let pad = pad.downcast_ref::<super::FallbackSwitchSinkPad>().unwrap();
         let pad_imp = pad.imp();
+
+        if settings.stop_on_eos && self.has_sink_pad_eos() {
+            debug!(CAT, obj = pad, "return eos as stop-on-eos is enabled");
+            return Err(gst::FlowError::Eos);
+        }
 
         let mut buffer = {
             let pad_state = pad_imp.state.lock();
             trace!(
                 CAT,
-                obj: pad,
+                obj = pad,
                 "Clipping {:?} against segment {:?}",
                 buffer,
                 pad_state.segment,
@@ -566,7 +676,7 @@ impl FallbackSwitch {
                 None => {
                     log!(
                         CAT,
-                        obj: pad,
+                        obj = pad,
                         "Dropping raw buffer completely out of segment",
                     );
 
@@ -589,7 +699,7 @@ impl FallbackSwitch {
          *    - sleep until the buffer running time, then check if we're still active
          */
 
-        /* First see if we should become the active pad */
+        /* see if we should become the active pad */
         let active_sinkpad = self.active_sinkpad.lock().clone();
         let mut is_active = active_sinkpad.as_ref() == Some(pad);
         if !is_active && settings.auto_switch {
@@ -622,9 +732,38 @@ impl FallbackSwitch {
         let raw_pad = !matches!(pad_state.caps_info, CapsInfo::None);
         let (start_running_time, end_running_time) = pad_state.get_sync_time(&buffer);
 
+        if let Some(running_time) = start_running_time {
+            pad_state.current_running_time = Some(running_time);
+        }
+
+        /* Update pad is-healthy state if necessary and notify
+         * if it changes, as that might affect which pad is
+         * active */
+        let is_healthy = pad_state.is_healthy(pad, &state, &settings, state.output_running_time);
+        let health_changed = is_healthy != pad_state.is_healthy;
+        pad_state.is_healthy = is_healthy;
+
+        /* Need to drop state locks before notifying */
+        let (mut state, mut pad_state) = if health_changed {
+            drop(pad_state);
+            drop(state);
+            log!(CAT, obj = pad, "Health changed to {}", is_healthy);
+            pad.notify(PROP_IS_HEALTHY);
+
+            if !settings.auto_switch {
+                /* Re-check if this is the active sinkpad */
+                let active_sinkpad = self.active_sinkpad.lock().clone();
+                is_active = active_sinkpad.as_ref() == Some(pad);
+            }
+
+            (self.state.lock(), pad_imp.state.lock())
+        } else {
+            (state, pad_state)
+        };
+
         log!(
             CAT,
-            obj: pad,
+            obj = pad,
             "Handling {:?} run ts start {} end {} pad active {}",
             buffer,
             start_running_time.display(),
@@ -632,7 +771,7 @@ impl FallbackSwitch {
             is_active
         );
 
-        #[allow(clippy::blocks_in_if_conditions)]
+        #[allow(clippy::blocks_in_conditions)]
         let output_clockid = if is_active {
             pad_state.schedule_clock(
                 self,
@@ -640,25 +779,27 @@ impl FallbackSwitch {
                 start_running_time,
                 state.upstream_latency + settings.latency,
             )
-        } else if end_running_time.map_or(false, |end_running_time| {
-            end_running_time < state.timeout_running_time
-        }) {
+        } else if state.output_running_time.is_some()
+            && end_running_time.is_some_and(|end_running_time| {
+                end_running_time < state.output_running_time.unwrap()
+            })
+        {
             if raw_pad {
                 log!(
                     CAT,
-                    obj: pad,
+                    obj = pad,
                     "Dropping trailing raw {:?} before timeout {}",
                     buffer,
-                    state.timeout_running_time
+                    state.timeout_running_time.unwrap()
                 );
                 return Ok(gst::FlowSuccess::Ok);
             } else {
                 log!(
                     CAT,
-                    obj: pad,
+                    obj = pad,
                     "Not dropping trailing non-raw {:?} before timeout {}",
                     buffer,
-                    state.timeout_running_time
+                    state.timeout_running_time.unwrap()
                 );
 
                 None
@@ -672,17 +813,16 @@ impl FallbackSwitch {
             )
         };
 
-        if let Some(running_time) = start_running_time {
-            pad_state.current_running_time = Some(running_time);
-        }
         drop(pad_state);
+
+        let mut update_all_pad_health = false;
 
         /* Before sleeping, ensure there is a timeout to switch active pads,
          * in case the initial active pad never receives a buffer */
         if let Some(running_time) = start_running_time {
             if state.timeout_clock_id.is_none() && !is_active {
                 // May change active pad immediately
-                self.schedule_timeout(&mut state, &settings, running_time);
+                update_all_pad_health = self.schedule_timeout(&mut state, &settings, running_time);
                 is_active = self.active_sinkpad.lock().as_ref() == Some(pad);
             }
         }
@@ -695,11 +835,14 @@ impl FallbackSwitch {
             is_active = self.active_sinkpad.lock().as_ref() == Some(pad);
         }
 
-        let mut pad_state = pad_imp.state.lock();
+        let pad_state = pad_imp.state.lock();
         if pad_state.flushing {
-            debug!(CAT, imp: self, "Flushing");
+            debug!(CAT, imp = self, "Flushing");
             return Err(gst::FlowError::Flushing);
         }
+        // calling schedule_timeout() may result in handle_timeout() being called right away,
+        // which will need pad state locks, so drop it now to prevent deadlocks.
+        drop(pad_state);
 
         if is_active {
             if start_running_time
@@ -709,7 +852,7 @@ impl FallbackSwitch {
                 if raw_pad {
                     log!(
                         CAT,
-                        obj: pad,
+                        obj = pad,
                         "Dropping trailing raw {:?} before output running time {}",
                         buffer,
                         state.output_running_time.display(),
@@ -718,7 +861,7 @@ impl FallbackSwitch {
                 } else {
                     log!(
                         CAT,
-                        obj: pad,
+                        obj = pad,
                         "Not dropping trailing non-raw {:?} before output running time {}",
                         buffer,
                         state.output_running_time.display(),
@@ -737,21 +880,50 @@ impl FallbackSwitch {
 
             if let Some(end_running_time) = end_running_time {
                 // May change active pad immediately
-                self.schedule_timeout(&mut state, &settings, end_running_time);
+                update_all_pad_health |=
+                    self.schedule_timeout(&mut state, &settings, end_running_time);
                 is_active = self.active_sinkpad.lock().as_ref() == Some(pad);
             } else {
                 state.cancel_timeout();
             }
         }
 
+        let mut pad_state = pad_imp.state.lock();
+
         if let Some(running_time) = end_running_time {
             pad_state.current_running_time = Some(running_time);
         }
-        pad_state.is_healthy = pad_state.is_healthy(&state, &settings);
+        let is_healthy = pad_state.is_healthy(pad, &state, &settings, state.output_running_time);
+        let health_changed = is_healthy != pad_state.is_healthy;
+        if health_changed {
+            log!(CAT, obj = pad, "Health changed to {}", is_healthy);
+        }
+        pad_state.is_healthy = is_healthy;
         drop(pad_state);
 
+        /* If the schedule_timeout() calls above said the timeout happened,
+         * we should update the health of all pads here */
+        let mut state = if update_all_pad_health {
+            let changed_health_pads = self.update_health_statuses(&state, &settings);
+            drop(state);
+
+            for pad in changed_health_pads {
+                pad.notify(PROP_IS_HEALTHY);
+            }
+
+            self.state.lock()
+        } else {
+            state
+        };
+
         if !is_active {
-            log!(CAT, obj: pad, "Dropping {:?} on inactive pad", buffer);
+            log!(CAT, obj = pad, "Dropping {:?} on inactive pad", buffer);
+
+            drop(state);
+            if health_changed {
+                pad.notify(PROP_IS_HEALTHY);
+            }
+
             return Ok(gst::FlowSuccess::Ok);
         }
 
@@ -760,9 +932,17 @@ impl FallbackSwitch {
 
         is_active = self.active_sinkpad.lock().as_ref() == Some(pad);
         if !is_active {
-            log!(CAT, obj: pad, "Dropping {:?} on inactive pad", buffer);
+            log!(CAT, obj = pad, "Dropping {:?} on inactive pad", buffer);
+
+            drop(state);
+            if health_changed {
+                pad.notify(PROP_IS_HEALTHY);
+            }
             return Ok(gst::FlowSuccess::Ok);
         }
+
+        /* Update the health status for all pads, since we're the active pad */
+        let changed_health_pads = self.update_health_statuses(&state, &settings);
 
         let switched_pad = state.switched_pad;
         let discont_pending = state.discont_pending;
@@ -770,11 +950,20 @@ impl FallbackSwitch {
         state.discont_pending = false;
         drop(state);
 
+        if health_changed {
+            pad.notify(PROP_IS_HEALTHY);
+        }
+        for pad in changed_health_pads {
+            pad.notify(PROP_IS_HEALTHY);
+        }
+
         if switched_pad {
-            let _ = pad.push_event(gst::event::Reconfigure::new());
-            pad.sticky_events_foreach(|event| {
-                self.src_pad.push_event(event.clone());
-                std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+            self.with_src_busy(|| {
+                let _ = pad.push_event(gst::event::Reconfigure::new());
+                pad.sticky_events_foreach(|event| {
+                    self.src_pad.push_event(event.clone());
+                    std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+                });
             });
 
             self.obj().notify(PROP_ACTIVE_PAD);
@@ -787,7 +976,7 @@ impl FallbackSwitch {
 
         /* TODO: Clip raw video and audio buffers to avoid going backward? */
 
-        log!(CAT, obj: pad, "Forwarding {:?}", buffer);
+        log!(CAT, obj = pad, "Forwarding {:?}", buffer);
 
         if let Some(in_gap_event) = from_gap {
             // Safe unwrap: the buffer was constructed from a gap event with
@@ -795,22 +984,31 @@ impl FallbackSwitch {
             // be NONE by now
             let pts = buffer.pts().unwrap();
 
-            let mut builder = gst::event::Gap::builder(pts)
-                .duration(buffer.duration())
-                .seqnum(in_gap_event.seqnum());
+            let out_gap_event = {
+                #[cfg(feature = "v1_20")]
+                {
+                    gst::event::Gap::builder(pts)
+                        .duration(buffer.duration())
+                        .seqnum(in_gap_event.seqnum())
+                        .gap_flags(in_gap_event.gap_flags())
+                        .build()
+                }
+                #[cfg(not(feature = "v1_20"))]
+                {
+                    gst::event::Gap::builder(pts)
+                        .duration(buffer.duration())
+                        .seqnum(in_gap_event.seqnum())
+                        .build()
+                }
+            };
 
-            #[cfg(feature = "v1_20")]
-            {
-                builder = builder.gap_flags(in_gap_event.gap_flags());
-            }
-
-            let out_gap_event = builder.build();
-
-            self.src_pad.push_event(out_gap_event);
+            self.with_src_busy(|| {
+                self.src_pad.push_event(out_gap_event);
+            });
 
             Ok(gst::FlowSuccess::Ok)
         } else {
-            self.src_pad.push(buffer)
+            self.with_src_busy(|| self.src_pad.push(buffer))
         }
     }
 
@@ -819,7 +1017,7 @@ impl FallbackSwitch {
         pad: &super::FallbackSwitchSinkPad,
         list: gst::BufferList,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        log!(CAT, obj: pad, "Handling buffer list {:?}", list);
+        log!(CAT, obj = pad, "Handling buffer list {:?}", list);
         // TODO: Keep the list intact and forward it in one go (or broken into several
         // pieces if needed) when outputting to the active pad
         for buffer in list.iter_owned() {
@@ -830,6 +1028,8 @@ impl FallbackSwitch {
     }
 
     fn sink_event(&self, pad: &super::FallbackSwitchSinkPad, event: gst::Event) -> bool {
+        log!(CAT, obj = pad, "Handling event {:?}", event);
+
         if let gst::EventView::Gap(ev) = event.view() {
             let mut buffer = gst::Buffer::new();
 
@@ -845,7 +1045,7 @@ impl FallbackSwitch {
                 Ok(_) => true,
                 Err(gst::FlowError::Flushing) | Err(gst::FlowError::Eos) => true,
                 Err(err) => {
-                    gst::error!(CAT, obj: pad, "Error processing gap event: {}", err);
+                    gst::error!(CAT, obj = pad, "Error processing gap event: {}", err);
                     false
                 }
             };
@@ -858,7 +1058,7 @@ impl FallbackSwitch {
         match event.view() {
             gst::EventView::Caps(caps) => {
                 let caps = caps.caps();
-                debug!(CAT, obj: pad, "Received caps {}", caps);
+                debug!(CAT, obj = pad, "Received caps {}", caps);
 
                 let caps_info = match caps.structure(0).unwrap().name().as_str() {
                     "audio/x-raw" => {
@@ -894,6 +1094,12 @@ impl FallbackSwitch {
                 pad_state.reset();
                 state.first = true;
             }
+            gst::EventView::Eos(_) => {
+                pad_state.eos = true;
+            }
+            gst::EventView::StreamStart(_) => {
+                pad_state.eos = false;
+            }
             _ => {}
         }
 
@@ -901,7 +1107,7 @@ impl FallbackSwitch {
 
         let mut is_active = self.active_sinkpad.lock().as_ref() == Some(pad);
         if !is_active {
-            log!(CAT, obj: pad, "Dropping {:?} on inactive pad", event);
+            log!(CAT, obj = pad, "Dropping {:?} on inactive pad", event);
             return true;
         }
 
@@ -912,7 +1118,7 @@ impl FallbackSwitch {
 
         is_active = self.active_sinkpad.lock().as_ref() == Some(pad);
         if !is_active {
-            log!(CAT, obj: pad, "Dropping {:?} on inactive pad", event);
+            log!(CAT, obj = pad, "Dropping {:?} on inactive pad", event);
             return true;
         }
 
@@ -925,21 +1131,24 @@ impl FallbackSwitch {
         drop(state);
 
         if fwd_sticky {
-            let _ = pad.push_event(gst::event::Reconfigure::new());
-            pad.sticky_events_foreach(|event| {
-                self.src_pad.push_event(event.clone());
-                std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+            self.with_src_busy(|| {
+                let _ = pad.push_event(gst::event::Reconfigure::new());
+                pad.sticky_events_foreach(|event| {
+                    self.src_pad.push_event(event.clone());
+                    std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+                });
             });
 
             self.obj().notify(PROP_ACTIVE_PAD);
         }
-        self.src_pad.push_event(event)
+
+        self.with_src_busy(|| self.src_pad.push_event(event))
     }
 
     fn sink_query(&self, pad: &super::FallbackSwitchSinkPad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryView;
 
-        log!(CAT, obj: pad, "Handling query {:?}", query);
+        log!(CAT, obj = pad, "Handling query {:?}", query);
 
         let forward = match query.view() {
             QueryView::Context(_) => true,
@@ -959,7 +1168,7 @@ impl FallbackSwitch {
         };
 
         if forward {
-            log!(CAT, obj: pad, "Forwarding query {:?}", query);
+            log!(CAT, obj = pad, "Forwarding query {:?}", query);
             self.src_pad.peer_query(query)
         } else {
             false
@@ -975,7 +1184,7 @@ impl FallbackSwitch {
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
 
-        log!(CAT, obj: pad, "Handling {:?}", query);
+        log!(CAT, obj = pad, "Handling {:?}", query);
 
         match query.view_mut() {
             QueryViewMut::Latency(ref mut q) => {
@@ -1000,11 +1209,11 @@ impl FallbackSwitch {
                     }
                 }
 
-                let mut state = self.state.lock();
                 let settings = self.settings.lock().clone();
+                let mut state = self.state.lock();
                 min_latency = min_latency.max(settings.min_upstream_latency);
                 state.upstream_latency = min_latency;
-                log!(CAT, obj: pad, "Upstream latency {}", min_latency);
+                log!(CAT, obj = pad, "Upstream latency {}", min_latency);
 
                 q.set(true, min_latency + settings.latency, max_latency);
 
@@ -1032,6 +1241,50 @@ impl FallbackSwitch {
             }
         }
     }
+
+    /// check if at least one sink pad has received eos
+    fn has_sink_pad_eos(&self) -> bool {
+        let pads = self.obj().sink_pads();
+
+        for pad in pads {
+            let pad = pad.downcast_ref::<super::FallbackSwitchSinkPad>().unwrap();
+            let pad_imp = pad.imp();
+            let pad_state = pad_imp.state.lock();
+            if pad_state.eos {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Wait until src_busy is not set and set it, execute
+    /// the closure, then unset it again and notify its Cond.
+    ///
+    /// The State lock is taken while modifying src_busy,
+    /// but not while executing the closure.
+    fn with_src_busy<F, R>(&self, func: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        {
+            let mut state = self.state.lock();
+            while state.src_busy {
+                self.src_busy_cond.wait(&mut state);
+            }
+            state.src_busy = true;
+        }
+
+        let ret = func();
+
+        {
+            let mut state = self.state.lock();
+            state.src_busy = false;
+            self.src_busy_cond.notify_one();
+        }
+
+        ret
+    }
 }
 
 #[glib::object_subclass]
@@ -1043,7 +1296,7 @@ impl ObjectSubclass for FallbackSwitch {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .query_function(|pad, parent, query| {
                 FallbackSwitch::catch_panic_pad_function(
                     parent,
@@ -1055,6 +1308,7 @@ impl ObjectSubclass for FallbackSwitch {
 
         Self {
             state: Mutex::new(State::default()),
+            src_busy_cond: Condvar::default(),
             settings: Mutex::new(Settings::default()),
             active_sinkpad: Mutex::new(None),
             src_pad: srcpad,
@@ -1065,7 +1319,7 @@ impl ObjectSubclass for FallbackSwitch {
 
 impl ObjectImpl for FallbackSwitch {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecObject::builder::<gst::Pad>(PROP_ACTIVE_PAD)
                     .nick("Active Pad")
@@ -1075,21 +1329,21 @@ impl ObjectImpl for FallbackSwitch {
                 glib::ParamSpecUInt64::builder(PROP_TIMEOUT)
                     .nick("Input timeout")
                     .blurb("Timeout on an input before switching to a lower priority input.")
-                    .maximum(std::u64::MAX - 1)
+                    .maximum(u64::MAX - 1)
                     .default_value(Settings::default().timeout.nseconds())
                     .mutable_playing()
                     .build(),
                 glib::ParamSpecUInt64::builder(PROP_LATENCY)
                     .nick("Latency")
                     .blurb("Additional latency in live mode to allow upstream to take longer to produce buffers for the current position (in nanoseconds)")
-                    .maximum(std::u64::MAX - 1)
+                    .maximum(u64::MAX - 1)
                     .default_value(Settings::default().latency.nseconds())
                     .mutable_ready()
                     .build(),
                 glib::ParamSpecUInt64::builder(PROP_MIN_UPSTREAM_LATENCY)
                     .nick("Minimum Upstream Latency")
                     .blurb("When sources with a higher latency are expected to be plugged in dynamically after the fallbackswitch has started playing, this allows overriding the minimum latency reported by the initial source(s). This is only taken into account when larger than the actually reported minimum latency. (nanoseconds)")
-                    .maximum(std::u64::MAX - 1)
+                    .maximum(u64::MAX - 1)
                     .default_value(Settings::default().min_upstream_latency.nseconds())
                     .mutable_ready()
                     .build(),
@@ -1105,6 +1359,12 @@ impl ObjectImpl for FallbackSwitch {
                     .default_value(Settings::default().auto_switch)
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecBoolean::builder(PROP_STOP_ON_EOS)
+                    .nick("stop on EOS")
+                    .blurb("Stop forwarding buffers as soon as one input pad is eos")
+                    .default_value(Settings::default().stop_on_eos)
+                    .mutable_ready()
+                    .build(),
             ]
         });
 
@@ -1118,7 +1378,7 @@ impl ObjectImpl for FallbackSwitch {
                 if settings.auto_switch {
                     gst::warning!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "active-pad property setting ignored, because auto-switch=true"
                     );
                 } else {
@@ -1142,7 +1402,7 @@ impl ObjectImpl for FallbackSwitch {
                 let new_value = value.get().expect("type checked upstream");
 
                 settings.timeout = new_value;
-                debug!(CAT, imp: self, "Timeout now {}", settings.timeout);
+                debug!(CAT, imp = self, "Timeout now {}", settings.timeout);
                 drop(settings);
                 let _ = self
                     .obj()
@@ -1178,6 +1438,11 @@ impl ObjectImpl for FallbackSwitch {
                 let new_value = value.get().expect("type checked upstream");
                 settings.auto_switch = new_value;
             }
+            PROP_STOP_ON_EOS => {
+                let mut settings = self.settings.lock();
+                let new_value = value.get().expect("type checked upstream");
+                settings.stop_on_eos = new_value;
+            }
             _ => unimplemented!(),
         }
     }
@@ -1208,6 +1473,10 @@ impl ObjectImpl for FallbackSwitch {
                 let settings = self.settings.lock();
                 settings.auto_switch.to_value()
             }
+            PROP_STOP_ON_EOS => {
+                let settings = self.settings.lock();
+                settings.stop_on_eos.to_value()
+            }
             _ => unimplemented!(),
         }
     }
@@ -1223,7 +1492,7 @@ impl ObjectImpl for FallbackSwitch {
 
 impl ElementImpl for FallbackSwitch {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Priority-based input selector",
                 "Generic",
@@ -1236,7 +1505,7 @@ impl ElementImpl for FallbackSwitch {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
             let sink_pad_template = gst::PadTemplate::with_gtype(
                 "sink_%u",
@@ -1265,7 +1534,7 @@ impl ElementImpl for FallbackSwitch {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        trace!(CAT, imp: self, "Changing state {:?}", transition);
+        trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::PlayingToPaused => {
@@ -1334,42 +1603,40 @@ impl ElementImpl for FallbackSwitch {
 
         let pad_serial = self.sink_pad_serial.fetch_add(1, Ordering::SeqCst);
 
-        let pad = gst::PadBuilder::<super::FallbackSwitchSinkPad>::from_template(
-            templ,
-            Some(format!("sink_{pad_serial}").as_str()),
-        )
-        .chain_function(|pad, parent, buffer| {
-            FallbackSwitch::catch_panic_pad_function(
-                parent,
-                || Err(gst::FlowError::Error),
-                |fallbackswitch| fallbackswitch.sink_chain(pad, buffer),
-            )
-        })
-        .chain_list_function(|pad, parent, bufferlist| {
-            FallbackSwitch::catch_panic_pad_function(
-                parent,
-                || Err(gst::FlowError::Error),
-                |fallbackswitch| fallbackswitch.sink_chain_list(pad, bufferlist),
-            )
-        })
-        .event_function(|pad, parent, event| {
-            FallbackSwitch::catch_panic_pad_function(
-                parent,
-                || false,
-                |fallbackswitch| fallbackswitch.sink_event(pad, event),
-            )
-        })
-        .query_function(|pad, parent, query| {
-            FallbackSwitch::catch_panic_pad_function(
-                parent,
-                || false,
-                |fallbackswitch| fallbackswitch.sink_query(pad, query),
-            )
-        })
-        .activatemode_function(|pad, _parent, mode, activate| {
-            Self::sink_activatemode(pad, mode, activate)
-        })
-        .build();
+        let pad = gst::PadBuilder::<super::FallbackSwitchSinkPad>::from_template(templ)
+            .name(format!("sink_{pad_serial}").as_str())
+            .chain_function(|pad, parent, buffer| {
+                FallbackSwitch::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::FlowError::Error),
+                    |fallbackswitch| fallbackswitch.sink_chain(pad, buffer),
+                )
+            })
+            .chain_list_function(|pad, parent, bufferlist| {
+                FallbackSwitch::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::FlowError::Error),
+                    |fallbackswitch| fallbackswitch.sink_chain_list(pad, bufferlist),
+                )
+            })
+            .event_function(|pad, parent, event| {
+                FallbackSwitch::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |fallbackswitch| fallbackswitch.sink_event(pad, event),
+                )
+            })
+            .query_function(|pad, parent, query| {
+                FallbackSwitch::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |fallbackswitch| fallbackswitch.sink_query(pad, query),
+                )
+            })
+            .activatemode_function(|pad, _parent, mode, activate| {
+                Self::sink_activatemode(pad, mode, activate)
+            })
+            .build();
 
         pad.set_active(true).unwrap();
         self.obj().add_pad(&pad).unwrap();

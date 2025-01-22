@@ -17,23 +17,29 @@ pub struct Peer {
 /// Messages sent from the server to peers
 pub enum OutgoingMessage {
     /// Welcoming message, sets the Peer ID linked to a new connection
+    #[serde(rename_all = "camelCase")]
     Welcome { peer_id: String },
     /// Notifies listeners that a peer status has changed
     PeerStatusChanged(PeerStatus),
-    /// Instructs a peer to generate an offer and inform about the session ID
+    /// Instructs a peer to generate an offer or an answer and inform about the session ID
     #[serde(rename_all = "camelCase")]
-    StartSession { peer_id: String, session_id: String },
+    StartSession {
+        peer_id: String,
+        session_id: String,
+        offer: Option<String>,
+    },
     /// Let consumer know that the requested session is starting with the specified identifier
     #[serde(rename_all = "camelCase")]
     SessionStarted { peer_id: String, session_id: String },
     /// Signals that the session the peer was in was ended
-    #[serde(rename_all = "camelCase")]
     EndSession(EndSessionMessage),
     /// Messages directly forwarded from one peer to another
     Peer(PeerMessage),
     /// Provides the current list of consumer peers
+    #[serde(rename_all = "camelCase")]
     List { producers: Vec<Peer> },
     /// Notifies that an error occurred with the peer's current session
+    #[serde(rename_all = "camelCase")]
     Error { details: String },
 }
 
@@ -42,10 +48,8 @@ pub enum OutgoingMessage {
 /// Register with a peer type
 pub enum PeerRole {
     /// Register as a producer
-    #[serde(rename_all = "camelCase")]
     Producer,
     /// Register as a listener
-    #[serde(rename_all = "camelCase")]
     Listener,
 }
 
@@ -75,6 +79,8 @@ impl PeerStatus {
 pub struct StartSessionMessage {
     /// Identifies the peer
     pub peer_id: String,
+    /// An offer if the consumer peer wants the producer to answer
+    pub offer: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -83,11 +89,13 @@ pub struct StartSessionMessage {
 /// Conveys a SDP
 pub enum SdpMessage {
     /// Conveys an offer
+    #[serde(rename_all = "camelCase")]
     Offer {
         /// The SDP
         sdp: String,
     },
     /// Conveys an answer
+    #[serde(rename_all = "camelCase")]
     Answer {
         /// The SDP
         sdp: String,

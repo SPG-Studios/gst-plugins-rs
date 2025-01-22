@@ -39,7 +39,7 @@ fn run_test(
     };
 
     let pipeline = if let Some(second_input) = second_input {
-        gst::parse_launch(&format!(
+        gst::parse::launch(&format!(
         "audiotestsrc {first_input} num-buffers={num_buffers} samplesperbuffer={samples_per_buffer} ! {format} ! audiomixer name=mixer output-buffer-duration={output_buffer_duration} ! {format} ! audioloudnorm ! appsink name=sink  audiotestsrc {second_input} num-buffers={num_buffers} samplesperbuffer={samples_per_buffer} ! {format} ! mixer.",
         first_input = first_input,
         second_input = second_input,
@@ -49,7 +49,7 @@ fn run_test(
         format = format,
         ))
     } else {
-        gst::parse_launch(&format!(
+        gst::parse::launch(&format!(
         "audiotestsrc {first_input} num-buffers={num_buffers} samplesperbuffer={samples_per_buffer} ! {format} ! audioloudnorm ! appsink name=sink",
         ))
     }
@@ -198,7 +198,7 @@ fn basic_two_channels() {
 
 #[test]
 fn silence() {
-    run_test("wave=silence", None, 1000, 1024, 1, std::f64::NEG_INFINITY);
+    run_test("wave=silence", None, 1000, 1024, 1, f64::NEG_INFINITY);
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn below_threshold() {
         1000,
         1024,
         1,
-        std::f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
     );
 }
 

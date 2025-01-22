@@ -10,13 +10,13 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use std::default::Default;
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "regex",
         gst::DebugColorFlags::empty(),
@@ -52,14 +52,14 @@ impl RegEx {
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let data = buffer.map_readable().map_err(|_| {
-            gst::error!(CAT, imp: self, "Can't map buffer readable");
+            gst::error!(CAT, imp = self, "Can't map buffer readable");
             gst::element_imp_error!(self, gst::CoreError::Failed, ["Failed to map buffer"]);
             gst::FlowError::Error
         })?;
 
         let mut data = std::str::from_utf8(&data)
             .map_err(|err| {
-                gst::error!(CAT, imp: self, "Can't decode utf8: {}", err);
+                gst::error!(CAT, imp = self, "Can't decode utf8: {}", err);
                 gst::element_imp_error!(
                     self,
                     gst::StreamError::Decode,
@@ -92,8 +92,7 @@ impl RegEx {
                 gst::BufferCopyFlags::FLAGS
                     | gst::BufferCopyFlags::TIMESTAMPS
                     | gst::BufferCopyFlags::META,
-                0,
-                None,
+                ..,
             );
         }
 
@@ -111,7 +110,7 @@ impl ObjectSubclass for RegEx {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 RegEx::catch_panic_pad_function(
                     parent,
@@ -123,7 +122,7 @@ impl ObjectSubclass for RegEx {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .flags(gst::PadFlags::PROXY_CAPS | gst::PadFlags::FIXED_CAPS)
             .build();
 
@@ -139,7 +138,7 @@ impl ObjectSubclass for RegEx {
 
 impl ObjectImpl for RegEx {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![gst::ParamSpecArray::builder("commands")
                 .nick("Commands")
                 .blurb("A set of commands to apply on input text")
@@ -187,17 +186,43 @@ impl ObjectImpl for RegEx {
                         Ok(None) | Err(_) => {
                             gst::error!(
                                 CAT,
-                                imp: self,
+                                imp = self,
                                 "All commands require a pattern field as a string"
                             );
                             continue;
                         }
                     };
 
-                    let regex = match Regex::new(&pattern) {
+                    let mut builder = RegexBuilder::new(&pattern);
+                    builder
+                        .unicode(s.get::<bool>("unicode").unwrap_or(true))
+                        .case_insensitive(s.get::<bool>("case-insensitive").unwrap_or(false))
+                        .multi_line(s.get::<bool>("multi-line").unwrap_or(false))
+                        .dot_matches_new_line(
+                            s.get::<bool>("dot-matches-new-line").unwrap_or(false),
+                        )
+                        .crlf(s.get::<bool>("crlf").unwrap_or(false))
+                        .line_terminator(s.get::<u8>("line-terminator").unwrap_or(b'\n'))
+                        .swap_greed(s.get::<bool>("swap-greed").unwrap_or(false))
+                        .ignore_whitespace(s.get::<bool>("ignore-whitespace").unwrap_or(false))
+                        .octal(s.get::<bool>("octal").unwrap_or(false));
+
+                    if let Ok(limit) = s.get::<u64>("size-limit") {
+                        builder.size_limit(limit as usize);
+                    }
+
+                    if let Ok(limit) = s.get::<u64>("dfa-size-limit") {
+                        builder.dfa_size_limit(limit as usize);
+                    }
+
+                    if let Ok(limit) = s.get::<u32>("nest-limit") {
+                        builder.nest_limit(limit);
+                    }
+
+                    let regex = match builder.build() {
                         Ok(regex) => regex,
                         Err(err) => {
-                            gst::error!(CAT, imp: self, "Failed to compile regex: {:?}", err);
+                            gst::error!(CAT, imp = self, "Failed to compile regex: {:?}", err);
                             continue;
                         }
                     };
@@ -209,7 +234,7 @@ impl ObjectImpl for RegEx {
                                 Ok(None) | Err(_) => {
                                     gst::error!(
                                         CAT,
-                                        imp: self,
+                                        imp = self,
                                         "Replace operations require a replacement field as a string"
                                     );
                                     continue;
@@ -222,7 +247,7 @@ impl ObjectImpl for RegEx {
                             });
                         }
                         val => {
-                            gst::error!(CAT, imp: self, "Unknown operation {}", val);
+                            gst::error!(CAT, imp = self, "Unknown operation {}", val);
                         }
                     }
                 }
@@ -259,7 +284,7 @@ impl GstObjectImpl for RegEx {}
 
 impl ElementImpl for RegEx {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Regular Expression processor",
                 "Text/Filter",
@@ -272,7 +297,7 @@ impl ElementImpl for RegEx {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("text/x-raw")
                 .field("format", "utf8")
                 .build();

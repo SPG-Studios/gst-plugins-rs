@@ -7,22 +7,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::{config::timeout::TimeoutConfig, Credentials, Region};
+use aws_sdk_s3::{
+    config::{timeout::TimeoutConfig, Credentials, Region},
+    error::{DisplayErrorContext, ProvideErrorMetadata},
+    primitives::{ByteStream, ByteStreamError},
+};
 use aws_types::sdk_config::SdkConfig;
 
-use aws_smithy_http::byte_stream::{error::Error, ByteStream};
-
 use bytes::{buf::BufMut, Bytes, BytesMut};
-use futures::stream::TryStreamExt;
 use futures::{future, Future};
-use once_cell::sync::Lazy;
+use std::fmt;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::runtime;
 
-const DEFAULT_S3_REGION: &str = "us-west-2";
+pub const DEFAULT_S3_REGION: &str = "us-west-2";
 
-static RUNTIME: Lazy<runtime::Runtime> = Lazy::new(|| {
+#[allow(deprecated)]
+pub static AWS_BEHAVIOR_VERSION: LazyLock<aws_config::BehaviorVersion> =
+    LazyLock::new(aws_config::BehaviorVersion::v2023_11_09);
+
+pub static RUNTIME: LazyLock<runtime::Runtime> = LazyLock::new(|| {
     runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
@@ -37,21 +43,49 @@ pub enum WaitError<E> {
     FutureError(E),
 }
 
-pub fn wait<F, T, E>(
-    canceller: &Mutex<Option<future::AbortHandle>>,
-    future: F,
-) -> Result<T, WaitError<E>>
+impl<E: ProvideErrorMetadata + std::error::Error> fmt::Display for WaitError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WaitError::Cancelled => f.write_str("Cancelled"),
+            WaitError::FutureError(err) => {
+                write!(f, "{}: {}", DisplayErrorContext(&err), err.meta())
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub enum Canceller {
+    #[default]
+    None,
+    Handle(future::AbortHandle),
+    Cancelled,
+}
+
+impl Canceller {
+    pub fn abort(&mut self) {
+        if let Canceller::Handle(ref canceller) = *self {
+            canceller.abort();
+        }
+
+        *self = Canceller::Cancelled;
+    }
+}
+
+pub fn wait<F, T, E>(canceller_mutex: &Mutex<Canceller>, future: F) -> Result<T, WaitError<E>>
 where
     F: Send + Future<Output = Result<T, E>>,
     F::Output: Send,
     T: Send,
     E: Send,
 {
-    let mut canceller_guard = canceller.lock().unwrap();
+    let mut canceller = canceller_mutex.lock().unwrap();
+    if matches!(*canceller, Canceller::Cancelled) {
+        return Err(WaitError::Cancelled);
+    }
     let (abort_handle, abort_registration) = future::AbortHandle::new_pair();
-
-    canceller_guard.replace(abort_handle);
-    drop(canceller_guard);
+    *canceller = Canceller::Handle(abort_handle);
+    drop(canceller);
 
     let abortable_future = future::Abortable::new(future, abort_registration);
 
@@ -72,17 +106,21 @@ where
     };
 
     /* Clear out the canceller */
-    canceller_guard = canceller.lock().unwrap();
-    *canceller_guard = None;
+    let mut canceller = canceller_mutex.lock().unwrap();
+    if matches!(*canceller, Canceller::Cancelled) {
+        return Err(WaitError::Cancelled);
+    }
+    *canceller = Canceller::None;
+    drop(canceller);
 
     res
 }
 
 pub fn wait_stream(
-    canceller: &Mutex<Option<future::AbortHandle>>,
+    canceller_mutex: &Mutex<Canceller>,
     stream: &mut ByteStream,
-) -> Result<Bytes, WaitError<Error>> {
-    wait(canceller, async move {
+) -> Result<Bytes, WaitError<ByteStreamError>> {
+    wait(canceller_mutex, async move {
         let mut collect = BytesMut::new();
 
         // Loop over the stream and collect till we're done
@@ -90,7 +128,7 @@ pub fn wait_stream(
             collect.put(item)
         }
 
-        Ok::<Bytes, Error>(collect.freeze())
+        Ok::<Bytes, ByteStreamError>(collect.freeze())
     })
 }
 
@@ -102,31 +140,33 @@ pub fn timeout_config(request_timeout: Duration) -> TimeoutConfig {
 }
 
 pub fn wait_config(
-    canceller: &Mutex<Option<future::AbortHandle>>,
+    canceller_mutex: &Mutex<Canceller>,
     region: Region,
     timeout_config: TimeoutConfig,
     credentials: Option<Credentials>,
-) -> Result<SdkConfig, WaitError<Error>> {
+) -> Result<SdkConfig, WaitError<ByteStreamError>> {
     let region_provider = RegionProviderChain::first_try(region)
         .or_default_provider()
         .or_else(Region::new(DEFAULT_S3_REGION));
     let config_future = match credentials {
-        Some(cred) => aws_config::from_env()
+        Some(cred) => aws_config::defaults(*AWS_BEHAVIOR_VERSION)
             .timeout_config(timeout_config)
             .region(region_provider)
             .credentials_provider(cred)
             .load(),
-        None => aws_config::from_env()
+        None => aws_config::defaults(*AWS_BEHAVIOR_VERSION)
             .timeout_config(timeout_config)
             .region(region_provider)
             .load(),
     };
 
-    let mut canceller_guard = canceller.lock().unwrap();
+    let mut canceller = canceller_mutex.lock().unwrap();
+    if matches!(*canceller, Canceller::Cancelled) {
+        return Err(WaitError::Cancelled);
+    }
     let (abort_handle, abort_registration) = future::AbortHandle::new_pair();
-
-    canceller_guard.replace(abort_handle);
-    drop(canceller_guard);
+    *canceller = Canceller::Handle(abort_handle);
+    drop(canceller);
 
     let abortable_future = future::Abortable::new(config_future, abort_registration);
 
@@ -143,8 +183,12 @@ pub fn wait_config(
     };
 
     /* Clear out the canceller */
-    canceller_guard = canceller.lock().unwrap();
-    *canceller_guard = None;
+    let mut canceller = canceller_mutex.lock().unwrap();
+    if matches!(*canceller, Canceller::Cancelled) {
+        return Err(WaitError::Cancelled);
+    }
+    *canceller = Canceller::None;
+    drop(canceller);
 
     res
 }

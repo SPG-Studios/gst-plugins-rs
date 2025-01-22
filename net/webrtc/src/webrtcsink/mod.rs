@@ -1,25 +1,74 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::signaller::Signallable;
+
 /**
- * element-webrtcsink:
+ * SECTION:element-webrtcsink
+ * @symbols:
+ *   - GstBaseWebRTCSink
+ *   - GstRSWebRTCSignallableIface
  *
- * {{ net/webrtc/README.md[0:190] }}
+ * `webrtcsink` is an element that can be used to serve media streams
+ * to multiple consumers through WebRTC.
  *
+ * It uses a signaller that implements the protocol supported by the default
+ * signalling server we additionally provide, take a look at the subclasses of
+ * #GstBaseWebRTCSink for other supported protocols, or implement your own.
+ *
+ * See the [documentation of the plugin](plugin-rswebrtc) for more information
+ * on features and usage.
+ */
+/**
+ * GstBaseWebRTCSink:
+ * @title: Base class for WebRTC producers
+ *
+ * Base class for WebRTC sinks to implement and provide their own protocol for.
+ */
+/**
+ * GstRSWebRTCSignallableIface:
+ * @title: Interface for WebRTC signalling protocols
+ *
+ * Interface that WebRTC elements can implement their own protocol with.
  */
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use std::error::Error;
 
 mod homegrown_cc;
+
 mod imp;
+mod pad;
 
 glib::wrapper! {
-    pub struct WebRTCSink(ObjectSubclass<imp::WebRTCSink>) @extends gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+    pub struct BaseWebRTCSink(ObjectSubclass<imp::BaseWebRTCSink>) @extends gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
 }
 
 glib::wrapper! {
-    pub struct AwsKvsWebRTCSink(ObjectSubclass<imp::AwsKvsWebRTCSink>) @extends WebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+    pub struct WebRTCSinkPad(ObjectSubclass<pad::WebRTCSinkPad>) @extends gst::GhostPad, gst::ProxyPad, gst::Pad, gst::Object;
+}
+
+glib::wrapper! {
+    pub struct WebRTCSink(ObjectSubclass<imp::WebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+}
+
+#[cfg(feature = "aws")]
+glib::wrapper! {
+    pub struct AwsKvsWebRTCSink(ObjectSubclass<imp::aws::AwsKvsWebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+}
+
+#[cfg(feature = "whip")]
+glib::wrapper! {
+    pub struct WhipWebRTCSink(ObjectSubclass<imp::whip::WhipWebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+}
+
+#[cfg(feature = "livekit")]
+glib::wrapper! {
+    pub struct LiveKitWebRTCSink(ObjectSubclass<imp::livekit::LiveKitWebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
+}
+
+#[cfg(feature = "janus")]
+glib::wrapper! {
+    pub struct JanusVRWebRTCSink(ObjectSubclass<imp::janus::JanusVRWebRTCSink>) @extends BaseWebRTCSink, gst::Bin, gst::Element, gst::Object, @implements gst::ChildProxy, gst_video::Navigation;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -40,102 +89,24 @@ pub enum WebRTCSinkError {
         peer_id: String,
         details: String,
     },
+    #[error("Bitrate handling currently not supported for requested encoder")]
+    BitrateNotSupported,
 }
 
-pub trait Signallable: Sync + Send + 'static {
-    fn start(&mut self, element: &WebRTCSink) -> Result<(), Box<dyn Error>>;
-
-    fn handle_sdp(
-        &mut self,
-        element: &WebRTCSink,
-        session_id: &str,
-        sdp: &gst_webrtc::WebRTCSessionDescription,
-    ) -> Result<(), Box<dyn Error>>;
-
-    /// sdp_mid is exposed for future proofing, see
-    /// https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/1174,
-    /// at the moment sdp_m_line_index will always be Some and sdp_mid will always
-    /// be None
-    fn handle_ice(
-        &mut self,
-        element: &WebRTCSink,
-        session_id: &str,
-        candidate: &str,
-        sdp_m_line_index: Option<u32>,
-        sdp_mid: Option<String>,
-    ) -> Result<(), Box<dyn Error>>;
-
-    fn session_ended(&mut self, element: &WebRTCSink, session_id: &str);
-
-    fn stop(&mut self, element: &WebRTCSink);
+impl Default for BaseWebRTCSink {
+    fn default() -> Self {
+        glib::Object::new()
+    }
 }
 
-/// When providing a signaller, we expect it to both be a GObject
-/// and be Signallable. This is arguably a bit strange, but exposing
-/// a GInterface from rust is at the moment a bit awkward, so I went
-/// for a rust interface for now. The reason the signaller needs to be
-/// a GObject is to make its properties available through the GstChildProxy
-/// interface.
-pub trait SignallableObject: AsRef<glib::Object> + Signallable {}
-
-impl<T: AsRef<glib::Object> + Signallable> SignallableObject for T {}
-
-impl WebRTCSink {
-    pub fn with_signaller(signaller: Box<dyn SignallableObject>) -> Self {
-        let ret = glib::Object::new::<WebRTCSink>();
+impl BaseWebRTCSink {
+    pub fn with_signaller(signaller: Signallable) -> Self {
+        let ret: BaseWebRTCSink = glib::Object::new();
 
         let ws = ret.imp();
         ws.set_signaller(signaller).unwrap();
 
         ret
-    }
-
-    pub fn handle_sdp(
-        &self,
-        session_id: &str,
-        sdp: &gst_webrtc::WebRTCSessionDescription,
-    ) -> Result<(), WebRTCSinkError> {
-        let ws = self.imp();
-        ws.handle_sdp(self, session_id, sdp)
-    }
-
-    /// sdp_mid is exposed for future proofing, see
-    /// https://gitlab.freedesktop.org/gstreamer/gst-plugins-bad/-/issues/1174,
-    /// at the moment sdp_m_line_index must be Some
-    pub fn handle_ice(
-        &self,
-        session_id: &str,
-        sdp_m_line_index: Option<u32>,
-        sdp_mid: Option<String>,
-        candidate: &str,
-    ) -> Result<(), WebRTCSinkError> {
-        let ws = self.imp();
-        ws.handle_ice(self, session_id, sdp_m_line_index, sdp_mid, candidate)
-    }
-
-    pub fn handle_signalling_error(&self, error: Box<dyn Error + Send + Sync>) {
-        let ws = self.imp();
-        ws.handle_signalling_error(self, anyhow::anyhow!(error));
-    }
-
-    pub fn shutdown(&self) {
-        let ws = self.imp();
-        ws.shutdown(self);
-    }
-
-    pub fn start_session(
-        &self,
-        session_id: &str,
-        peer_id: &str,
-        offer: Option<&gst_webrtc::WebRTCSessionDescription>,
-    ) -> Result<(), WebRTCSinkError> {
-        let ws = self.imp();
-        ws.start_session(self, session_id, peer_id, offer)
-    }
-
-    pub fn end_session(&self, session_id: &str) -> Result<(), WebRTCSinkError> {
-        let ws = self.imp();
-        ws.remove_session(self, session_id, false)
     }
 }
 
@@ -161,20 +132,124 @@ enum WebRTCSinkMitigationMode {
     DOWNSAMPLED = 0b00000010,
 }
 
+#[derive(Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstJanusVRWebRTCJanusState")]
+/// State of the Janus Signaller.
+pub enum JanusVRSignallerState {
+    #[default]
+    /// Initial state when the signaller is created.
+    Initialized,
+    /// The Janus session has been created.
+    SessionCreated,
+    /// The session has been attached to the videoroom plugin.
+    VideoroomAttached,
+    /// The room has been joined.
+    RoomJoined,
+    /// The WebRTC stream is being negotiated.
+    Negotiating,
+    /// The WebRTC stream is streaming to Janus.
+    WebrtcUp,
+}
+
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    WebRTCSinkPad::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+    BaseWebRTCSink::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
     WebRTCSinkCongestionControl::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
     gst::Element::register(
         Some(plugin),
         "webrtcsink",
-        gst::Rank::None,
+        gst::Rank::NONE,
         WebRTCSink::static_type(),
     )?;
+    #[cfg(feature = "aws")]
     gst::Element::register(
         Some(plugin),
         "awskvswebrtcsink",
-        gst::Rank::None,
+        gst::Rank::NONE,
         AwsKvsWebRTCSink::static_type(),
     )?;
+    #[cfg(feature = "whip")]
+    gst::Element::register(
+        Some(plugin),
+        "whipclientsink",
+        gst::Rank::NONE,
+        WhipWebRTCSink::static_type(),
+    )?;
+    #[cfg(feature = "livekit")]
+    gst::Element::register(
+        Some(plugin),
+        "livekitwebrtcsink",
+        gst::Rank::NONE,
+        LiveKitWebRTCSink::static_type(),
+    )?;
+    #[cfg(feature = "janus")]
+    /**
+     * element-janusvrwebrtcsink:
+     *
+     * The `JanusVRWebRTCSink` is a plugin that integrates with the [Video Room plugin](https://janus.conf.meetecho.com/docs/videoroom) of the [Janus Gateway](https://github.com/meetecho/janus-gateway). It basically streams whatever data you pipe to it (video, audio) into WebRTC using Janus as the signaller.
+     *
+     * ## How to use it
+     *
+     * You'll need to have:
+     *
+     * - A Janus server endpoint;
+     * - Any WebRTC browser application that uses Janus as the signaller, eg: the `html` folder of [janus-gateway repository](https://github.com/meetecho/janus-gateway).
+     *
+     * You can pipe the video like this (if you don't happen to run Janus locally, you can set the endpoint
+     * like this: `signaller::janus-endpoint=ws://127.0.0.1:8188`):
+     *
+     * ```bash
+     * $ gst-launch-1.0 videotestsrc ! janusvrwebrtcsink signaller::room-id=1234
+     * ```
+     *
+     * And for audio (yes you can do both at the same time, you just need to pipe it properly).
+     *
+     * ```bash
+     * $ gst-launch-1.0 audiotestsrc ! janusvrwebrtcsink signaller::room-id=1234
+     * ```
+     *
+     * And you can set the display name via `signaller::display-name`, eg:
+     *
+     * ```bash
+     * $ gst-launch-1.0 videotestsrc ! janusvrwebrtcsink signaller::room-id=1234 signaller::display-name=ana
+     * ```
+     *
+     * You should see the GStreamer `videotestsrc`/`audiotestsrc` output in your browser now!
+     *
+     * If for some reason you can't run Janus locally, you can use their open [demo webpage](https://janus.conf.meetecho.com/demos/videoroom.html), and point to its WebSocket server:
+     *
+     * ```bash
+     * $ gst-launch-1.0 videotestsrc ! janusvrwebrtcsink signaller::room-id=1234 signaller::janus-endpoint=wss://janus.conf.meetecho.com/ws
+     * ```
+     *
+     * By default Janus uses `u64` ids to identitify the room, the feed, etc.
+     * But it can be changed to strings using the `strings_ids` option in `janus.plugin.videoroom.jcfg`.
+     * In such case, `janusvrwebrtcsink` has to be created using `use-string-ids=true` so its signaller uses the right types for such ids and properties:
+     *
+     * ```bash
+     * $ gst-launch-1.0 videotestsrc ! janusvrwebrtcsink signaller::room-id=1234 use-string-ids=true
+     * ```
+     *
+     * ## Reference links
+     *
+     * - [Janus REST/WebSockets docs](https://janus.conf.meetecho.com/docs/rest.html)
+     * - [Example implementation in GStreamer](https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/269ab858813e670d521cc4b6a71cc0ec4a6e70ed/subprojects/gst-examples/webrtc/janus/rust/src/janus.rs)
+     *
+     * ## Notes
+     *
+     * - This plugin supports both the legacy Video Room plugin as well as the `multistream` one;
+     * - If you see a warning in the logs related to `rtpgccbwe`, you're probably missing the `gst-plugin-rtp` in your system.
+     */
+    gst::Element::register(
+        Some(plugin),
+        "janusvrwebrtcsink",
+        gst::Rank::NONE,
+        JanusVRWebRTCSink::static_type(),
+    )?;
+
+    #[cfg(feature = "janus")]
+    JanusVRSignallerState::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
 
     Ok(())
 }

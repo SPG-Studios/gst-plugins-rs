@@ -10,7 +10,7 @@
 use gio::prelude::*;
 use gst::{glib, prelude::*};
 use gtk::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 struct DroppingProbe(glib::WeakRef<gst::Pad>, Option<gst::PadProbeId>);
 
@@ -32,9 +32,10 @@ impl Drop for DroppingProbe {
 }
 
 fn create_pipeline() -> gst::Pipeline {
-    gst::parse_launch(
+    gst::parse::launch(
         r#"videotestsrc name=vsrc is-live=1
             ! video/x-raw,framerate=60/1,width=800,height=600
+            ! identity single-segment=1
             ! timeoverlay text="Pre:"
             ! queue
             ! livesync latency=50000000
@@ -44,6 +45,7 @@ fn create_pipeline() -> gst::Pipeline {
             ! gtk4paintablesink name=vsink
           audiotestsrc name=asrc is-live=1
             ! audio/x-raw,channels=2
+            ! identity single-segment=1
             ! queue
             ! livesync latency=50000000
             ! audiorate
@@ -106,7 +108,7 @@ fn create_window(app: &gtk::Application) {
         }
     });
 
-    {
+    let bus_watch = {
         let bus = pipeline.bus().unwrap();
         let window = window.downgrade();
         bus.add_watch_local(move |_, msg| {
@@ -134,10 +136,10 @@ fn create_window(app: &gtk::Application) {
                 _ => (),
             };
 
-            glib::Continue(true)
+            glib::ControlFlow::Continue
         })
-        .unwrap();
-    }
+        .unwrap()
+    };
 
     {
         let pipeline = pipeline.clone();
@@ -148,7 +150,9 @@ fn create_window(app: &gtk::Application) {
         });
     }
 
+    let bus_watch = RefCell::new(Some(bus_watch));
     window.connect_unrealize(move |_| {
+        drop(bus_watch.borrow_mut().take());
         pipeline
             .set_state(gst::State::Null)
             .expect("Failed to stop pipeline");

@@ -373,7 +373,7 @@ pub trait TaskImpl: Send + 'static {
         future::ok(()).boxed()
     }
 
-    /// Handles an error occuring during the execution of the `Task` loop.
+    /// Handles an error occurring during the execution of the `Task` loop.
     ///
     /// This include errors returned by [`Self::try_next`] & [`Self::handle_item`].
     ///
@@ -410,7 +410,7 @@ pub trait TaskImpl: Send + 'static {
         .boxed()
     }
 
-    /// Handles an error occuring during the execution of a transition action.
+    /// Handles an error occurring during the execution of a transition action.
     ///
     /// This handler also catches errors returned by subtasks spawned by the transition action.
     ///
@@ -1139,16 +1139,14 @@ impl<Item: Send + 'static> StateMachine<Item> {
                         self.pending_triggering_evt = Some(triggering_evt);
                         return Ok(());
                     }
-                    try_next_res = try_next_fut => try_next_res.map_err(|err| {
+                    try_next_res = try_next_fut => try_next_res.inspect_err(|&err| {
                         gst::debug!(RUNTIME_CAT, "TaskImpl::try_next returned {:?}", err);
-                        err
                     })?,
                 }
             };
 
-            self.task_impl.handle_item(item).await.map_err(|err| {
+            self.task_impl.handle_item(item).await.inspect_err(|&err| {
                 gst::debug!(RUNTIME_CAT, "TaskImpl::handle_item returned {:?}", err);
-                err
             })?;
         }
     }

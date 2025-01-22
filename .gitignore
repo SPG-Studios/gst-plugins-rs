@@ -1,7 +1,7 @@
-Cargo.lock
 target
 *~
 *.bk
 *.swp
 .vscode
 builddir
+.meson-subproject-wrap-hash.txt

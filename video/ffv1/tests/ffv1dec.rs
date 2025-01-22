@@ -35,7 +35,7 @@ fn test_decode(name: &str) {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push(format!("tests/ffv1_v3_{name}.mkv"));
 
-    let bin = gst::parse_bin_from_description(
+    let bin = gst::parse::bin_from_description(
         &format!(
             "filesrc location={path:?} ! matroskademux name=m m.video_0 ! ffv1dec name=ffv1dec"
         ),
@@ -44,7 +44,7 @@ fn test_decode(name: &str) {
     .unwrap();
 
     let srcpad = bin.by_name("ffv1dec").unwrap().static_pad("src").unwrap();
-    let _ = bin.add_pad(&gst::GhostPad::with_target(Some("src"), &srcpad).unwrap());
+    let _ = bin.add_pad(&gst::GhostPad::with_target(&srcpad).unwrap());
 
     let mut h = gst_check::Harness::with_element(&bin, None, Some("src"));
 

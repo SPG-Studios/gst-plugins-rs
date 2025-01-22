@@ -25,14 +25,12 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::io;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Mutex;
 use std::time::Duration;
-use std::u16;
-use std::u32;
 
 use crate::runtime::prelude::*;
 use crate::runtime::task;
@@ -40,6 +38,8 @@ use crate::runtime::{Context, PadSrc, Task, TaskState};
 
 use crate::runtime::Async;
 use crate::socket::{Socket, SocketError, SocketRead};
+use futures::channel::mpsc::{channel, Receiver, Sender};
+use futures::pin_mut;
 
 const DEFAULT_HOST: Option<&str> = Some("127.0.0.1");
 const DEFAULT_PORT: i32 = 4953;
@@ -47,6 +47,11 @@ const DEFAULT_CAPS: Option<gst::Caps> = None;
 const DEFAULT_BLOCKSIZE: u32 = 4096;
 const DEFAULT_CONTEXT: &str = "";
 const DEFAULT_CONTEXT_WAIT: Duration = Duration::ZERO;
+
+#[derive(Debug, Default)]
+struct State {
+    event_sender: Option<Sender<gst::Event>>,
+}
 
 #[derive(Debug, Clone)]
 struct Settings {
@@ -97,7 +102,7 @@ impl PadSrcHandler for TcpClientSrcPadHandler {
     type ElementImpl = TcpClientSrc;
 
     fn src_event(self, pad: &gst::Pad, imp: &TcpClientSrc, event: gst::Event) -> bool {
-        gst::log!(CAT, obj: pad, "Handling {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling {:?}", event);
 
         use gst::EventView;
         let ret = match event.view() {
@@ -109,16 +114,16 @@ impl PadSrcHandler for TcpClientSrcPadHandler {
         };
 
         if ret {
-            gst::log!(CAT, obj: pad, "Handled {:?}", event);
+            gst::log!(CAT, obj = pad, "Handled {:?}", event);
         } else {
-            gst::log!(CAT, obj: pad, "Didn't handle {:?}", event);
+            gst::log!(CAT, obj = pad, "Didn't handle {:?}", event);
         }
 
         ret
     }
 
     fn src_query(self, pad: &gst::Pad, imp: &TcpClientSrc, query: &mut gst::QueryRef) -> bool {
-        gst::log!(CAT, obj: pad, "Handling {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling {:?}", query);
 
         use gst::QueryViewMut;
         let ret = match query.view_mut() {
@@ -150,9 +155,9 @@ impl PadSrcHandler for TcpClientSrcPadHandler {
         };
 
         if ret {
-            gst::log!(CAT, obj: pad, "Handled {:?}", query);
+            gst::log!(CAT, obj = pad, "Handled {:?}", query);
         } else {
-            gst::log!(CAT, obj: pad, "Didn't handle {:?}", query);
+            gst::log!(CAT, obj = pad, "Didn't handle {:?}", query);
         }
 
         ret
@@ -166,10 +171,16 @@ struct TcpClientSrcTask {
     socket: Option<Socket<TcpClientReader>>,
     need_initial_events: bool,
     need_segment: bool,
+    event_receiver: Receiver<gst::Event>,
 }
 
 impl TcpClientSrcTask {
-    fn new(element: super::TcpClientSrc, saddr: SocketAddr, buffer_pool: gst::BufferPool) -> Self {
+    fn new(
+        element: super::TcpClientSrc,
+        saddr: SocketAddr,
+        buffer_pool: gst::BufferPool,
+        event_receiver: Receiver<gst::Event>,
+    ) -> Self {
         TcpClientSrcTask {
             element,
             saddr,
@@ -177,6 +188,7 @@ impl TcpClientSrcTask {
             socket: None,
             need_initial_events: true,
             need_segment: true,
+            event_receiver,
         }
     }
 
@@ -184,12 +196,12 @@ impl TcpClientSrcTask {
         &mut self,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj: self.element, "Handling {:?}", buffer);
+        gst::log!(CAT, obj = self.element, "Handling {:?}", buffer);
 
         let tcpclientsrc = self.element.imp();
 
         if self.need_initial_events {
-            gst::debug!(CAT, obj: self.element, "Pushing initial events");
+            gst::debug!(CAT, obj = self.element, "Pushing initial events");
 
             let stream_id = format!("{:08x}{:08x}", rand::random::<u32>(), rand::random::<u32>());
             let stream_start_evt = gst::event::StreamStart::builder(&stream_id)
@@ -228,20 +240,20 @@ impl TcpClientSrcTask {
         let res = tcpclientsrc.src_pad.push(buffer).await;
         match res {
             Ok(_) => {
-                gst::log!(CAT, obj: self.element, "Successfully pushed buffer");
+                gst::log!(CAT, obj = self.element, "Successfully pushed buffer");
             }
             Err(gst::FlowError::Flushing) => {
-                gst::debug!(CAT, obj: self.element, "Flushing");
+                gst::debug!(CAT, obj = self.element, "Flushing");
             }
             Err(gst::FlowError::Eos) => {
-                gst::debug!(CAT, obj: self.element, "EOS");
+                gst::debug!(CAT, obj = self.element, "EOS");
                 tcpclientsrc
                     .src_pad
                     .push_event(gst::event::Eos::new())
                     .await;
             }
             Err(err) => {
-                gst::error!(CAT, obj: self.element, "Got error {}", err);
+                gst::error!(CAT, obj = self.element, "Got error {}", err);
                 gst::element_error!(
                     self.element,
                     gst::StreamError::Failed,
@@ -260,7 +272,12 @@ impl TaskImpl for TcpClientSrcTask {
 
     fn prepare(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
         async move {
-            gst::log!(CAT, obj: self.element, "Preparing task connecting to {:?}", self.saddr);
+            gst::log!(
+                CAT,
+                obj = self.element,
+                "Preparing task connecting to {:?}",
+                self.saddr
+            );
 
             let socket = Async::<TcpStream>::connect(self.saddr)
                 .await
@@ -285,7 +302,7 @@ impl TaskImpl for TcpClientSrcTask {
                 })?,
             );
 
-            gst::log!(CAT, obj: self.element, "Task prepared");
+            gst::log!(CAT, obj = self.element, "Task prepared");
             Ok(())
         }
         .boxed()
@@ -313,34 +330,58 @@ impl TaskImpl for TcpClientSrcTask {
 
     fn try_next(&mut self) -> BoxFuture<'_, Result<gst::Buffer, gst::FlowError>> {
         async move {
-            self.socket
-                .as_mut()
-                .unwrap()
-                .try_next()
-                .await
-                .map(|(buffer, _saddr)| buffer)
-                .map_err(|err| {
-                    gst::error!(CAT, obj: self.element, "Got error {:?}", err);
-                    match err {
-                        SocketError::Gst(err) => {
-                            gst::element_error!(
-                                self.element,
-                                gst::StreamError::Failed,
-                                ("Internal data stream error"),
-                                ["streaming stopped, reason {}", err]
-                            );
-                        }
-                        SocketError::Io(err) => {
-                            gst::element_error!(
-                                self.element,
-                                gst::StreamError::Failed,
-                                ("I/O error"),
-                                ["streaming stopped, I/O error {}", err]
-                            );
+            let event_fut = self.event_receiver.next().fuse();
+            let socket_fut = self.socket.as_mut().unwrap().try_next().fuse();
+
+            pin_mut!(event_fut);
+            pin_mut!(socket_fut);
+
+            futures::select! {
+                event_res = event_fut => match event_res {
+                    Some(event) => {
+                        gst::debug!(CAT, obj = self.element, "Handling element level event {event:?}");
+
+                        match event.view() {
+                            gst::EventView::Eos(_) => Err(gst::FlowError::Eos),
+                            ev => {
+                                gst::error!(CAT, obj = self.element, "Unexpected event {ev:?} on channel");
+                                Err(gst::FlowError::Error)
+                            }
                         }
                     }
-                    gst::FlowError::Error
-                })
+                    None => {
+                        gst::error!(CAT, obj = self.element, "Unexpected return on event channel");
+                        Err(gst::FlowError::Error)
+                    }
+                },
+                socket_res = socket_fut => match socket_res {
+                    Ok((buffer, _saddr)) => Ok(buffer),
+                    Err(err) => {
+                        gst::error!(CAT, obj = self.element, "Got error {err:#}");
+
+                        match err {
+                            SocketError::Gst(err) => {
+                                gst::element_error!(
+                                    self.element,
+                                    gst::StreamError::Failed,
+                                    ("Internal data stream error"),
+                                    ["streaming stopped, reason {err}"]
+                                );
+                            }
+                            SocketError::Io(err) => {
+                                gst::element_error!(
+                                    self.element,
+                                    gst::StreamError::Failed,
+                                    ("I/O error"),
+                                    ["streaming stopped, I/O error {err}"]
+                                );
+                            }
+                        }
+
+                        Err(gst::FlowError::Error)
+                    }
+                },
+            }
         }
         .boxed()
     }
@@ -351,9 +392,9 @@ impl TaskImpl for TcpClientSrcTask {
 
     fn stop(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
         async move {
-            gst::log!(CAT, obj: self.element, "Stopping task");
+            gst::log!(CAT, obj = self.element, "Stopping task");
             self.need_initial_events = true;
-            gst::log!(CAT, obj: self.element, "Task stopped");
+            gst::log!(CAT, obj = self.element, "Task stopped");
             Ok(())
         }
         .boxed()
@@ -361,10 +402,44 @@ impl TaskImpl for TcpClientSrcTask {
 
     fn flush_stop(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
         async move {
-            gst::log!(CAT, obj: self.element, "Stopping task flush");
+            gst::log!(CAT, obj = self.element, "Stopping task flush");
             self.need_initial_events = true;
-            gst::log!(CAT, obj: self.element, "Task flush stopped");
+            gst::log!(CAT, obj = self.element, "Task flush stopped");
             Ok(())
+        }
+        .boxed()
+    }
+
+    fn handle_loop_error(&mut self, err: gst::FlowError) -> BoxFuture<'_, task::Trigger> {
+        async move {
+            match err {
+                gst::FlowError::Flushing => {
+                    gst::debug!(CAT, obj = self.element, "Flushing");
+
+                    task::Trigger::FlushStart
+                }
+                gst::FlowError::Eos => {
+                    gst::debug!(CAT, obj = self.element, "EOS");
+                    self.element
+                        .imp()
+                        .src_pad
+                        .push_event(gst::event::Eos::new())
+                        .await;
+
+                    task::Trigger::Stop
+                }
+                err => {
+                    gst::error!(CAT, obj = self.element, "Got error {err}");
+                    gst::element_error!(
+                        &self.element,
+                        gst::StreamError::Failed,
+                        ("Internal data stream error"),
+                        ["streaming stopped, reason {}", err]
+                    );
+
+                    task::Trigger::Error
+                }
+            }
         }
         .boxed()
     }
@@ -375,9 +450,10 @@ pub struct TcpClientSrc {
     task: Task,
     configured_caps: Mutex<Option<gst::Caps>>,
     settings: Mutex<Settings>,
+    state: Mutex<State>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-tcpclientsrc",
         gst::DebugColorFlags::empty(),
@@ -387,7 +463,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 
 impl TcpClientSrc {
     fn prepare(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Preparing");
+        gst::debug!(CAT, imp = self, "Preparing");
         let settings = self.settings.lock().unwrap().clone();
 
         let context =
@@ -431,48 +507,58 @@ impl TcpClientSrc {
 
         let saddr = SocketAddr::new(host, port as u16);
 
+        let (sender, receiver) = channel(1);
+
         // Don't block on `prepare` as the socket connection takes time.
         // This will be performed in the background and we'll block on
         // `start` which will also ensure `prepare` completed successfully.
         let fut = self
             .task
             .prepare(
-                TcpClientSrcTask::new(self.obj().clone(), saddr, buffer_pool),
+                TcpClientSrcTask::new(self.obj().clone(), saddr, buffer_pool, receiver),
                 context,
             )
             .check()?;
         drop(fut);
 
-        gst::debug!(CAT, imp: self, "Preparing asynchronously");
+        let mut state = self.state.lock().unwrap();
+        state.event_sender = Some(sender);
+        drop(state);
+
+        gst::debug!(CAT, imp = self, "Preparing asynchronously");
 
         Ok(())
     }
 
     fn unprepare(&self) {
-        gst::debug!(CAT, imp: self, "Unpreparing");
+        gst::debug!(CAT, imp = self, "Unpreparing");
         self.task.unprepare().block_on().unwrap();
-        gst::debug!(CAT, imp: self, "Unprepared");
+        gst::debug!(CAT, imp = self, "Unprepared");
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Stopping");
+        gst::debug!(CAT, imp = self, "Stopping");
         self.task.stop().block_on()?;
-        gst::debug!(CAT, imp: self, "Stopped");
+        gst::debug!(CAT, imp = self, "Stopped");
         Ok(())
     }
 
     fn start(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Starting");
+        gst::debug!(CAT, imp = self, "Starting");
         self.task.start().block_on()?;
-        gst::debug!(CAT, imp: self, "Started");
+        gst::debug!(CAT, imp = self, "Started");
         Ok(())
     }
 
     fn pause(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Pausing");
+        gst::debug!(CAT, imp = self, "Pausing");
         self.task.pause().block_on()?;
-        gst::debug!(CAT, imp: self, "Paused");
+        gst::debug!(CAT, imp = self, "Paused");
         Ok(())
+    }
+
+    fn state(&self) -> TaskState {
+        self.task.state()
     }
 }
 
@@ -485,19 +571,20 @@ impl ObjectSubclass for TcpClientSrc {
     fn with_class(klass: &Self::Class) -> Self {
         Self {
             src_pad: PadSrc::new(
-                gst::Pad::from_template(&klass.pad_template("src").unwrap(), Some("src")),
+                gst::Pad::from_template(&klass.pad_template("src").unwrap()),
                 TcpClientSrcPadHandler,
             ),
             task: Task::default(),
             configured_caps: Default::default(),
             settings: Default::default(),
+            state: Default::default(),
         }
     }
 }
 
 impl ObjectImpl for TcpClientSrc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecString::builder("context")
                     .nick("Context")
@@ -593,7 +680,7 @@ impl GstObjectImpl for TcpClientSrc {}
 
 impl ElementImpl for TcpClientSrc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Thread-sharing TCP client source",
                 "Source/Network",
@@ -606,7 +693,7 @@ impl ElementImpl for TcpClientSrc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
             let src_pad_template = gst::PadTemplate::new(
                 "src",
@@ -626,7 +713,7 @@ impl ElementImpl for TcpClientSrc {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::NullToReady => {
@@ -663,5 +750,32 @@ impl ElementImpl for TcpClientSrc {
         }
 
         Ok(success)
+    }
+
+    fn send_event(&self, event: gst::Event) -> bool {
+        use gst::EventView;
+
+        gst::debug!(CAT, imp = self, "Handling element level event {event:?}");
+
+        match event.view() {
+            EventView::Eos(_) => {
+                if self.state() != TaskState::Started {
+                    if let Err(err) = self.start() {
+                        gst::error!(CAT, imp = self, "Failed to start task thread {err:?}");
+                    }
+                }
+
+                if self.state() == TaskState::Started {
+                    let mut state = self.state.lock().unwrap();
+
+                    if let Some(event_tx) = state.event_sender.as_mut() {
+                        return event_tx.try_send(event.clone()).is_ok();
+                    }
+                }
+
+                false
+            }
+            _ => self.parent_send_event(event),
+        }
     }
 }

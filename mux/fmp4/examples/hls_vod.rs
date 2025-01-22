@@ -170,7 +170,7 @@ fn setup_appsink(appsink: &gst_app::AppSink, name: &str, path: &Path, is_video: 
                     drop(map);
 
                     // Remove the header from the buffer list
-                    buffer_list.make_mut().remove(0, 1);
+                    buffer_list.make_mut().remove(0..1);
 
                     // If the list is now empty then it only contained the media header and nothing
                     // else.
@@ -260,19 +260,21 @@ fn setup_appsink(appsink: &gst_app::AppSink, name: &str, path: &Path, is_video: 
 fn probe_encoder(state: Arc<Mutex<State>>, enc: gst::Element) {
     enc.static_pad("src").unwrap().add_probe(
         gst::PadProbeType::EVENT_DOWNSTREAM,
-        move |_pad, info| match info.data {
-            Some(gst::PadProbeData::Event(ref ev)) => match ev.view() {
-                gst::EventView::Caps(e) => {
-                    let mime = gst_pbutils::codec_utils_caps_get_mime_codec(e.caps());
+        move |_pad, info| {
+            let Some(ev) = info.event() else {
+                return gst::PadProbeReturn::Ok;
+            };
+            let gst::EventView::Caps(ev) = ev.view() else {
+                return gst::PadProbeReturn::Ok;
+            };
 
-                    let mut state = state.lock().unwrap();
-                    state.all_mimes.push(mime.unwrap().into());
-                    state.maybe_write_manifest();
-                    gst::PadProbeReturn::Remove
-                }
-                _ => gst::PadProbeReturn::Ok,
-            },
-            _ => gst::PadProbeReturn::Ok,
+            let mime = gst_pbutils::codec_utils_caps_get_mime_codec(ev.caps());
+
+            let mut state = state.lock().unwrap();
+            state.all_mimes.push(mime.unwrap().into());
+            state.maybe_write_manifest();
+
+            gst::PadProbeReturn::Remove
         },
     );
 }
@@ -358,6 +360,10 @@ impl AudioStream {
             .property("samplesperbuffer", 4410)
             .property_from_str("wave", &self.wave)
             .build()?;
+        let taginject = gst::ElementFactory::make("taginject")
+            .property_from_str("tags", &format!("language-code={}", self.lang))
+            .property_from_str("scope", "stream")
+            .build()?;
         let raw_capsfilter = gst::ElementFactory::make("capsfilter")
             .property(
                 "caps",
@@ -372,9 +378,23 @@ impl AudioStream {
             .build()?;
         let appsink = gst_app::AppSink::builder().buffer_list(true).build();
 
-        pipeline.add_many([&src, &raw_capsfilter, &enc, &mux, appsink.upcast_ref()])?;
+        pipeline.add_many([
+            &src,
+            &taginject,
+            &raw_capsfilter,
+            &enc,
+            &mux,
+            appsink.upcast_ref(),
+        ])?;
 
-        gst::Element::link_many([&src, &raw_capsfilter, &enc, &mux, appsink.upcast_ref()])?;
+        gst::Element::link_many([
+            &src,
+            &taginject,
+            &raw_capsfilter,
+            &enc,
+            &mux,
+            appsink.upcast_ref(),
+        ])?;
 
         probe_encoder(state, enc);
 
@@ -414,7 +434,7 @@ fn main() -> Result<(), Error> {
             },
             AudioStream {
                 name: "audio_1".to_string(),
-                lang: "fre".to_string(),
+                lang: "fra".to_string(),
                 default: false,
                 wave: "white-noise".to_string(),
             },

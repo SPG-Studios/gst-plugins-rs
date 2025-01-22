@@ -8,13 +8,13 @@
 
 use gio::prelude::*;
 use gst::prelude::*;
-use gsthlssink3::HlsSink3PlaylistType;
-use once_cell::sync::Lazy;
+use gsthlssink3::hlssink3::HlsSink3PlaylistType;
 use std::io::Write;
+use std::sync::LazyLock;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "hlssink3-test",
         gst::DebugColorFlags::empty(),
@@ -65,6 +65,7 @@ enum HlsSinkEvent {
     GetPlaylistStream(String),
     GetFragmentStream(String),
     DeleteFragment(String),
+    SegmentAddedMessage(String),
 }
 
 /// Represents a HLS playlist file that writes to a shared string.
@@ -105,10 +106,10 @@ fn test_hlssink3_element_with_video_content() -> Result<(), ()> {
 
     const BUFFER_NB: i32 = 250;
 
-    let pipeline = gst::Pipeline::builder().name("video_pipeline").build();
+    let pipeline = gst::Pipeline::with_name("video_pipeline");
 
     let video_src = try_create_element!("videotestsrc");
-    video_src.set_property("is-live", true);
+    video_src.set_property("is-live", false);
     video_src.set_property("num-buffers", BUFFER_NB);
 
     let x264enc = try_create_element!("x264enc");
@@ -129,6 +130,7 @@ fn test_hlssink3_element_with_video_content() -> Result<(), ()> {
     hlssink3.set_property_from_str("playlist-type", "unspecified");
 
     let (hls_events_sender, hls_events_receiver) = mpsc::sync_channel(20);
+    let (hls_messages_sender, hls_messages_receiver) = mpsc::sync_channel(10);
     let playlist_content = Arc::new(Mutex::new(String::from("")));
 
     hlssink3.connect("get-playlist-stream", false, {
@@ -166,12 +168,15 @@ fn test_hlssink3_element_with_video_content() -> Result<(), ()> {
         }
     });
 
-    hlssink3.connect("delete-fragment", false, move |args| {
-        let location = args[1].get::<String>().expect("No location given");
-        hls_events_sender
-            .try_send(HlsSinkEvent::DeleteFragment(location))
-            .expect("Send delete fragment event");
-        Some(true.to_value())
+    hlssink3.connect("delete-fragment", false, {
+        let hls_events_sender = hls_events_sender.clone();
+        move |args| {
+            let location = args[1].get::<String>().expect("No location given");
+            hls_events_sender
+                .try_send(HlsSinkEvent::DeleteFragment(location))
+                .expect("Send delete fragment event");
+            Some(true.to_value())
+        }
     });
 
     try_or_pause!(pipeline.add_many([&video_src, &x264enc, &h264parse, &hlssink3,]));
@@ -195,6 +200,16 @@ fn test_hlssink3_element_with_video_content() -> Result<(), ()> {
             MessageView::Eos(..) => {
                 eos = true;
                 break;
+            }
+            MessageView::Element(msg) => {
+                if let Some(structure) = msg.structure() {
+                    if structure.has_name("hls-segment-added") {
+                        let location = structure.get::<String>("location").unwrap();
+                        hls_messages_sender
+                            .try_send(HlsSinkEvent::SegmentAddedMessage(location))
+                            .expect("Send segment added event");
+                    }
+                }
             }
             MessageView::Error(..) => unreachable!(),
             _ => (),
@@ -230,16 +245,33 @@ fn test_hlssink3_element_with_video_content() -> Result<(), ()> {
     };
     assert_eq!(expected_ordering_of_events, actual_events);
 
+    let mut actual_messages = Vec::new();
+    while let Ok(event) = hls_messages_receiver.recv_timeout(Duration::from_millis(1)) {
+        actual_messages.push(event);
+    }
+    let expected_messages = {
+        use self::HlsSinkEvent::*;
+        vec![
+            SegmentAddedMessage("segment00000.ts".to_string()),
+            SegmentAddedMessage("segment00001.ts".to_string()),
+            SegmentAddedMessage("segment00002.ts".to_string()),
+            SegmentAddedMessage("segment00003.ts".to_string()),
+            SegmentAddedMessage("segment00004.ts".to_string()),
+        ]
+    };
+    assert_eq!(expected_messages, actual_messages);
+
     let contents = playlist_content.lock().unwrap();
     assert_eq!(
         r###"#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:2
 #EXT-X-MEDIA-SEQUENCE:4
-#EXTINF:2,
+#EXTINF:1.999,
 segment00003.ts
-#EXTINF:0.3,
+#EXTINF:0.333,
 segment00004.ts
+#EXT-X-ENDLIST
 "###,
         contents.to_string()
     );
@@ -253,10 +285,10 @@ fn test_hlssink3_element_with_audio_content() -> Result<(), ()> {
 
     const BUFFER_NB: i32 = 100;
 
-    let pipeline = gst::Pipeline::builder().name("audio_pipeline").build();
+    let pipeline = gst::Pipeline::with_name("audio_pipeline");
 
     let audio_src = try_create_element!("audiotestsrc");
-    audio_src.set_property("is-live", true);
+    audio_src.set_property("is-live", false);
     audio_src.set_property("num-buffers", BUFFER_NB);
 
     let hls_avenc_aac = try_or_pause!(gst::ElementFactory::make("avenc_aac")
@@ -316,10 +348,10 @@ fn test_hlssink3_write_correct_playlist_content() -> Result<(), ()> {
 
     const BUFFER_NB: i32 = 50;
 
-    let pipeline = gst::Pipeline::builder().name("video_pipeline").build();
+    let pipeline = gst::Pipeline::with_name("video_pipeline");
 
     let video_src = try_create_element!("videotestsrc");
-    video_src.set_property("is-live", true);
+    video_src.set_property("is-live", false);
     video_src.set_property("num-buffers", BUFFER_NB);
 
     let x264enc = try_create_element!("x264enc");
@@ -334,6 +366,7 @@ fn test_hlssink3_write_correct_playlist_content() -> Result<(), ()> {
         .expect("Must be able to instantiate hlssink3");
 
     let (hls_events_sender, hls_events_receiver) = mpsc::sync_channel(20);
+    let (hls_messages_sender, hls_messages_receiver) = mpsc::sync_channel(10);
     let playlist_content = Arc::new(Mutex::new(String::from("")));
 
     hlssink3.connect("get-playlist-stream", false, {
@@ -371,12 +404,15 @@ fn test_hlssink3_write_correct_playlist_content() -> Result<(), ()> {
         }
     });
 
-    hlssink3.connect("delete-fragment", false, move |args| {
-        let location = args[1].get::<String>().expect("No location given");
-        hls_events_sender
-            .try_send(HlsSinkEvent::DeleteFragment(location))
-            .expect("Send delete fragment event");
-        Some(true.to_value())
+    hlssink3.connect("delete-fragment", false, {
+        let hls_events_sender = hls_events_sender.clone();
+        move |args| {
+            let location = args[1].get::<String>().expect("No location given");
+            hls_events_sender
+                .try_send(HlsSinkEvent::DeleteFragment(location))
+                .expect("Send delete fragment event");
+            Some(true.to_value())
+        }
     });
 
     try_or_pause!(pipeline.add_many([&video_src, &x264enc, &h264parse, &hlssink3,]));
@@ -401,6 +437,16 @@ fn test_hlssink3_write_correct_playlist_content() -> Result<(), ()> {
                 eos = true;
                 break;
             }
+            MessageView::Element(msg) => {
+                if let Some(structure) = msg.structure() {
+                    if structure.has_name("hls-segment-added") {
+                        let location = structure.get::<String>("location").unwrap();
+                        hls_messages_sender
+                            .try_send(HlsSinkEvent::SegmentAddedMessage(location))
+                            .expect("Send segment added event");
+                    }
+                }
+            }
             MessageView::Error(..) => unreachable!(),
             _ => (),
         }
@@ -424,14 +470,27 @@ fn test_hlssink3_write_correct_playlist_content() -> Result<(), ()> {
     };
     assert_eq!(expected_ordering_of_events, actual_events);
 
+    let mut actual_messages = Vec::new();
+    while let Ok(event) = hls_messages_receiver.recv_timeout(Duration::from_millis(1)) {
+        actual_messages.push(event);
+    }
+    let expected_messages = {
+        use self::HlsSinkEvent::*;
+        vec![SegmentAddedMessage(
+            "/www/media/segments/my-own-filename-000.ts".to_string(),
+        )]
+    };
+    assert_eq!(expected_messages, actual_messages);
+
     let contents = playlist_content.lock().unwrap();
     assert_eq!(
         r###"#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:15
 #EXT-X-MEDIA-SEQUENCE:1
-#EXTINF:1.633,
+#EXTINF:1.666,
 segments/my-own-filename-000.ts
+#EXT-X-ENDLIST
 "###,
         contents.to_string()
     );

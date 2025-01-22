@@ -17,6 +17,12 @@ struct TestMedia {
     len: gst::ClockTime,
 }
 
+impl PartialEq for TestMedia {
+    fn eq(&self, other: &Self) -> bool {
+        self.uri == other.uri
+    }
+}
+
 fn file_name_to_uri(name: &str) -> String {
     let input_path = {
         let mut r = PathBuf::new();
@@ -38,6 +44,13 @@ impl TestMedia {
         }
     }
 
+    fn mkv_http() -> Self {
+        Self {
+            uri: "https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/raw/main/utils/uriplaylistbin/tests/sample.mkv?ref_type=heads&inline=false".to_string(),
+            len: 510.mseconds(),
+        }
+    }
+
     fn mkv() -> Self {
         Self {
             uri: file_name_to_uri("sample.mkv"),
@@ -47,14 +60,14 @@ impl TestMedia {
 
     fn missing_file() -> Self {
         Self {
-            uri: "file:///not-there.ogg".to_string(),
+            uri: "file://not-there.ogg".to_string(),
             len: 10.mseconds(),
         }
     }
 
     fn missing_http() -> Self {
         Self {
-            uri: "http:///not-there.ogg".to_string(),
+            uri: "http://not-there.ogg".to_string(),
             len: 10.mseconds(),
         }
     }
@@ -71,24 +84,56 @@ fn init() {
     });
 }
 
+struct IterationsChange {
+    /// change the uriplaylistbin iterations property when receiving the nth stream-start event
+    when_ss: u32,
+    /// new 'iterations' value
+    iterations: u32,
+}
+
+struct Pipeline(gst::Pipeline);
+
+impl std::ops::Deref for Pipeline {
+    type Target = gst::Pipeline;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for Pipeline {
+    fn drop(&mut self) {
+        let _ = self.0.set_state(gst::State::Null);
+    }
+}
+
 fn test(
     medias: Vec<TestMedia>,
     n_streams: u32,
     iterations: u32,
     check_streams: bool,
+    iterations_change: Option<IterationsChange>,
+    cache: bool,
 ) -> (Vec<gst::Message>, u32, u64) {
     init();
-
-    let playlist_len = medias.len() * (iterations as usize);
 
     let total_len: gst::ClockTime = medias.iter().map(|t| t.len * (iterations as u64)).sum();
 
     let uris: Vec<String> = medias.iter().map(|t| t.uri.clone()).collect();
 
-    let pipeline = gst::Pipeline::default();
+    // create a temp directory to store the cache
+    let cache_dir =
+        cache.then(|| tempfile::tempdir().expect("failed to create temp cache directory"));
+
+    let pipeline = Pipeline(gst::Pipeline::default());
     let playlist = gst::ElementFactory::make("uriplaylistbin")
         .property("uris", &uris)
         .property("iterations", iterations)
+        .property("cache", cache)
+        .property(
+            "cache-dir",
+            cache_dir.as_ref().map(|dir| dir.path().to_str().unwrap()),
+        )
         .build()
         .unwrap();
     let mq = gst::ElementFactory::make("multiqueue").build().unwrap();
@@ -110,12 +155,14 @@ fn test(
             return;
         }
 
-        let pipeline = match pipeline_weak.upgrade() {
-            Some(pipeline) => pipeline,
-            None => return,
+        let Some(pipeline) = pipeline_weak.upgrade() else {
+            return;
         };
 
-        let sink = gst::ElementFactory::make("fakesink").build().unwrap();
+        let sink = gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .unwrap();
         pipeline.add(&sink).unwrap();
         sink.sync_state_with_parent().unwrap();
 
@@ -126,6 +173,7 @@ fn test(
 
     let bus = pipeline.bus().unwrap();
     let mut events = vec![];
+    let mut n_stream_start = 0;
 
     loop {
         let msg = bus.iter_timed(gst::ClockTime::NONE).next().unwrap();
@@ -136,8 +184,28 @@ fn test(
                 break;
             }
             // check stream related messages
-            MessageView::StreamCollection(_) | MessageView::StreamsSelected(_) => {
+            MessageView::StreamCollection(sc) => {
+                if let Some(prev) = events.last() {
+                    if let MessageView::StreamCollection(prev_sc) = prev.view() {
+                        if prev_sc.src() == sc.src()
+                            && prev_sc.stream_collection() == sc.stream_collection()
+                        {
+                            // decodebin3 may send twice the same collection
+                            continue;
+                        }
+                    }
+                }
+
                 events.push(msg.clone())
+            }
+            MessageView::StreamsSelected(_) => events.push(msg.clone()),
+            MessageView::StreamStart(_) => {
+                n_stream_start += 1;
+                if let Some(change) = &iterations_change {
+                    if change.when_ss == n_stream_start {
+                        playlist.set_property("iterations", change.iterations);
+                    }
+                }
             }
             _ => {}
         }
@@ -174,14 +242,40 @@ fn test(
 
         // check stream-collection and streams-selected message ordering
         let mut events = events.clone().into_iter();
+        let playlist = std::iter::repeat(medias.iter())
+            .take(iterations as usize)
+            .flatten();
+        let mut last_media = None;
 
-        for _ in 0..playlist_len {
-            let decodebin = assert_stream_collection(events.next().unwrap(), n_streams as usize);
-            assert_eq!(
-                assert_stream_selected(events.next().unwrap(), n_streams as usize),
-                decodebin
-            );
+        for media in playlist {
+            let mut media_changed = false;
+
+            if last_media
+                .as_ref()
+                .map_or(true, |last_media| *last_media != media)
+            {
+                last_media = Some(media);
+                media_changed = true;
+            }
+
+            // decodebin3 only sends a new stream-collection and streams-selected if it actually
+            // changes, which only happens here if the actual underlying media is changing.
+            if media_changed {
+                let decodebin =
+                    assert_stream_collection(events.next().unwrap(), n_streams as usize);
+                assert_eq!(
+                    assert_stream_selected(events.next().unwrap(), n_streams as usize),
+                    decodebin
+                );
+            }
         }
+    }
+
+    if let Some(cache_dir) = cache_dir {
+        let dir = std::fs::read_dir(cache_dir.path()).expect("failed to read cache dir");
+        // all items should have been cached if we looped the playlist
+        let n_cached_files = if iterations > 1 { uris.len() } else { 0 };
+        assert_eq!(dir.count(), n_cached_files);
     }
 
     let current_iteration = playlist.property::<u32>("current-iteration");
@@ -192,10 +286,12 @@ fn test(
     (events, current_iteration, current_uri_index)
 }
 
+#[track_caller]
 fn assert_eos(msg: gst::Message) {
     assert!(matches!(msg.view(), MessageView::Eos(_)));
 }
 
+#[track_caller]
 fn assert_error(msg: gst::Message, failing: TestMedia) {
     match msg.view() {
         MessageView::Error(err) => {
@@ -208,6 +304,7 @@ fn assert_error(msg: gst::Message, failing: TestMedia) {
     }
 }
 
+#[track_caller]
 fn assert_stream_collection(msg: gst::Message, n_streams: usize) -> gst::Object {
     match msg.view() {
         MessageView::StreamCollection(sc) => {
@@ -221,6 +318,7 @@ fn assert_stream_collection(msg: gst::Message, n_streams: usize) -> gst::Object 
     }
 }
 
+#[track_caller]
 fn assert_stream_selected(msg: gst::Message, n_streams: usize) -> gst::Object {
     match msg.view() {
         MessageView::StreamsSelected(ss) => {
@@ -235,34 +333,32 @@ fn assert_stream_selected(msg: gst::Message, n_streams: usize) -> gst::Object {
 }
 
 #[test]
-// FIXME: test deadlocks: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/194
-#[ignore]
 fn single_audio() {
-    let (events, current_iteration, current_uri_index) = test(vec![TestMedia::ogg()], 1, 1, true);
+    let (events, current_iteration, current_uri_index) =
+        test(vec![TestMedia::ogg()], 1, 1, true, None, false);
     assert_eos(events.into_iter().last().unwrap());
     assert_eq!(current_iteration, 0);
     assert_eq!(current_uri_index, 0);
 }
 
 #[test]
-// FIXME: test deadlocks: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/194
-#[ignore]
 fn single_video() {
-    let (events, current_iteration, current_uri_index) = test(vec![TestMedia::mkv()], 2, 1, true);
+    let (events, current_iteration, current_uri_index) =
+        test(vec![TestMedia::mkv()], 2, 1, true, None, false);
     assert_eos(events.into_iter().last().unwrap());
     assert_eq!(current_iteration, 0);
     assert_eq!(current_uri_index, 0);
 }
 
 #[test]
-// FIXME: this test hits deadlocks, see https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/184
-#[ignore]
 fn multi_audio() {
     let (events, current_iteration, current_uri_index) = test(
         vec![TestMedia::ogg(), TestMedia::ogg(), TestMedia::ogg()],
         1,
         1,
         true,
+        None,
+        false,
     );
     assert_eos(events.into_iter().last().unwrap());
     assert_eq!(current_iteration, 0);
@@ -270,33 +366,47 @@ fn multi_audio() {
 }
 
 #[test]
-// FIXME: test deadlocks: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/194
-#[ignore]
 fn multi_audio_video() {
-    let (events, current_iteration, current_uri_index) =
-        test(vec![TestMedia::mkv(), TestMedia::mkv()], 2, 1, true);
+    let (events, current_iteration, current_uri_index) = test(
+        vec![TestMedia::mkv(), TestMedia::mkv()],
+        2,
+        1,
+        true,
+        None,
+        false,
+    );
     assert_eos(events.into_iter().last().unwrap());
     assert_eq!(current_iteration, 0);
     assert_eq!(current_uri_index, 1);
 }
 
 #[test]
-// FIXME: test deadlocks: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/194
-#[ignore]
 fn iterations() {
-    let (events, current_iteration, current_uri_index) =
-        test(vec![TestMedia::mkv(), TestMedia::mkv()], 2, 2, true);
+    let (events, current_iteration, current_uri_index) = test(
+        vec![TestMedia::mkv(), TestMedia::mkv()],
+        2,
+        2,
+        true,
+        None,
+        false,
+    );
     assert_eos(events.into_iter().last().unwrap());
     assert_eq!(current_iteration, 1);
     assert_eq!(current_uri_index, 1);
 }
 
 #[test]
-// FIXME: test deadlocks: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/194
+// FIXME: racy: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/514
 #[ignore]
 fn nb_streams_increasing() {
-    let (events, current_iteration, current_uri_index) =
-        test(vec![TestMedia::ogg(), TestMedia::mkv()], 2, 1, false);
+    let (events, current_iteration, current_uri_index) = test(
+        vec![TestMedia::ogg(), TestMedia::mkv()],
+        2,
+        1,
+        false,
+        None,
+        false,
+    );
     assert_eos(events.into_iter().last().unwrap());
     assert_eq!(current_iteration, 0);
     assert_eq!(current_uri_index, 1);
@@ -309,6 +419,8 @@ fn missing_file() {
         1,
         1,
         false,
+        None,
+        false,
     );
     assert_error(
         events.into_iter().last().unwrap(),
@@ -319,13 +431,13 @@ fn missing_file() {
 }
 
 #[test]
-// FIXME: test deadlocks: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/194
-#[ignore]
 fn missing_http() {
     let (events, current_iteration, current_uri_index) = test(
         vec![TestMedia::ogg(), TestMedia::missing_http()],
         1,
         1,
+        false,
+        None,
         false,
     );
     assert_error(
@@ -333,5 +445,74 @@ fn missing_http() {
         TestMedia::missing_http(),
     );
     assert_eq!(current_iteration, 0);
+    assert_eq!(current_uri_index, 0);
+}
+
+#[test]
+/// increase playlist iterations while it's playing
+fn increase_iterations() {
+    let (events, current_iteration, current_uri_index) = test(
+        vec![TestMedia::mkv()],
+        2,
+        4,
+        false,
+        Some(IterationsChange {
+            when_ss: 2,
+            iterations: 8,
+        }),
+        false,
+    );
+    assert_eos(events.into_iter().last().unwrap());
+    assert_eq!(current_iteration, 7);
+    assert_eq!(current_uri_index, 0);
+}
+
+#[test]
+/// decrease playlist iterations while it's playing
+// FIXME: racy: https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/issues/514
+#[ignore]
+fn decrease_iterations() {
+    let (events, current_iteration, current_uri_index) = test(
+        vec![TestMedia::mkv()],
+        2,
+        4,
+        false,
+        Some(IterationsChange {
+            when_ss: 2,
+            iterations: 1,
+        }),
+        false,
+    );
+    assert_eos(events.into_iter().last().unwrap());
+    assert_eq!(current_iteration, 2);
+    assert_eq!(current_uri_index, 0);
+}
+
+#[test]
+/// change an infinite playlist to a finite one
+fn infinite_to_finite() {
+    let (events, current_iteration, current_uri_index) = test(
+        vec![TestMedia::mkv()],
+        2,
+        0,
+        false,
+        Some(IterationsChange {
+            when_ss: 2,
+            iterations: 4,
+        }),
+        false,
+    );
+    assert_eos(events.into_iter().last().unwrap());
+    assert_eq!(current_iteration, 3);
+    assert_eq!(current_uri_index, 0);
+}
+
+#[test]
+/// cache HTTP playlist items
+fn cache() {
+    let (events, current_iteration, current_uri_index) =
+        test(vec![TestMedia::mkv_http()], 2, 3, true, None, true);
+    assert_eos(events.into_iter().last().unwrap());
+    assert_eq!(current_iteration, 2);
     assert_eq!(current_uri_index, 0);
 }

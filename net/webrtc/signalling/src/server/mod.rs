@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task;
-use tracing::{info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 struct Peer {
     receive_task_handle: task::JoinHandle<()>,
@@ -32,22 +32,22 @@ pub struct Server {
 pub enum ServerError {
     #[error("error during handshake {0}")]
     Handshake(#[from] async_tungstenite::tungstenite::Error),
+    #[error("error during TLS handshake {0}")]
+    TLSHandshake(#[from] tokio_native_tls::native_tls::Error),
+    #[error("timeout during TLS handshake {0}")]
+    TLSHandshakeTimeout(#[from] tokio::time::error::Elapsed),
 }
 
 impl Server {
     #[instrument(level = "debug", skip(factory))]
     pub fn spawn<
         I: for<'a> Deserialize<'a>,
-        O: Serialize + std::fmt::Debug,
+        O: Serialize + std::fmt::Debug + Send + Sync,
         Factory: FnOnce(Pin<Box<dyn Stream<Item = (String, Option<I>)> + Send>>) -> St,
-        St: Stream<Item = (String, O)>,
+        St: Stream<Item = (String, O)> + Send + Unpin + 'static,
     >(
         factory: Factory,
-    ) -> Self
-    where
-        O: Serialize + std::fmt::Debug,
-        St: Send + Unpin + 'static,
-    {
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<(String, Option<String>)>(1000);
         let mut handler = factory(Box::pin(rx.filter_map(|(peer_id, msg)| async move {
             if let Some(msg) = msg {
@@ -72,12 +72,19 @@ impl Server {
         task::spawn(async move {
             while let Some((peer_id, msg)) = handler.next().await {
                 match serde_json::to_string(&msg) {
-                    Ok(msg) => {
-                        if let Some(peer) = state_clone.lock().unwrap().peers.get_mut(&peer_id) {
-                            let mut sender = peer.sender.clone();
-                            task::spawn(async move {
-                                let _ = sender.send(msg).await;
-                            });
+                    Ok(msg_str) => {
+                        let sender = {
+                            let mut state = state_clone.lock().unwrap();
+                            if let Some(peer) = state.peers.get_mut(&peer_id) {
+                                Some(peer.sender.clone())
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(mut sender) = sender {
+                            trace!("Sending {}", msg_str);
+                            let _ = sender.send(msg_str).await;
                         }
                     }
                     Err(err) => {
@@ -108,10 +115,10 @@ impl Server {
     }
 
     #[instrument(level = "debug", skip(self, stream))]
-    pub async fn accept_async<S: 'static>(&mut self, stream: S) -> Result<String, ServerError>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
-    {
+    pub async fn accept_async<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+        &mut self,
+        stream: S,
+    ) -> Result<String, ServerError> {
         let ws = match async_tungstenite::tokio::accept_async(stream).await {
             Ok(ws) => ws,
             Err(err) => {
@@ -130,6 +137,7 @@ impl Server {
         let this_id_clone = this_id.clone();
         let (mut ws_sink, mut ws_stream) = ws.split();
         let send_task_handle = task::spawn(async move {
+            let mut res = Ok(());
             loop {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(30),
@@ -139,22 +147,28 @@ impl Server {
                 {
                     Ok(Some(msg)) => {
                         trace!(this_id = %this_id_clone, "sending {}", msg);
-                        ws_sink.send(WsMessage::Text(msg)).await?;
+                        res = ws_sink.send(WsMessage::Text(msg)).await;
                     }
                     Ok(None) => {
                         break;
                     }
                     Err(_) => {
                         trace!(this_id = %this_id_clone, "timeout, sending ping");
-                        ws_sink.send(WsMessage::Ping(vec![])).await?;
+                        res = ws_sink.send(WsMessage::Ping(vec![])).await;
                     }
+                }
+
+                if let Err(ref err) = res {
+                    error!(this_id = %this_id_clone, "Quitting send loop: {err}");
+                    break;
                 }
             }
 
-            ws_sink.send(WsMessage::Close(None)).await?;
-            ws_sink.close().await?;
+            debug!(this_id = %this_id_clone, "Done sending");
 
-            Ok::<(), Error>(())
+            let _ = ws_sink.close().await;
+
+            res.map_err(Into::into)
         });
 
         let mut tx = self.state.lock().unwrap().tx.clone();

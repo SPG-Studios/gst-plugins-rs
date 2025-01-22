@@ -8,11 +8,12 @@ use gst_base::subclass::prelude::*;
 
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use crate::ndi::SendInstance;
+use crate::ndi_cc_meta::NDICCMetaEncoder;
 
-static DEFAULT_SENDER_NDI_NAME: Lazy<String> = Lazy::new(|| {
+static DEFAULT_SENDER_NDI_NAME: LazyLock<String> = LazyLock::new(|| {
     format!(
         "GStreamer NewTek NDI Sink {}-{}",
         env!("CARGO_PKG_VERSION"),
@@ -36,6 +37,7 @@ impl Default for Settings {
 struct State {
     send: SendInstance,
     video_info: Option<gst_video::VideoInfo>,
+    ndi_cc_encoder: Option<NDICCMetaEncoder>,
     audio_info: Option<gst_audio::AudioInfo>,
 }
 
@@ -44,7 +46,7 @@ pub struct NdiSink {
     state: Mutex<Option<State>>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new("ndisink", gst::DebugColorFlags::empty(), Some("NDI Sink"))
 });
 
@@ -64,7 +66,7 @@ impl ObjectSubclass for NdiSink {
 
 impl ObjectImpl for NdiSink {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecString::builder("ndi-name")
                 .nick("NDI Name")
                 .blurb("NDI Name to use")
@@ -102,7 +104,7 @@ impl GstObjectImpl for NdiSink {}
 
 impl ElementImpl for NdiSink {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "NewTek NDI Sink",
                 "Sink/Audio/Video",
@@ -115,7 +117,7 @@ impl ElementImpl for NdiSink {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder_full()
                 .structure(
                     gst::Structure::builder("video/x-raw")
@@ -133,13 +135,13 @@ impl ElementImpl for NdiSink {
                                 gst_video::VideoFormat::Rgbx.to_str(),
                             ]),
                         )
-                        .field("width", gst::IntRange::<i32>::new(1, std::i32::MAX))
-                        .field("height", gst::IntRange::<i32>::new(1, std::i32::MAX))
+                        .field("width", gst::IntRange::<i32>::new(1, i32::MAX))
+                        .field("height", gst::IntRange::<i32>::new(1, i32::MAX))
                         .field(
                             "framerate",
                             gst::FractionRange::new(
                                 gst::Fraction::new(0, 1),
-                                gst::Fraction::new(std::i32::MAX, 1),
+                                gst::Fraction::new(i32::MAX, 1),
                             ),
                         )
                         .build(),
@@ -203,10 +205,11 @@ impl BaseSinkImpl for NdiSink {
         let state = State {
             send,
             video_info: None,
+            ndi_cc_encoder: None,
             audio_info: None,
         };
         *state_storage = Some(state);
-        gst::info!(CAT, imp: self, "Started");
+        gst::info!(CAT, imp = self, "Started");
 
         Ok(())
     }
@@ -215,7 +218,7 @@ impl BaseSinkImpl for NdiSink {
         let mut state_storage = self.state.lock().unwrap();
 
         *state_storage = None;
-        gst::info!(CAT, imp: self, "Stopped");
+        gst::info!(CAT, imp = self, "Stopped");
 
         Ok(())
     }
@@ -229,7 +232,7 @@ impl BaseSinkImpl for NdiSink {
     }
 
     fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
-        gst::debug!(CAT, imp: self, "Setting caps {}", caps);
+        gst::debug!(CAT, imp = self, "Setting caps {}", caps);
 
         let mut state_storage = self.state.lock().unwrap();
         let state = match &mut *state_storage {
@@ -242,6 +245,7 @@ impl BaseSinkImpl for NdiSink {
             let info = gst_video::VideoInfo::from_caps(caps)
                 .map_err(|_| gst::loggable_error!(CAT, "Couldn't parse caps {}", caps))?;
 
+            state.ndi_cc_encoder = Some(NDICCMetaEncoder::new(info.width()));
             state.video_info = Some(info);
             state.audio_info = None;
         } else {
@@ -250,6 +254,7 @@ impl BaseSinkImpl for NdiSink {
 
             state.audio_info = Some(info);
             state.video_info = None;
+            state.ndi_cc_encoder = None;
         }
 
         Ok(())
@@ -267,13 +272,13 @@ impl BaseSinkImpl for NdiSink {
                 for (buffer, info, timecode) in audio_meta.buffers() {
                     let frame = crate::ndi::AudioFrame::try_from_buffer(info, buffer, *timecode)
                         .map_err(|_| {
-                            gst::error!(CAT, imp: self, "Unsupported audio frame");
+                            gst::error!(CAT, imp = self, "Unsupported audio frame");
                             gst::FlowError::NotNegotiated
                         })?;
 
                     gst::trace!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Sending audio buffer {:?} with timecode {} and format {:?}",
                         buffer,
                         if *timecode < 0 {
@@ -303,21 +308,28 @@ impl BaseSinkImpl for NdiSink {
                     .map(|time| (time.nseconds() / 100) as i64)
                     .unwrap_or(crate::ndisys::NDIlib_send_timecode_synthesize);
 
-                let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, info)
+                let mut ndi_meta = None;
+                if let Some(ref mut ndi_cc_encoder) = state.ndi_cc_encoder {
+                    // handle potential width change
+                    ndi_cc_encoder.set_width(info.width());
+                    ndi_meta = ndi_cc_encoder.encode(buffer);
+                }
+
+                let frame = gst_video::VideoFrame::from_buffer_readable(buffer.clone(), info)
                     .map_err(|_| {
-                        gst::error!(CAT, imp: self, "Failed to map buffer");
+                        gst::error!(CAT, imp = self, "Failed to map buffer");
                         gst::FlowError::Error
                     })?;
 
-                let frame = crate::ndi::VideoFrame::try_from_video_frame(&frame, timecode)
+                let frame = crate::ndi::VideoFrame::try_from_video_frame(frame, ndi_meta, timecode)
                     .map_err(|_| {
-                        gst::error!(CAT, imp: self, "Unsupported video frame");
+                        gst::error!(CAT, imp = self, "Unsupported video frame");
                         gst::FlowError::NotNegotiated
                     })?;
 
                 gst::trace!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Sending video buffer {:?} with timecode {} and format {:?}",
                     buffer,
                     if timecode < 0 {
@@ -346,13 +358,13 @@ impl BaseSinkImpl for NdiSink {
 
             let frame =
                 crate::ndi::AudioFrame::try_from_buffer(info, buffer, timecode).map_err(|_| {
-                    gst::error!(CAT, imp: self, "Unsupported audio frame");
+                    gst::error!(CAT, imp = self, "Unsupported audio frame");
                     gst::FlowError::NotNegotiated
                 })?;
 
             gst::trace!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Sending audio buffer {:?} with timecode {} and format {:?}",
                 buffer,
                 if timecode < 0 {

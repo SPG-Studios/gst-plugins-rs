@@ -9,13 +9,13 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, MutexGuard};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "textahead",
         gst::DebugColorFlags::empty(),
@@ -78,7 +78,7 @@ impl ObjectSubclass for TextAhead {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sink_pad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sink_pad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 TextAhead::catch_panic_pad_function(
                     parent,
@@ -96,7 +96,7 @@ impl ObjectSubclass for TextAhead {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let src_pad = gst::Pad::builder_with_template(&templ, Some("src")).build();
+        let src_pad = gst::Pad::from_template(&templ);
 
         Self {
             sink_pad,
@@ -109,7 +109,7 @@ impl ObjectSubclass for TextAhead {
 
 impl ObjectImpl for TextAhead {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             let default = Settings::default();
 
             vec![
@@ -219,7 +219,7 @@ impl GstObjectImpl for TextAhead {}
 
 impl ElementImpl for TextAhead {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Text Ahead",
                 "Text/Filter",
@@ -232,7 +232,7 @@ impl ElementImpl for TextAhead {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst::Caps::builder("text/x-raw")
                 .field("format", gst::List::new(["utf8", "pango-markup"]))
                 .build();
@@ -298,7 +298,7 @@ impl TextAhead {
         // queue buffer
         let mut state = self.state.lock().unwrap();
 
-        gst::log!(CAT, imp: self, "input {:?}: {}", pts, text);
+        gst::log!(CAT, imp = self, "input {:?}: {}", pts, text);
 
         state.pending.push(Input {
             text,
@@ -325,7 +325,7 @@ impl TextAhead {
             gst::EventView::Eos(_) => {
                 let mut state = self.state.lock().unwrap();
 
-                gst::debug!(CAT, imp: self, "eos");
+                gst::debug!(CAT, imp = self, "eos");
 
                 while !state.pending.is_empty() {
                     let _ = self.push_pending(&mut state);
@@ -456,7 +456,7 @@ impl TextAhead {
             }
         }
 
-        gst::log!(CAT, imp: self, "output {:?}: {}", pts, text);
+        gst::log!(CAT, imp = self, "output {:?}: {}", pts, text);
 
         let mut output = gst::Buffer::from_mut_slice(text.into_bytes());
         {

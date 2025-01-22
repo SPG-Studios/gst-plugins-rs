@@ -17,17 +17,17 @@ use gst::glib;
 #[cfg(feature = "doc")]
 use gst::prelude::*;
 
-#[allow(non_camel_case_types, non_upper_case_globals, unused)]
-#[allow(clippy::redundant_static_lifetimes, clippy::unreadable_literal)]
-#[allow(clippy::useless_transmute, clippy::trivially_copy_pass_by_ref)]
-mod ffi;
-
-mod caption_frame;
 mod ccdetect;
+mod cctost2038anc;
 mod ccutils;
 mod cea608overlay;
+mod cea608tocea708;
 mod cea608tojson;
 mod cea608tott;
+mod cea608utils;
+mod cea708mux;
+mod cea708overlay;
+mod cea708utils;
 mod jsontovtt;
 mod line_reader;
 mod mcc_enc;
@@ -35,14 +35,22 @@ mod mcc_parse;
 mod parser_utils;
 mod scc_enc;
 mod scc_parse;
+mod st2038anc_utils;
+mod st2038ancdemux;
+mod st2038ancmux;
+mod st2038anctocc;
 mod transcriberbin;
 mod tttocea608;
+mod tttocea708;
 mod tttojson;
 mod ttutils;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "doc")]
-    ttutils::Cea608Mode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+    {
+        cea608utils::Cea608Mode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+        cea708utils::Cea708Mode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+    }
     mcc_parse::register(plugin)?;
     mcc_enc::register(plugin)?;
     scc_parse::register(plugin)?;
@@ -55,6 +63,14 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     cea608tojson::register(plugin)?;
     jsontovtt::register(plugin)?;
     transcriberbin::register(plugin)?;
+    cea608tocea708::register(plugin)?;
+    cea708mux::register(plugin)?;
+    tttocea708::register(plugin)?;
+    cea708overlay::register(plugin)?;
+    st2038ancdemux::register(plugin)?;
+    st2038ancmux::register(plugin)?;
+    st2038anctocc::register(plugin)?;
+    cctost2038anc::register(plugin)?;
     Ok(())
 }
 

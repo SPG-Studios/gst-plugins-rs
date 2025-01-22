@@ -13,11 +13,12 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 
 use gst_base::subclass::prelude::*;
+use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use super::super::hsvutils;
 
@@ -59,7 +60,7 @@ pub struct HsvDetector {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "hsvdetector",
         gst::DebugColorFlags::empty(),
@@ -161,7 +162,7 @@ impl HsvDetector {
 
 impl ObjectImpl for HsvDetector {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecFloat::builder("hue-ref")
                     .nick("Hue reference")
@@ -222,7 +223,7 @@ impl ObjectImpl for HsvDetector {
                 let hue_ref = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing hue-ref from {} to {}",
                     settings.hue_ref,
                     hue_ref
@@ -234,7 +235,7 @@ impl ObjectImpl for HsvDetector {
                 let hue_var = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing hue-var from {} to {}",
                     settings.hue_var,
                     hue_var
@@ -246,7 +247,7 @@ impl ObjectImpl for HsvDetector {
                 let saturation_ref = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing saturation-ref from {} to {}",
                     settings.saturation_ref,
                     saturation_ref
@@ -258,7 +259,7 @@ impl ObjectImpl for HsvDetector {
                 let saturation_var = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing saturation-var from {} to {}",
                     settings.saturation_var,
                     saturation_var
@@ -270,7 +271,7 @@ impl ObjectImpl for HsvDetector {
                 let value_ref = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing value-ref from {} to {}",
                     settings.value_ref,
                     value_ref
@@ -282,7 +283,7 @@ impl ObjectImpl for HsvDetector {
                 let value_var = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing value-var from {} to {}",
                     settings.value_var,
                     value_var
@@ -330,7 +331,7 @@ impl GstObjectImpl for HsvDetector {}
 
 impl ElementImpl for HsvDetector {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "HSV detector",
                 "Filter/Effect/Converter/Video",
@@ -343,7 +344,7 @@ impl ElementImpl for HsvDetector {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_video::VideoCapsBuilder::new()
                 .format_list(video_output_formats())
                 .build();
@@ -401,7 +402,7 @@ impl BaseTransformImpl for HsvDetector {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Transformed caps from {} to {} in direction {:?}",
             caps,
             other_caps,

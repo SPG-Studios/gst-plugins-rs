@@ -19,7 +19,7 @@
 
 use gst::glib;
 use gst::prelude::*;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::env;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 const THROUGHPUT_PERIOD: Duration = Duration::from_secs(20);
 
-pub static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+pub static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-benchmark",
         gst::DebugColorFlags::empty(),
@@ -84,13 +84,16 @@ fn main() {
             .property("signal-handoffs", true)
             .build()
             .unwrap();
-        sink.connect(
+        sink.connect_closure(
             "handoff",
             true,
-            glib::clone!(@strong counter => move |_| {
-                let _ = counter.fetch_add(1, Ordering::SeqCst);
-                None
-            }),
+            glib::closure!(
+                #[strong]
+                counter,
+                move |_fakesink: &gst::Element, _buffer: &gst::Buffer, _pad: &gst::Pad| {
+                    let _ = counter.fetch_add(1, Ordering::SeqCst);
+                }
+            ),
         );
 
         let (source, context) = match source.as_str() {
@@ -111,12 +114,9 @@ fn main() {
                     .property("port", 5004i32 + i as i32)
                     .property("context", &context)
                     .property("context-wait", wait)
+                    .property_if("caps", &rtp_caps, is_rtp)
                     .build()
                     .unwrap();
-
-                if is_rtp {
-                    source.set_property("caps", &rtp_caps);
-                }
 
                 (source, Some(context))
             }
@@ -174,11 +174,9 @@ fn main() {
                 .name(format!("jb-{i}").as_str())
                 .property("context-wait", wait)
                 .property("latency", wait)
+                .property_if_some("context", context.as_ref())
                 .build()
                 .unwrap();
-            if let Some(context) = context {
-                jb.set_property("context", &context);
-            }
 
             let elements = &[&source, &jb, &sink];
             pipeline.add_many(elements).unwrap();
@@ -192,27 +190,28 @@ fn main() {
 
     let bus = pipeline.bus().unwrap();
     let l_clone = l.clone();
-    bus.add_watch(move |_, msg| {
-        use gst::MessageView;
+    let _bus_watch = bus
+        .add_watch(move |_, msg| {
+            use gst::MessageView;
 
-        match msg.view() {
-            MessageView::Eos(..) => l_clone.quit(),
-            MessageView::Error(err) => {
-                gst::error!(
-                    CAT,
-                    "Error from {:?}: {} ({:?})",
-                    err.src().map(|s| s.path_string()),
-                    err.error(),
-                    err.debug()
-                );
-                l_clone.quit();
-            }
-            _ => (),
-        };
+            match msg.view() {
+                MessageView::Eos(..) => l_clone.quit(),
+                MessageView::Error(err) => {
+                    gst::error!(
+                        CAT,
+                        "Error from {:?}: {} ({:?})",
+                        err.src().map(|s| s.path_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                    l_clone.quit();
+                }
+                _ => (),
+            };
 
-        glib::Continue(true)
-    })
-    .expect("Failed to add bus watch");
+            glib::ControlFlow::Continue
+        })
+        .expect("Failed to add bus watch");
 
     pipeline.set_state(gst::State::Playing).unwrap();
 

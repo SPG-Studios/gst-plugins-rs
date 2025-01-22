@@ -13,7 +13,7 @@ use gst::glib;
 use gst::subclass::prelude::*;
 use gst_base::prelude::*;
 use gst_base::subclass::prelude::*;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use crate::constants::{
     CDG_COMMAND, CDG_HEIGHT, CDG_MASK, CDG_PACKET_PERIOD, CDG_PACKET_SIZE, CDG_WIDTH,
@@ -26,7 +26,7 @@ const CDG_CMD_MEMORY_LOAD_COLOR_TABLE_2: u8 = 31;
 #[derive(Default)]
 pub struct CdgParse;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "cdgparse",
         gst::DebugColorFlags::empty(),
@@ -47,7 +47,7 @@ impl GstObjectImpl for CdgParse {}
 
 impl ElementImpl for CdgParse {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "CDG parser",
                 "Codec/Parser/Video",
@@ -60,7 +60,7 @@ impl ElementImpl for CdgParse {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst::Caps::builder("video/x-cdg").build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -200,7 +200,7 @@ impl BaseParseImpl for CdgParse {
             buffer.set_flags(gst::BufferFlags::HEADER);
         }
 
-        gst::debug!(CAT, imp: self, "Found frame pts={}", pts);
+        gst::debug!(CAT, imp = self, "Found frame pts={}", pts);
 
         self.obj().finish_frame(frame, CDG_PACKET_SIZE as u32)?;
 

@@ -29,7 +29,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst::EventView;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -73,7 +73,7 @@ mod imp_src {
         context: String,
     }
 
-    pub static SRC_CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+    pub static SRC_CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
             "ts-element-src-test",
             gst::DebugColorFlags::empty(),
@@ -88,7 +88,7 @@ mod imp_src {
         type ElementImpl = ElementSrcTest;
 
         fn src_event(self, pad: &gst::Pad, imp: &ElementSrcTest, event: gst::Event) -> bool {
-            gst::log!(SRC_CAT, obj: pad, "Handling {:?}", event);
+            gst::log!(SRC_CAT, obj = pad, "Handling {:?}", event);
 
             let ret = match event.view() {
                 EventView::FlushStart(..) => {
@@ -100,9 +100,9 @@ mod imp_src {
             };
 
             if ret {
-                gst::log!(SRC_CAT, obj: pad, "Handled {:?}", event);
+                gst::log!(SRC_CAT, obj = pad, "Handled {:?}", event);
             } else {
-                gst::log!(SRC_CAT, obj: pad, "Didn't handle {:?}", event);
+                gst::log!(SRC_CAT, obj = pad, "Didn't handle {:?}", event);
             }
 
             ret
@@ -127,7 +127,7 @@ mod imp_src {
             while let Ok(Some(_item)) = self.receiver.try_next() {}
         }
         async fn push_item(&self, item: Item) -> Result<gst::FlowSuccess, gst::FlowError> {
-            gst::debug!(SRC_CAT, obj: self.element, "Handling {:?}", item);
+            gst::debug!(SRC_CAT, obj = self.element, "Handling {:?}", item);
 
             let elementsrctest = self.element.imp();
             match item {
@@ -148,7 +148,7 @@ mod imp_src {
         fn try_next(&mut self) -> BoxFuture<'_, Result<Item, gst::FlowError>> {
             async move {
                 self.receiver.next().await.ok_or_else(|| {
-                    gst::log!(SRC_CAT, obj: self.element, "SrcPad channel aborted");
+                    gst::log!(SRC_CAT, obj = self.element, "SrcPad channel aborted");
                     gst::FlowError::Eos
                 })
             }
@@ -159,9 +159,9 @@ mod imp_src {
             async move {
                 let res = self.push_item(item).await.map(drop);
                 match res {
-                    Ok(_) => gst::log!(SRC_CAT, obj: self.element, "Successfully pushed item"),
+                    Ok(_) => gst::log!(SRC_CAT, obj = self.element, "Successfully pushed item"),
                     Err(gst::FlowError::Flushing) => {
-                        gst::debug!(SRC_CAT, obj: self.element, "Flushing")
+                        gst::debug!(SRC_CAT, obj = self.element, "Flushing")
                     }
                     Err(err) => panic!("Got error {err}"),
                 }
@@ -173,9 +173,9 @@ mod imp_src {
 
         fn stop(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
             async move {
-                gst::log!(SRC_CAT, obj: self.element, "Stopping task");
+                gst::log!(SRC_CAT, obj = self.element, "Stopping task");
                 self.flush();
-                gst::log!(SRC_CAT, obj: self.element, "Task stopped");
+                gst::log!(SRC_CAT, obj = self.element, "Task stopped");
                 Ok(())
             }
             .boxed()
@@ -183,9 +183,9 @@ mod imp_src {
 
         fn flush_start(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
             async move {
-                gst::log!(SRC_CAT, obj: self.element, "Starting task flush");
+                gst::log!(SRC_CAT, obj = self.element, "Starting task flush");
                 self.flush();
-                gst::log!(SRC_CAT, obj: self.element, "Task flush started");
+                gst::log!(SRC_CAT, obj = self.element, "Task flush started");
                 Ok(())
             }
             .boxed()
@@ -219,7 +219,7 @@ mod imp_src {
         }
 
         fn prepare(&self) -> Result<(), gst::ErrorMessage> {
-            gst::debug!(SRC_CAT, imp: self, "Preparing");
+            gst::debug!(SRC_CAT, imp = self, "Preparing");
 
             let settings = self.settings.lock().unwrap().clone();
             let context =
@@ -240,36 +240,36 @@ mod imp_src {
                 )
                 .block_on()?;
 
-            gst::debug!(SRC_CAT, imp: self, "Prepared");
+            gst::debug!(SRC_CAT, imp = self, "Prepared");
 
             Ok(())
         }
 
         fn unprepare(&self) {
-            gst::debug!(SRC_CAT, imp: self, "Unpreparing");
+            gst::debug!(SRC_CAT, imp = self, "Unpreparing");
 
             *self.sender.lock().unwrap() = None;
             self.task.unprepare().block_on().unwrap();
 
-            gst::debug!(SRC_CAT, imp: self, "Unprepared");
+            gst::debug!(SRC_CAT, imp = self, "Unprepared");
         }
 
         fn stop(&self) {
-            gst::debug!(SRC_CAT, imp: self, "Stopping");
+            gst::debug!(SRC_CAT, imp = self, "Stopping");
             self.task.stop().await_maybe_on_context().unwrap();
-            gst::debug!(SRC_CAT, imp: self, "Stopped");
+            gst::debug!(SRC_CAT, imp = self, "Stopped");
         }
 
         fn start(&self) {
-            gst::debug!(SRC_CAT, imp: self, "Starting");
+            gst::debug!(SRC_CAT, imp = self, "Starting");
             self.task.start().await_maybe_on_context().unwrap();
-            gst::debug!(SRC_CAT, imp: self, "Started");
+            gst::debug!(SRC_CAT, imp = self, "Started");
         }
 
         fn pause(&self) {
-            gst::debug!(SRC_CAT, imp: self, "Pausing");
+            gst::debug!(SRC_CAT, imp = self, "Pausing");
             self.task.pause().block_on().unwrap();
-            gst::debug!(SRC_CAT, imp: self, "Paused");
+            gst::debug!(SRC_CAT, imp = self, "Paused");
         }
     }
 
@@ -282,7 +282,7 @@ mod imp_src {
         fn with_class(klass: &Self::Class) -> Self {
             ElementSrcTest {
                 src_pad: PadSrc::new(
-                    gst::Pad::from_template(&klass.pad_template("src").unwrap(), Some("src")),
+                    gst::Pad::from_template(&klass.pad_template("src").unwrap()),
                     PadSrcTestHandler,
                 ),
                 task: Task::default(),
@@ -294,7 +294,7 @@ mod imp_src {
 
     impl ObjectImpl for ElementSrcTest {
         fn properties() -> &'static [glib::ParamSpec] {
-            static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
                 vec![glib::ParamSpecString::builder("context")
                     .nick("Context")
                     .blurb("Context name to share threads with")
@@ -333,20 +333,21 @@ mod imp_src {
 
     impl ElementImpl for ElementSrcTest {
         fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-            static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
-                gst::subclass::ElementMetadata::new(
-                    "Thread-sharing Test Src Element",
-                    "Generic",
-                    "Src Element for Pad Src Test",
-                    "François Laignel <fengalin@free.fr>",
-                )
-            });
+            static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> =
+                LazyLock::new(|| {
+                    gst::subclass::ElementMetadata::new(
+                        "Thread-sharing Test Src Element",
+                        "Generic",
+                        "Src Element for Pad Src Test",
+                        "François Laignel <fengalin@free.fr>",
+                    )
+                });
 
             Some(&*ELEMENT_METADATA)
         }
 
         fn pad_templates() -> &'static [gst::PadTemplate] {
-            static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+            static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
                 let caps = gst::Caps::new_any();
                 let src_pad_template = gst::PadTemplate::new(
                     "src",
@@ -366,7 +367,7 @@ mod imp_src {
             &self,
             transition: gst::StateChange,
         ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-            gst::log!(SRC_CAT, imp: self, "Changing state {:?}", transition);
+            gst::log!(SRC_CAT, imp = self, "Changing state {:?}", transition);
 
             match transition {
                 gst::StateChange::NullToReady => {
@@ -464,7 +465,7 @@ mod imp_sink {
         }
 
         fn sink_event(self, pad: &gst::Pad, imp: &ElementSinkTest, event: gst::Event) -> bool {
-            gst::debug!(SINK_CAT, obj: pad, "Handling non-serialized {:?}", event);
+            gst::debug!(SINK_CAT, obj = pad, "Handling non-serialized {:?}", event);
 
             match event.view() {
                 EventView::FlushStart(..) => {
@@ -482,7 +483,7 @@ mod imp_sink {
             event: gst::Event,
         ) -> BoxFuture<'static, bool> {
             async move {
-                gst::log!(SINK_CAT, obj: pad, "Handling serialized {:?}", event);
+                gst::log!(SINK_CAT, obj = pad, "Handling serialized {:?}", event);
 
                 let imp = elem.imp();
                 if let EventView::FlushStop(..) = event.view() {
@@ -505,7 +506,7 @@ mod imp_sink {
     impl ElementSinkTest {
         async fn forward_item(&self, item: Item) -> Result<gst::FlowSuccess, gst::FlowError> {
             if !self.flushing.load(Ordering::SeqCst) {
-                gst::debug!(SINK_CAT, imp: self, "Fowarding {:?}", item);
+                gst::debug!(SINK_CAT, imp = self, "Forwarding {:?}", item);
                 let mut sender = self
                     .sender
                     .lock()
@@ -521,8 +522,8 @@ mod imp_sink {
             } else {
                 gst::debug!(
                     SINK_CAT,
-                    imp: self,
-                    "Not fowarding {:?} due to flushing",
+                    imp = self,
+                    "Not forwarding {:?} due to flushing",
                     item
                 );
                 Err(gst::FlowError::Flushing)
@@ -530,35 +531,35 @@ mod imp_sink {
         }
 
         fn start(&self) {
-            gst::debug!(SINK_CAT, imp: self, "Starting");
+            gst::debug!(SINK_CAT, imp = self, "Starting");
             self.flushing.store(false, Ordering::SeqCst);
-            gst::debug!(SINK_CAT, imp: self, "Started");
+            gst::debug!(SINK_CAT, imp = self, "Started");
         }
 
         fn stop(&self) {
-            gst::debug!(SINK_CAT, imp: self, "Stopping");
+            gst::debug!(SINK_CAT, imp = self, "Stopping");
             self.flushing.store(true, Ordering::SeqCst);
-            gst::debug!(SINK_CAT, imp: self, "Stopped");
+            gst::debug!(SINK_CAT, imp = self, "Stopped");
         }
 
         pub fn push_flush_start(&self) {
-            gst::debug!(SINK_CAT, imp: self, "Pushing FlushStart");
+            gst::debug!(SINK_CAT, imp = self, "Pushing FlushStart");
             self.sink_pad
                 .gst_pad()
                 .push_event(gst::event::FlushStart::new());
-            gst::debug!(SINK_CAT, imp: self, "FlushStart pushed");
+            gst::debug!(SINK_CAT, imp = self, "FlushStart pushed");
         }
 
         pub fn push_flush_stop(&self) {
-            gst::debug!(SINK_CAT, imp: self, "Pushing FlushStop");
+            gst::debug!(SINK_CAT, imp = self, "Pushing FlushStop");
             self.sink_pad
                 .gst_pad()
                 .push_event(gst::event::FlushStop::new(true));
-            gst::debug!(SINK_CAT, imp: self, "FlushStop pushed");
+            gst::debug!(SINK_CAT, imp = self, "FlushStop pushed");
         }
     }
 
-    static SINK_CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+    static SINK_CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         gst::DebugCategory::new(
             "ts-element-sink-test",
             gst::DebugColorFlags::empty(),
@@ -575,7 +576,7 @@ mod imp_sink {
         fn with_class(klass: &Self::Class) -> Self {
             ElementSinkTest {
                 sink_pad: PadSink::new(
-                    gst::Pad::from_template(&klass.pad_template("sink").unwrap(), Some("sink")),
+                    gst::Pad::from_template(&klass.pad_template("sink").unwrap()),
                     PadSinkTestHandler,
                 ),
                 flushing: AtomicBool::new(true),
@@ -586,7 +587,7 @@ mod imp_sink {
 
     impl ObjectImpl for ElementSinkTest {
         fn properties() -> &'static [glib::ParamSpec] {
-            static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+            static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
                 vec![glib::ParamSpecBoxed::builder::<ItemSender>("sender")
                     .nick("Sender")
                     .blurb("Channel sender to forward the incoming items to")
@@ -624,20 +625,21 @@ mod imp_sink {
 
     impl ElementImpl for ElementSinkTest {
         fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-            static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
-                gst::subclass::ElementMetadata::new(
-                    "Thread-sharing Test Sink Element",
-                    "Generic",
-                    "Sink Element for Pad Test",
-                    "François Laignel <fengalin@free.fr>",
-                )
-            });
+            static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> =
+                LazyLock::new(|| {
+                    gst::subclass::ElementMetadata::new(
+                        "Thread-sharing Test Sink Element",
+                        "Generic",
+                        "Sink Element for Pad Test",
+                        "François Laignel <fengalin@free.fr>",
+                    )
+                });
 
             Some(&*ELEMENT_METADATA)
         }
 
         fn pad_templates() -> &'static [gst::PadTemplate] {
-            static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+            static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
                 let caps = gst::Caps::new_any();
                 let sink_pad_template = gst::PadTemplate::new(
                     "sink",
@@ -657,7 +659,7 @@ mod imp_sink {
             &self,
             transition: gst::StateChange,
         ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-            gst::log!(SINK_CAT, imp: self, "Changing state {:?}", transition);
+            gst::log!(SINK_CAT, imp = self, "Changing state {:?}", transition);
 
             if let gst::StateChange::PausedToReady = transition {
                 self.stop();
@@ -694,7 +696,7 @@ fn setup(
 
     // Src
     let src_element = glib::Object::new::<ElementSrcTest>();
-    src_element.set_property("context", &context_name);
+    src_element.set_property("context", context_name);
     pipeline.add(&src_element).unwrap();
 
     let mut last_element = src_element.clone().upcast::<gst::Element>();
@@ -713,9 +715,10 @@ fn setup(
 
     // Sink
     let (sender, receiver) = mpsc::channel::<Item>(10);
-    let sink_element = glib::Object::builder::<ElementSinkTest>()
+    let sink_element = gst::Object::builder::<ElementSinkTest>()
         .property("sender", ItemSender { sender })
-        .build();
+        .build()
+        .unwrap();
     pipeline.add(&sink_element).unwrap();
     last_element.link(&sink_element).unwrap();
 

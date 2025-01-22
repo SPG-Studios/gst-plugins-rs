@@ -16,11 +16,11 @@ use std::io;
 use std::mem;
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use hyphenation::{Load, Standard};
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "textwrap",
         gst::DebugColorFlags::empty(),
@@ -97,7 +97,7 @@ impl TextWrap {
         if let Some(dictionary) = &settings.dictionary {
             let dict_file = match File::open(dictionary) {
                 Err(err) => {
-                    gst::error!(CAT, imp: self, "Failed to open dictionary file: {}", err);
+                    gst::error!(CAT, imp = self, "Failed to open dictionary file: {}", err);
                     return;
                 }
                 Ok(dict_file) => dict_file,
@@ -106,7 +106,12 @@ impl TextWrap {
             let mut reader = io::BufReader::new(dict_file);
             let standard = match Standard::any_from_reader(&mut reader) {
                 Err(err) => {
-                    gst::error!(CAT, imp: self, "Failed to load standard from file: {}", err);
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Failed to load standard from file: {}",
+                        err
+                    );
                     return;
                 }
                 Ok(standard) => standard,
@@ -120,6 +125,43 @@ impl TextWrap {
         state.options = Some(options);
     }
 
+    fn try_drain(
+        &self,
+        state: &mut State,
+        pts: gst::ClockTime,
+        accumulate_time: gst::ClockTime,
+        bufferlist: &mut gst::BufferList,
+    ) {
+        let add_buffer = state
+            .start_ts
+            .opt_add(accumulate_time)
+            .opt_le(pts)
+            .unwrap_or(false);
+
+        if add_buffer {
+            let drained = mem::take(&mut state.current_text);
+            let duration = state.end_ts.opt_checked_sub(state.start_ts).ok().flatten();
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Outputting contents {}, ts: {}, duration: {}",
+                drained,
+                state.start_ts.display(),
+                duration.display(),
+            );
+            let mut buf = gst::Buffer::from_mut_slice(drained.into_bytes());
+            {
+                let buf_mut = buf.get_mut().unwrap();
+                buf_mut.set_pts(state.start_ts);
+                buf_mut.set_duration(duration);
+            }
+            bufferlist.get_mut().unwrap().add(buf);
+
+            state.start_ts = None;
+            state.end_ts = None;
+        }
+    }
+
     fn sink_chain(
         &self,
         _pad: &gst::Pad,
@@ -128,25 +170,31 @@ impl TextWrap {
         self.update_wrapper();
 
         let mut pts = buffer.pts().ok_or_else(|| {
-            gst::error!(CAT, imp: self, "Need timestamped buffers");
+            gst::error!(CAT, imp = self, "Need timestamped buffers");
             gst::FlowError::Error
         })?;
 
         let duration = buffer.duration().ok_or_else(|| {
-            gst::error!(CAT, imp: self, "Need buffers with duration");
+            gst::error!(CAT, imp = self, "Need buffers with duration");
             gst::FlowError::Error
         })?;
 
         let data = buffer.map_readable().map_err(|_| {
-            gst::error!(CAT, imp: self, "Can't map buffer readable");
+            gst::error!(CAT, imp = self, "Can't map buffer readable");
             gst::FlowError::Error
         })?;
 
         let data = std::str::from_utf8(&data).map_err(|err| {
-            gst::error!(CAT, imp: self, "Can't decode utf8: {}", err);
+            gst::error!(CAT, imp = self, "Can't decode utf8: {}", err);
 
             gst::FlowError::Error
         })?;
+
+        if data.is_empty() {
+            gst::trace!(CAT, imp = self, "processing gap {buffer:?}");
+        } else {
+            gst::debug!(CAT, imp = self, "processing {data} in {buffer:?}");
+        }
 
         let accumulate_time = self.settings.lock().unwrap().accumulate_time;
         let mut state = self.state.lock().unwrap();
@@ -155,6 +203,8 @@ impl TextWrap {
             let mut bufferlist = gst::BufferList::new();
             let n_lines = std::cmp::max(self.settings.lock().unwrap().lines, 1);
 
+            self.try_drain(&mut state, pts, accumulate_time, &mut bufferlist);
+
             let add_buffer = state
                 .start_ts
                 .opt_add(accumulate_time)
@@ -162,13 +212,21 @@ impl TextWrap {
                 .unwrap_or(false);
 
             if add_buffer {
-                let mut buf =
-                    gst::Buffer::from_mut_slice(mem::take(&mut state.current_text).into_bytes());
+                let drained = mem::take(&mut state.current_text);
+                let duration = state.end_ts.opt_checked_sub(state.start_ts).ok().flatten();
+                gst::info!(
+                    CAT,
+                    imp = self,
+                    "Outputting contents {}, ts: {}, duration: {}",
+                    drained,
+                    state.start_ts.display(),
+                    duration.display(),
+                );
+                let mut buf = gst::Buffer::from_mut_slice(drained.into_bytes());
                 {
                     let buf_mut = buf.get_mut().unwrap();
                     buf_mut.set_pts(state.start_ts);
-                    buf_mut
-                        .set_duration(state.end_ts.opt_checked_sub(state.start_ts).ok().flatten());
+                    buf_mut.set_duration(duration);
                 }
                 bufferlist.get_mut().unwrap().add(buf);
 
@@ -180,12 +238,12 @@ impl TextWrap {
             let duration_per_word = (num_words != 0).then(|| duration / num_words);
 
             if state.start_ts.is_none() {
-                state.start_ts = buffer.pts();
+                state.start_ts = Some(pts);
             }
 
-            state.end_ts = buffer.pts();
+            state.end_ts = Some(pts);
 
-            let words = data.split_whitespace();
+            let words = data.split_ascii_whitespace();
             let mut current_text = state.current_text.to_string();
 
             for word in words {
@@ -219,7 +277,7 @@ impl TextWrap {
                             .join("\n");
                         gst::info!(
                             CAT,
-                            imp: self,
+                            imp = self,
                             "Outputting contents {}, ts: {}, duration: {}",
                             contents.to_string(),
                             state.start_ts.display(),
@@ -241,6 +299,11 @@ impl TextWrap {
             }
 
             state.current_text = current_text;
+            state.end_ts = Some(pts + duration);
+
+            if let Some(pts) = state.end_ts {
+                self.try_drain(&mut state, pts, accumulate_time, &mut bufferlist);
+            }
 
             if state.current_text.is_empty() {
                 state.start_ts = None;
@@ -264,6 +327,8 @@ impl TextWrap {
                     .expect("We should have a wrapper by now");
                 textwrap::fill(data, options)
             };
+
+            gst::log!(CAT, imp = self, "fill result: {data}");
 
             // If the lines property was set, we want to split the result into buffers
             // of at most N lines. We compute the duration for each of those based on
@@ -313,15 +378,32 @@ impl TextWrap {
     }
 
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         use gst::EventView;
 
         match event.view() {
-            EventView::Gap(_) => {
+            EventView::Gap(gap) => {
                 let state = self.state.lock().unwrap();
                 /* We are currently accumulating text, no need to forward the gap */
                 if state.start_ts.is_some() {
+                    let (pts, duration) = gap.get();
+
+                    let mut gap_buffer = gst::Buffer::new();
+                    {
+                        let buf_mut = gap_buffer.get_mut().expect("reference should be exclusive");
+                        buf_mut.set_pts(pts);
+                        buf_mut.set_duration(duration);
+                    }
+
+                    drop(state);
+
+                    let res = self.sink_chain(pad, gap_buffer);
+
+                    if res != Ok(gst::FlowSuccess::Ok) {
+                        gst::warning!(CAT, "Failed to process gap: {:?}", res);
+                    }
+
                     true
                 } else {
                     gst::Pad::event_default(pad, Some(&*self.obj()), event)
@@ -366,7 +448,7 @@ impl TextWrap {
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
 
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
 
         match query.view_mut() {
             QueryViewMut::Latency(q) => {
@@ -379,7 +461,7 @@ impl TextWrap {
                     let our_latency: gst::ClockTime = self.settings.lock().unwrap().accumulate_time;
                     gst::info!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Reporting our latency {} + {}",
                         our_latency,
                         min
@@ -401,7 +483,7 @@ impl ObjectSubclass for TextWrap {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 TextWrap::catch_panic_pad_function(
                     parent,
@@ -420,7 +502,7 @@ impl ObjectSubclass for TextWrap {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .query_function(|pad, parent, query| {
                 TextWrap::catch_panic_pad_function(
                     parent,
@@ -445,8 +527,8 @@ impl ObjectSubclass for TextWrap {
 
 impl ObjectImpl for TextWrap {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> =
-            Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> =
+            LazyLock::new(|| {
                 vec![
                 glib::ParamSpecString::builder("dictionary")
                     .nick("Dictionary")
@@ -513,7 +595,7 @@ impl ObjectImpl for TextWrap {
                 if settings.accumulate_time != old_accumulate_time {
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Accumulate time changed: {}",
                         settings.accumulate_time.display(),
                     );
@@ -554,7 +636,7 @@ impl GstObjectImpl for TextWrap {}
 
 impl ElementImpl for TextWrap {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Text Wrapper",
                 "Text/Filter",
@@ -567,7 +649,7 @@ impl ElementImpl for TextWrap {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("text/x-raw")
                 .field("format", "utf8")
                 .build();
@@ -597,7 +679,7 @@ impl ElementImpl for TextWrap {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::info!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::info!(CAT, imp = self, "Changing state {:?}", transition);
 
         if let gst::StateChange::PausedToReady = transition {
             let mut state = self.state.lock().unwrap();

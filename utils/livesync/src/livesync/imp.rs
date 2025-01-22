@@ -12,14 +12,14 @@ use gst::{
     prelude::*,
     subclass::prelude::*,
 };
-use once_cell::sync::Lazy;
 use parking_lot::{Condvar, Mutex, MutexGuard};
+use std::sync::LazyLock;
 use std::{collections::VecDeque, sync::mpsc};
 
 /// Offset for the segment in single-segment mode, to handle negative DTS
 const SEGMENT_OFFSET: gst::ClockTime = gst::ClockTime::from_seconds(60 * 60 * 1000);
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "livesync",
         gst::DebugColorFlags::empty(),
@@ -31,9 +31,19 @@ fn audio_info_from_caps(
     caps: &gst::CapsRef,
 ) -> Result<Option<gst_audio::AudioInfo>, glib::BoolError> {
     caps.structure(0)
-        .map_or(false, |s| s.has_name("audio/x-raw"))
+        .is_some_and(|s| s.has_name("audio/x-raw"))
         .then(|| gst_audio::AudioInfo::from_caps(caps))
         .transpose()
+}
+
+fn duration_from_caps(caps: &gst::CapsRef) -> Option<gst::ClockTime> {
+    caps.structure(0)
+        .filter(|s| s.name().starts_with("video/") || s.name().starts_with("image/"))
+        .and_then(|s| s.get::<gst::Fraction>("framerate").ok())
+        .filter(|framerate| framerate.denom() > 0 && framerate.numer() > 0)
+        .and_then(|framerate| {
+            gst::ClockTime::SECOND.mul_div_round(framerate.denom() as u64, framerate.numer() as u64)
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +55,7 @@ enum BufferLateness {
 
 #[derive(Debug)]
 enum Item {
-    Buffer(gst::Buffer, BufferLateness),
+    Buffer(gst::Buffer, Option<Timestamps>, BufferLateness),
     Event(gst::Event),
     // SAFETY: Item needs to wait until the query and the receiver has returned
     Query(std::ptr::NonNull<gst::QueryRef>, mpsc::SyncSender<bool>),
@@ -79,11 +89,11 @@ struct State {
     /// See `PROP_SINGLE_SEGMENT`
     single_segment: bool,
 
+    /// See `PROP_SYNC`
+    sync: bool,
+
     /// Latency reported by upstream
     upstream_latency: Option<gst::ClockTime>,
-
-    /// Duration we assume for buffers without one
-    fallback_duration: gst::ClockTime,
 
     /// Whether we're in PLAYING state
     playing: bool,
@@ -118,14 +128,20 @@ struct State {
     /// Audio format of our srcpad
     out_audio_info: Option<gst_audio::AudioInfo>,
 
+    /// Duration from caps on our sinkpad
+    in_duration: Option<gst::ClockTime>,
+
+    /// Duration from caps on our srcpad
+    out_duration: Option<gst::ClockTime>,
+
     /// Queue between sinkpad and srcpad
     queue: VecDeque<Item>,
 
-    /// Whether our queue currently holds a buffer. We only allow one!
-    buffer_queued: bool,
-
     /// Current buffer of our srcpad
     out_buffer: Option<gst::Buffer>,
+
+    /// Whether our last output buffer was a duplicate
+    out_buffer_duplicate: bool,
 
     /// Running timestamp of our sinkpad
     in_timestamp: Option<Timestamps>,
@@ -149,6 +165,7 @@ struct State {
 const PROP_LATENCY: &str = "latency";
 const PROP_LATE_THRESHOLD: &str = "late-threshold";
 const PROP_SINGLE_SEGMENT: &str = "single-segment";
+const PROP_SYNC: &str = "sync";
 
 const PROP_IN: &str = "in";
 const PROP_DROP: &str = "drop";
@@ -156,7 +173,9 @@ const PROP_OUT: &str = "out";
 const PROP_DUPLICATE: &str = "duplicate";
 
 const DEFAULT_LATENCY: gst::ClockTime = gst::ClockTime::ZERO;
+const MINIMUM_DURATION: gst::ClockTime = gst::ClockTime::from_mseconds(8);
 const DEFAULT_DURATION: gst::ClockTime = gst::ClockTime::from_mseconds(100);
+const MAXIMUM_DURATION: gst::ClockTime = gst::ClockTime::from_seconds(10);
 const MINIMUM_LATE_THRESHOLD: gst::ClockTime = gst::ClockTime::ZERO;
 const DEFAULT_LATE_THRESHOLD: Option<gst::ClockTime> = Some(gst::ClockTime::from_seconds(2));
 
@@ -166,8 +185,8 @@ impl Default for State {
             latency: DEFAULT_LATENCY,
             late_threshold: DEFAULT_LATE_THRESHOLD,
             single_segment: false,
+            sync: true,
             upstream_latency: None,
-            fallback_duration: DEFAULT_DURATION,
             playing: false,
             eos: false,
             srcresult: Err(gst::FlowError::Flushing),
@@ -177,11 +196,13 @@ impl Default for State {
             out_segment: None,
             in_caps: None,
             pending_caps: None,
+            in_duration: None,
+            out_duration: None,
             in_audio_info: None,
             out_audio_info: None,
             queue: VecDeque::with_capacity(32),
-            buffer_queued: false,
             out_buffer: None,
+            out_buffer_duplicate: false,
             in_timestamp: None,
             out_timestamp: None,
             num_in: 0,
@@ -199,72 +220,70 @@ impl ObjectSubclass for LiveSync {
     type ParentType = gst::Element;
 
     fn with_class(class: &Self::Class) -> Self {
-        let sinkpad =
-            gst::Pad::builder_with_template(&class.pad_template("sink").unwrap(), Some("sink"))
-                .activatemode_function(|pad, parent, mode, active| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || Err(gst::loggable_error!(CAT, "sink_activate_mode panicked")),
-                        |livesync| livesync.sink_activate_mode(pad, mode, active),
-                    )
-                })
-                .event_function(|pad, parent, event| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || false,
-                        |livesync| livesync.sink_event(pad, event),
-                    )
-                })
-                .query_function(|pad, parent, query| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || false,
-                        |livesync| livesync.sink_query(pad, query),
-                    )
-                })
-                .chain_function(|pad, parent, buffer| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || Err(gst::FlowError::Error),
-                        |livesync| livesync.sink_chain(pad, buffer),
-                    )
-                })
-                .flags(
-                    gst::PadFlags::PROXY_CAPS
-                        | gst::PadFlags::PROXY_ALLOCATION
-                        | gst::PadFlags::PROXY_SCHEDULING,
+        let sinkpad = gst::Pad::builder_from_template(&class.pad_template("sink").unwrap())
+            .activatemode_function(|pad, parent, mode, active| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::loggable_error!(CAT, "sink_activatemode panicked")),
+                    |livesync| livesync.sink_activatemode(pad, mode, active),
                 )
-                .build();
+            })
+            .event_function(|pad, parent, event| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |livesync| livesync.sink_event(pad, event),
+                )
+            })
+            .query_function(|pad, parent, query| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |livesync| livesync.sink_query(pad, query),
+                )
+            })
+            .chain_function(|pad, parent, buffer| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::FlowError::Error),
+                    |livesync| livesync.sink_chain(pad, buffer),
+                )
+            })
+            .flags(
+                gst::PadFlags::PROXY_CAPS
+                    | gst::PadFlags::PROXY_ALLOCATION
+                    | gst::PadFlags::PROXY_SCHEDULING,
+            )
+            .build();
 
-        let srcpad =
-            gst::Pad::builder_with_template(&class.pad_template("src").unwrap(), Some("src"))
-                .activatemode_function(|pad, parent, mode, active| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || Err(gst::loggable_error!(CAT, "src_activate_mode panicked")),
-                        |livesync| livesync.src_activate_mode(pad, mode, active),
-                    )
-                })
-                .event_function(|pad, parent, event| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || false,
-                        |livesync| livesync.src_event(pad, event),
-                    )
-                })
-                .query_function(|pad, parent, query| {
-                    Self::catch_panic_pad_function(
-                        parent,
-                        || false,
-                        |livesync| livesync.src_query(pad, query),
-                    )
-                })
-                .flags(
-                    gst::PadFlags::PROXY_CAPS
-                        | gst::PadFlags::PROXY_ALLOCATION
-                        | gst::PadFlags::PROXY_SCHEDULING,
+        let srcpad = gst::Pad::builder_from_template(&class.pad_template("src").unwrap())
+            .activatemode_function(|pad, parent, mode, active| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || Err(gst::loggable_error!(CAT, "src_activatemode panicked")),
+                    |livesync| livesync.src_activatemode(pad, mode, active),
                 )
-                .build();
+            })
+            .event_function(|pad, parent, event| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |livesync| livesync.src_event(pad, event),
+                )
+            })
+            .query_function(|pad, parent, query| {
+                Self::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |livesync| livesync.src_query(pad, query),
+                )
+            })
+            .flags(
+                gst::PadFlags::PROXY_CAPS
+                    | gst::PadFlags::PROXY_ALLOCATION
+                    | gst::PadFlags::PROXY_SCHEDULING,
+            )
+            .build();
 
         Self {
             state: Default::default(),
@@ -277,7 +296,7 @@ impl ObjectSubclass for LiveSync {
 
 impl ObjectImpl for LiveSync {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<[glib::ParamSpec; 7]> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<[glib::ParamSpec; 8]> = LazyLock::new(|| {
             [
                 glib::ParamSpecUInt64::builder(PROP_LATENCY)
                     .nick("Latency")
@@ -302,6 +321,11 @@ impl ObjectImpl for LiveSync {
                 glib::ParamSpecBoolean::builder(PROP_SINGLE_SEGMENT)
                     .nick("Single segment")
                     .blurb("Timestamp buffers and eat segments so as to appear as one segment")
+                    .mutable_ready()
+                    .build(),
+                glib::ParamSpecBoolean::builder(PROP_SYNC)
+                    .nick("Sync")
+                    .blurb("Synchronize buffers to the clock")
                     .mutable_ready()
                     .build(),
                 glib::ParamSpecUInt64::builder(PROP_IN)
@@ -344,7 +368,6 @@ impl ObjectImpl for LiveSync {
         match pspec.name() {
             PROP_LATENCY => {
                 state.latency = value.get().unwrap();
-                state.update_fallback_duration();
                 let _ = self.obj().post_message(gst::message::Latency::new());
             }
 
@@ -354,6 +377,10 @@ impl ObjectImpl for LiveSync {
 
             PROP_SINGLE_SEGMENT => {
                 state.single_segment = value.get().unwrap();
+            }
+
+            PROP_SYNC => {
+                state.sync = value.get().unwrap();
             }
 
             _ => unimplemented!(),
@@ -366,6 +393,7 @@ impl ObjectImpl for LiveSync {
             PROP_LATENCY => state.latency.to_value(),
             PROP_LATE_THRESHOLD => state.late_threshold.to_value(),
             PROP_SINGLE_SEGMENT => state.single_segment.to_value(),
+            PROP_SYNC => state.sync.to_value(),
             PROP_IN => state.num_in.to_value(),
             PROP_DROP => state.num_drop.to_value(),
             PROP_OUT => state.num_out.to_value(),
@@ -379,7 +407,7 @@ impl GstObjectImpl for LiveSync {}
 
 impl ElementImpl for LiveSync {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Live Synchronizer",
                 "Filter",
@@ -392,7 +420,7 @@ impl ElementImpl for LiveSync {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<[gst::PadTemplate; 2]> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<[gst::PadTemplate; 2]> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
 
             [
@@ -420,7 +448,7 @@ impl ElementImpl for LiveSync {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         if transition == gst::StateChange::PausedToPlaying {
             let mut state = self.state.lock();
@@ -430,9 +458,21 @@ impl ElementImpl for LiveSync {
 
         let success = self.parent_change_state(transition)?;
 
-        if transition == gst::StateChange::PlayingToPaused {
-            let mut state = self.state.lock();
-            state.playing = false;
+        match transition {
+            gst::StateChange::PlayingToPaused => {
+                let mut state = self.state.lock();
+                state.playing = false;
+            }
+
+            gst::StateChange::PausedToReady => {
+                let mut state = self.state.lock();
+                state.num_in = 0;
+                state.num_drop = 0;
+                state.num_out = 0;
+                state.num_duplicate = 0;
+            }
+
+            _ => {}
         }
 
         match (transition, success) {
@@ -474,30 +514,35 @@ impl State {
         })
     }
 
-    fn update_fallback_duration(&mut self) {
-        self.fallback_duration = self
-            // First, try 1/framerate from the caps
-            .in_caps
-            .as_ref()
-            .and_then(|c| c.structure(0))
-            .filter(|s| s.name().starts_with("video/"))
-            .and_then(|s| s.get::<gst::Fraction>("framerate").ok())
-            .and_then(|framerate| {
-                gst::ClockTime::SECOND
-                    .mul_div_round(framerate.denom() as u64, framerate.numer() as u64)
+    fn pending_events(&self) -> bool {
+        self.pending_caps.is_some() || self.pending_segment.is_some()
+    }
+
+    fn queue_filled(&self) -> bool {
+        let first_ts = self.queue.iter().find_map(|item| match item {
+            Item::Buffer(_, Some(Timestamps { start, .. }), _) => Some(*start),
+            _ => None,
+        });
+        let Some(first_ts) = first_ts else {
+            return false;
+        };
+
+        let last_ts = self
+            .queue
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                Item::Buffer(_, Some(Timestamps { start, .. }), _) => Some(*start),
+                _ => None,
             })
-            .filter(|&dur| dur > 8.mseconds() && dur < 10.seconds())
-            // Otherwise, half the configured latency
-            .or_else(|| Some(self.latency / 2))
-            // In any case, don't allow a zero duration
-            .filter(|&dur| dur > gst::ClockTime::ZERO)
-            // Safe default
-            .unwrap_or(DEFAULT_DURATION);
+            .unwrap();
+
+        last_ts.saturating_sub(first_ts) > self.latency
     }
 }
 
 impl LiveSync {
-    fn sink_activate_mode(
+    fn sink_activatemode(
         &self,
         pad: &gst::Pad,
         mode: gst::PadMode,
@@ -507,43 +552,18 @@ impl LiveSync {
             return Err(gst::loggable_error!(CAT, "Wrong scheduling mode"));
         }
 
-        if active {
-            let mut state = self.state.lock();
-            state.srcresult = Ok(gst::FlowSuccess::Ok);
-            state.eos = false;
-            state.in_timestamp = None;
-            state.num_in = 0;
-            state.num_drop = 0;
-            state.in_segment = None;
-        } else {
-            {
-                let mut state = self.state.lock();
-                state.srcresult = Err(gst::FlowError::Flushing);
-                if let Some(clock_id) = state.clock_id.take() {
-                    clock_id.unschedule();
-                }
-                state.pending_caps = None;
-                state.out_audio_info = None;
-                state.out_buffer = None;
-                self.cond.notify_all();
-            }
+        if !active {
+            self.set_flushing(&mut self.state.lock());
 
             let lock = pad.stream_lock();
-            {
-                let mut state = self.state.lock();
-                state.in_caps = None;
-                state.in_audio_info = None;
-                state.queue.clear();
-                state.buffer_queued = false;
-                state.update_fallback_duration();
-            }
+            self.sink_reset(&mut self.state.lock());
             drop(lock);
         }
 
         Ok(())
     }
 
-    fn src_activate_mode(
+    fn src_activatemode(
         &self,
         pad: &gst::Pad,
         mode: gst::PadMode,
@@ -554,37 +574,49 @@ impl LiveSync {
         }
 
         if active {
-            let ret;
-
-            {
-                let mut state = self.state.lock();
-
-                state.srcresult = Ok(gst::FlowSuccess::Ok);
-                state.pending_segment = None;
-                state.out_segment = None;
-                state.out_timestamp = None;
-                state.num_out = 0;
-                state.num_duplicate = 0;
-
-                ret = self.start_src_task().map_err(Into::into);
-            }
-
-            ret
+            self.start_src_task(&mut self.state.lock())
+                .map_err(|e| gst::LoggableError::new(*CAT, e))?;
         } else {
-            {
-                let mut state = self.state.lock();
-                state.srcresult = Err(gst::FlowError::Flushing);
-                if let Some(clock_id) = state.clock_id.take() {
-                    clock_id.unschedule();
-                }
-                state.pending_caps = None;
-                state.out_audio_info = None;
-                state.out_buffer = None;
-                self.cond.notify_all();
-            }
+            let mut state = self.state.lock();
+            self.set_flushing(&mut state);
+            self.src_reset(&mut state);
+            drop(state);
 
-            pad.stop_task().map_err(Into::into)
+            pad.stop_task()?;
         }
+
+        Ok(())
+    }
+
+    fn set_flushing(&self, state: &mut State) {
+        state.srcresult = Err(gst::FlowError::Flushing);
+        if let Some(clock_id) = state.clock_id.take() {
+            clock_id.unschedule();
+        }
+
+        // Ensure we drop any query response sender to unblock the sinkpad
+        state.queue.clear();
+        self.cond.notify_all();
+    }
+
+    fn sink_reset(&self, state: &mut State) {
+        state.eos = false;
+        state.in_segment = None;
+        state.in_caps = None;
+        state.in_audio_info = None;
+        state.in_duration = None;
+        state.in_timestamp = None;
+    }
+
+    fn src_reset(&self, state: &mut State) {
+        state.pending_segment = None;
+        state.out_segment = None;
+        state.pending_caps = None;
+        state.out_audio_info = None;
+        state.out_duration = None;
+        state.out_buffer = None;
+        state.out_buffer_duplicate = false;
+        state.out_timestamp = None;
     }
 
     fn sink_event(&self, pad: &gst::Pad, mut event: gst::Event) -> bool {
@@ -597,20 +629,20 @@ impl LiveSync {
             }
         }
 
+        let mut is_restart = false;
+        let mut is_eos = false;
+
         match event.view() {
             gst::EventView::FlushStart(_) => {
                 let ret = self.srcpad.push_event(event);
 
-                {
-                    let mut state = self.state.lock();
-                    state.srcresult = Err(gst::FlowError::Flushing);
-                    if let Some(clock_id) = state.clock_id.take() {
-                        clock_id.unschedule();
-                    }
-                    self.cond.notify_all();
+                self.set_flushing(&mut self.state.lock());
+
+                if let Err(e) = self.srcpad.pause_task() {
+                    gst::error!(CAT, imp = self, "Failed to pause task: {e}");
+                    return false;
                 }
 
-                let _ = self.srcpad.pause_task();
                 return ret;
             }
 
@@ -618,54 +650,32 @@ impl LiveSync {
                 let ret = self.srcpad.push_event(event);
 
                 let mut state = self.state.lock();
-                state.srcresult = Ok(gst::FlowSuccess::Ok);
-                state.eos = false;
-                state.in_segment = None;
-                state.pending_segment = None;
-                state.out_segment = None;
-                state.in_caps = None;
-                state.pending_caps = None;
-                state.in_audio_info = None;
-                state.out_audio_info = None;
-                state.queue.clear();
-                state.buffer_queued = false;
-                state.out_buffer = None;
-                state.update_fallback_duration();
+                self.sink_reset(&mut state);
+                self.src_reset(&mut state);
 
-                let _ = self.start_src_task();
+                if let Err(e) = self.start_src_task(&mut state) {
+                    gst::error!(CAT, imp = self, "Failed to start task: {e}");
+                    return false;
+                }
+
                 return ret;
             }
 
-            gst::EventView::StreamStart(_) => {
-                let mut state = self.state.lock();
-                state.srcresult = Ok(gst::FlowSuccess::Ok);
-                state.eos = false;
-            }
+            gst::EventView::StreamStart(_) => is_restart = true,
 
             gst::EventView::Segment(e) => {
-                let segment = match e.segment().downcast_ref() {
-                    Some(s) => s,
-                    None => {
-                        gst::error!(CAT, imp: self, "Got non-TIME segment");
-                        return false;
-                    }
+                is_restart = true;
+
+                let Some(segment) = e.segment().downcast_ref() else {
+                    gst::error!(CAT, imp = self, "Got non-TIME segment");
+                    return false;
                 };
 
                 let mut state = self.state.lock();
                 state.in_segment = Some(segment.clone());
             }
 
-            gst::EventView::Eos(_) => {
-                let mut state = self.state.lock();
-
-                if let Err(err) = state.srcresult {
-                    if matches!(err, gst::FlowError::Flushing | gst::FlowError::Eos) {
-                        self.flow_error(err);
-                    }
-                }
-
-                state.eos = true;
-            }
+            gst::EventView::Eos(_) => is_eos = true,
 
             gst::EventView::Caps(c) => {
                 let caps = c.caps_owned();
@@ -673,19 +683,21 @@ impl LiveSync {
                 let audio_info = match audio_info_from_caps(&caps) {
                     Ok(ai) => ai,
                     Err(e) => {
-                        gst::error!(CAT, imp: self, "Failed to parse audio caps: {}", e);
+                        gst::error!(CAT, imp = self, "Failed to parse audio caps: {}", e);
                         return false;
                     }
                 };
 
+                let duration = duration_from_caps(&caps);
+
                 let mut state = self.state.lock();
                 state.in_caps = Some(caps);
                 state.in_audio_info = audio_info;
-                state.update_fallback_duration();
+                state.in_duration = duration;
             }
 
             gst::EventView::Gap(_) => {
-                gst::debug!(CAT, imp: self, "Got gap event");
+                gst::debug!(CAT, imp = self, "Got gap event");
                 return true;
             }
 
@@ -697,11 +709,39 @@ impl LiveSync {
         }
 
         let mut state = self.state.lock();
-        if state.srcresult.is_err() {
+
+        if is_restart {
+            state.eos = false;
+
+            if state.srcresult == Err(gst::FlowError::Eos) {
+                if let Err(e) = self.start_src_task(&mut state) {
+                    gst::error!(CAT, imp = self, "Failed to start task: {e}");
+                    return false;
+                }
+            }
+        }
+
+        if state.eos {
+            gst::trace!(CAT, imp = self, "Refusing event, we are EOS: {:?}", event);
             return false;
         }
 
-        gst::trace!(CAT, imp: self, "Queueing {:?}", event);
+        if is_eos {
+            state.eos = true;
+        }
+
+        if let Err(err) = state.srcresult {
+            // Following GstQueue's behavior:
+            // > For EOS events, that are not followed by data flow, we still
+            // > return FALSE here though and report an error.
+            if is_eos && !matches!(err, gst::FlowError::Flushing | gst::FlowError::Eos) {
+                self.flow_error(err);
+            }
+
+            return false;
+        }
+
+        gst::trace!(CAT, imp = self, "Queueing {:?}", event);
         state.queue.push_back(Item::Event(event));
         self.cond.notify_all();
 
@@ -723,10 +763,12 @@ impl LiveSync {
                 {
                     let mut state = self.state.lock();
                     if state.srcresult == Err(gst::FlowError::NotLinked) {
-                        state.srcresult = Ok(gst::FlowSuccess::Ok);
-                        let _ = self.start_src_task();
+                        if let Err(e) = self.start_src_task(&mut state) {
+                            gst::error!(CAT, imp = self, "Failed to start task: {e}");
+                        }
                     }
                 }
+
                 self.sinkpad.push_event(event)
             }
 
@@ -743,13 +785,14 @@ impl LiveSync {
                 return false;
             }
 
-            gst::trace!(CAT, imp: self, "Queueing {:?}", query);
+            gst::trace!(CAT, imp = self, "Queueing {:?}", query);
             state
                 .queue
                 .push_back(Item::Query(std::ptr::NonNull::from(query), sender));
             self.cond.notify_all();
             drop(state);
 
+            // If the sender gets dropped, we will also unblock
             receiver.recv().unwrap_or(false)
         } else {
             gst::Pad::query_default(pad, Some(&*self.obj()), query)
@@ -771,8 +814,27 @@ impl LiveSync {
                 let mut state = self.state.lock();
                 let latency = state.latency;
 
-                let (_live, min, max) = q.result();
+                let (live, min, max) = q.result();
+
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Upstream latency query response: live {} min {} max {}",
+                    live,
+                    min,
+                    max.display()
+                );
+
                 q.set(true, min + latency, max.map(|max| max + latency));
+
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Reporting latency: live {} min {} max {}",
+                    live,
+                    min + latency,
+                    max.map(|max| max + latency).display()
+                );
 
                 state.upstream_latency = Some(min);
                 true
@@ -787,19 +849,24 @@ impl LiveSync {
         _pad: &gst::Pad,
         mut buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::trace!(CAT, imp: self, "Incoming {:?}", buffer);
+        gst::trace!(CAT, imp = self, "Incoming {:?}", buffer);
 
         let mut state = self.state.lock();
 
+        if state.eos {
+            gst::debug!(CAT, imp = self, "Refusing buffer, we are EOS");
+            return Err(gst::FlowError::Eos);
+        }
+
         if state.upstream_latency.is_none() {
-            gst::debug!(CAT, imp: self, "Have no upstream latency yet, querying");
+            gst::debug!(CAT, imp = self, "Have no upstream latency yet, querying");
             let mut q = gst::query::Latency::new();
             if MutexGuard::unlocked(&mut state, || self.sinkpad.peer_query(&mut q)) {
                 let (live, min, max) = q.result();
 
                 gst::debug!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Latency query response: live {} min {} max {}",
                     live,
                     min,
@@ -810,13 +877,14 @@ impl LiveSync {
             } else {
                 gst::warning!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Can't query upstream latency -- assuming zero"
                 );
+                state.upstream_latency = Some(gst::ClockTime::ZERO);
             }
         }
 
-        while state.srcresult.is_ok() && state.buffer_queued {
+        while state.srcresult.is_ok() && state.queue_filled() {
             self.cond.wait(&mut state);
         }
         state.srcresult?;
@@ -824,45 +892,70 @@ impl LiveSync {
         let buf_mut = buffer.make_mut();
 
         if buf_mut.pts().is_none() {
-            gst::warning!(CAT, imp: self, "Incoming buffer has no timestamps");
+            gst::warning!(CAT, imp = self, "Incoming buffer has no timestamps");
         }
 
         if let Some(audio_info) = &state.in_audio_info {
-            let buf_duration = buf_mut.duration().unwrap_or_default();
-            if let Some(calc_duration) = audio_info
-                .convert::<Option<gst::ClockTime>>(Some(gst::format::Bytes::from_usize(
-                    buf_mut.size(),
-                )))
+            let Some(calc_duration) = audio_info
+                .convert::<Option<gst::ClockTime>>(gst::format::Bytes::from_usize(buf_mut.size()))
                 .flatten()
-            {
+            else {
+                gst::error!(
+                    CAT,
+                    imp = self,
+                    "Failed to calculate duration of {:?}",
+                    buf_mut,
+                );
+                return Err(gst::FlowError::Error);
+            };
+
+            if let Some(buf_duration) = buf_mut.duration() {
                 let diff = if buf_duration < calc_duration {
                     calc_duration - buf_duration
                 } else {
                     buf_duration - calc_duration
                 };
 
-                if diff.nseconds() > 1 {
+                let sample_duration = gst::ClockTime::SECOND
+                    .mul_div_round(1, audio_info.rate().into())
+                    .unwrap();
+
+                if diff > sample_duration {
                     gst::warning!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Correcting duration on audio buffer from {} to {}",
                         buf_duration,
                         calc_duration,
                     );
-                    buf_mut.set_duration(calc_duration);
                 }
             } else {
                 gst::debug!(
                     CAT,
-                    imp: self,
-                    "Failed to calculate duration of {:?}",
-                    buf_mut,
+                    imp = self,
+                    "Patching incoming buffer with duration {calc_duration}"
                 );
             }
+
+            buf_mut.set_duration(calc_duration);
+        } else if buf_mut.duration().is_none() {
+            let duration = state.in_duration.map_or(DEFAULT_DURATION, |dur| {
+                dur.clamp(MINIMUM_DURATION, MAXIMUM_DURATION)
+            });
+
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Patching incoming buffer with duration {duration}"
+            );
+            buf_mut.set_duration(duration);
         }
 
         // At this stage we should really really have a segment
-        let segment = state.in_segment.as_ref().ok_or(gst::FlowError::Error)?;
+        let segment = state.in_segment.as_ref().ok_or_else(|| {
+            gst::error!(CAT, imp = self, "Missing segment");
+            gst::FlowError::Error
+        })?;
 
         if state.single_segment {
             let dts = segment
@@ -883,94 +976,52 @@ impl LiveSync {
             buf_mut.set_pts(pts.map(|t| t + state.latency));
         }
 
-        if buf_mut.duration().is_none() {
-            gst::debug!(CAT, imp: self, "Incoming buffer without duration");
-            buf_mut.set_duration(Some(state.fallback_duration));
-        }
-
-        if state
-            .out_buffer
-            .as_ref()
-            .map_or(false, |b| b.flags().contains(gst::BufferFlags::GAP))
-        {
-            // We are done bridging a gap, so mark it as DISCONT instead
-            buf_mut.unset_flags(gst::BufferFlags::GAP);
-            buf_mut.set_flags(gst::BufferFlags::DISCONT);
-        }
-
-        let mut timestamp = state.ts_range(buf_mut, segment);
+        let timestamp = state.ts_range(buf_mut, segment);
         let lateness = self.buffer_is_backwards(&state, timestamp);
-        match lateness {
-            BufferLateness::OnTime => {}
 
-            BufferLateness::LateUnderThreshold => {
-                gst::debug!(CAT, imp: self, "Discarding late {:?}", buf_mut);
-                state.num_drop += 1;
-                return Ok(gst::FlowSuccess::Ok);
-            }
-
-            BufferLateness::LateOverThreshold => {
-                gst::debug!(CAT, imp: self, "Accepting late {:?}", buf_mut);
-
-                let prev = state.out_buffer.as_ref().unwrap();
-                let prev_duration = prev.duration().unwrap();
-
-                if let Some(audio_info) = &state.in_audio_info {
-                    let mut map_info = buf_mut.map_writable().map_err(|e| {
-                        gst::error!(CAT, imp: self, "Failed to map buffer: {}", e);
-                        gst::FlowError::Error
-                    })?;
-
-                    audio_info
-                        .format_info()
-                        .fill_silence(map_info.as_mut_slice());
-                } else {
-                    buf_mut.set_duration(Some(state.fallback_duration));
-                }
-
-                buf_mut.set_dts(prev.dts().map(|t| t + prev_duration));
-                buf_mut.set_pts(prev.pts().map(|t| t + prev_duration));
-                buf_mut.set_flags(gst::BufferFlags::GAP);
-
-                timestamp = state.ts_range(buf_mut, state.out_segment.as_ref().unwrap());
-            }
+        if lateness == BufferLateness::LateUnderThreshold {
+            gst::debug!(CAT, imp = self, "Discarding late {:?}", buf_mut);
+            state.num_drop += 1;
+            return Ok(gst::FlowSuccess::Ok);
         }
 
-        gst::trace!(CAT, imp: self, "Queueing {:?} ({:?})", buffer, lateness);
-        state.queue.push_back(Item::Buffer(buffer, lateness));
-        state.buffer_queued = true;
+        gst::trace!(CAT, imp = self, "Queueing {:?} ({:?})", buffer, lateness);
+        state
+            .queue
+            .push_back(Item::Buffer(buffer, timestamp, lateness));
         state.in_timestamp = timestamp;
-        state.num_in += 1;
         self.cond.notify_all();
+
+        // If we're not strictly syncing to the clock but output buffers as soon as they arrive
+        // then also wake up the source pad task now in case it's waiting on the clock.
+        if !state.sync {
+            if let Some(clock_id) = state.clock_id.take() {
+                clock_id.unschedule();
+            }
+        }
 
         Ok(gst::FlowSuccess::Ok)
     }
 
-    fn start_src_task(&self) -> Result<(), glib::BoolError> {
-        self.srcpad.start_task({
-            let pad = self.srcpad.downgrade();
-            move || {
-                let pad = pad.upgrade().unwrap();
-                let parent = pad.parent_element().unwrap();
-                let livesync = parent.downcast_ref::<super::LiveSync>().unwrap();
-                let ret = livesync.imp().src_loop(&pad);
+    fn start_src_task(&self, state: &mut State) -> Result<(), glib::BoolError> {
+        state.srcresult = Ok(gst::FlowSuccess::Ok);
 
-                if !ret {
-                    gst::log!(CAT, obj: &parent, "Loop stopping");
-                    let _ = pad.pause_task();
-                }
-            }
-        })
+        let imp = self.ref_counted();
+        let ret = self.srcpad.start_task(move || imp.src_loop());
+
+        if ret.is_err() {
+            state.srcresult = Err(gst::FlowError::Error);
+        }
+
+        ret
     }
 
-    fn src_loop(&self, pad: &gst::Pad) -> bool {
-        let mut err = match self.src_loop_inner() {
-            Ok(_) => return true,
-            Err(e) => e,
+    fn src_loop(&self) {
+        let Err(mut err) = self.src_loop_inner() else {
+            return;
         };
-        let eos;
 
-        {
+        let eos = {
             let mut state = self.state.lock();
 
             match state.srcresult {
@@ -980,18 +1031,22 @@ impl LiveSync {
                 // Communicate our flow return
                 Ok(_) => state.srcresult = Err(err),
             }
-            eos = state.eos;
             state.clock_id = None;
-
             self.cond.notify_all();
-        }
 
+            state.eos
+        };
+
+        // Following GstQueue's behavior:
+        // > let app know about us giving up if upstream is not expected to do so
+        // > EOS is already taken care of elsewhere
         if eos && !matches!(err, gst::FlowError::Flushing | gst::FlowError::Eos) {
             self.flow_error(err);
-            pad.push_event(gst::event::Eos::new());
+            self.srcpad.push_event(gst::event::Eos::new());
         }
 
-        false
+        gst::log!(CAT, imp = self, "Loop stopping");
+        let _ = self.srcpad.pause_task();
     }
 
     fn src_loop_inner(&self) -> Result<gst::FlowSuccess, gst::FlowError> {
@@ -1003,20 +1058,74 @@ impl LiveSync {
         }
         state.srcresult?;
 
+        // Synchronize to the clock if requested to do so, or when the queue is currently empty
+        // and we might have to introduce a gap buffer.
+        if let Some(out_timestamp) = (state.sync || state.queue.is_empty())
+            .then_some(state.out_timestamp)
+            .flatten()
+        {
+            let sync_ts = out_timestamp.end;
+
+            let element = self.obj();
+
+            let base_time = element.base_time().ok_or_else(|| {
+                gst::error!(CAT, imp = self, "Missing base time");
+                gst::FlowError::Flushing
+            })?;
+
+            let clock = element.clock().ok_or_else(|| {
+                gst::error!(CAT, imp = self, "Missing clock");
+                gst::FlowError::Flushing
+            })?;
+
+            let clock_id = clock.new_single_shot_id(base_time + sync_ts);
+            state.clock_id = Some(clock_id.clone());
+
+            gst::trace!(
+                CAT,
+                imp = self,
+                "Waiting for clock to reach {}",
+                clock_id.time(),
+            );
+
+            let (res, jitter) = MutexGuard::unlocked(&mut state, || clock_id.wait());
+            gst::trace!(
+                CAT,
+                imp = self,
+                "Clock returned {res:?} {}{}",
+                if jitter.is_negative() { "-" } else { "" },
+                gst::ClockTime::from_nseconds(jitter.unsigned_abs())
+            );
+
+            state.clock_id = None;
+            state.srcresult?;
+        }
+
         let in_item = state.queue.pop_front();
-        gst::trace!(CAT, imp: self, "Unqueueing {:?}", in_item);
+        gst::trace!(CAT, imp = self, "Unqueueing {:?}", in_item);
 
         let in_buffer = match in_item {
             None => None,
 
-            Some(Item::Buffer(buffer, lateness)) => {
-                if self.buffer_is_early(&state, state.in_timestamp) {
+            Some(Item::Buffer(buffer, timestamp, lateness)) => {
+                // Synchronize on the first buffer with timestamps to not output it too early
+                if let Some(Timestamps { start, .. }) =
+                    state.out_timestamp.is_none().then_some(timestamp).flatten()
+                {
+                    state.out_timestamp = Some(Timestamps { start, end: start });
+                    state
+                        .queue
+                        .push_front(Item::Buffer(buffer, timestamp, lateness));
+                    return Ok(gst::FlowSuccess::Ok);
+                } else if self.buffer_is_early(&state, timestamp) {
                     // Try this buffer again on the next iteration
-                    state.queue.push_front(Item::Buffer(buffer, lateness));
+                    state
+                        .queue
+                        .push_front(Item::Buffer(buffer, timestamp, lateness));
                     None
                 } else {
-                    state.buffer_queued = false;
-                    Some((buffer, lateness))
+                    self.cond.notify_all();
+                    Some((buffer, timestamp, lateness))
                 }
             }
 
@@ -1026,13 +1135,20 @@ impl LiveSync {
                 match event.view() {
                     gst::EventView::Segment(e) => {
                         let segment = e.segment().downcast_ref().unwrap();
+                        gst::debug!(CAT, imp = self, "pending {segment:?}");
                         state.pending_segment = Some(segment.clone());
                         push = false;
                     }
 
+                    gst::EventView::Eos(_) => {
+                        state.out_buffer = None;
+                        state.out_buffer_duplicate = false;
+                        state.out_timestamp = None;
+                        state.srcresult = Err(gst::FlowError::Eos);
+                    }
+
                     gst::EventView::Caps(e) => {
                         state.pending_caps = Some(e.caps_owned());
-                        state.update_fallback_duration();
                         push = false;
                     }
 
@@ -1061,57 +1177,52 @@ impl LiveSync {
             }
         };
 
-        let duplicate;
         let mut caps = None;
         let mut segment = None;
-        if let Some((buffer, lateness)) = in_buffer {
-            state.out_buffer = Some(buffer);
-            state.out_timestamp = state.in_timestamp;
 
-            caps = state.pending_caps.take();
-            segment = state.pending_segment.take();
+        match in_buffer {
+            Some((mut buffer, timestamp, BufferLateness::OnTime)) => {
+                state.num_in += 1;
 
-            duplicate = lateness != BufferLateness::OnTime;
-            self.cond.notify_all();
-        } else {
-            // Work around borrow checker
-            let State {
-                fallback_duration,
-                out_buffer: ref mut buffer,
-                out_audio_info: ref audio_info,
-                ..
-            } = *state;
-            gst::debug!(CAT, imp: self, "Repeating {:?}", buffer);
-
-            let buffer = buffer.as_mut().unwrap().make_mut();
-            let prev_duration = buffer.duration().unwrap();
-
-            if let Some(audio_info) = audio_info {
-                if !buffer.flags().contains(gst::BufferFlags::GAP) {
-                    let mut map_info = buffer.map_writable().map_err(|e| {
-                        gst::error!(CAT, imp: self, "Failed to map buffer: {}", e);
-                        gst::FlowError::Error
-                    })?;
-
-                    audio_info
-                        .format_info()
-                        .fill_silence(map_info.as_mut_slice());
+                if state.out_buffer.is_none() || state.out_buffer_duplicate {
+                    // We are just starting or done bridging a gap
+                    buffer.make_mut().set_flags(gst::BufferFlags::DISCONT);
                 }
-            } else {
-                buffer.set_duration(Some(fallback_duration));
+
+                state.out_buffer = Some(buffer);
+                state.out_buffer_duplicate = false;
+                state.out_timestamp = timestamp;
+
+                caps = state.pending_caps.take();
+                segment = state.pending_segment.take();
             }
 
-            buffer.set_dts(buffer.dts().map(|t| t + prev_duration));
-            buffer.set_pts(buffer.pts().map(|t| t + prev_duration));
-            buffer.set_flags(gst::BufferFlags::GAP);
-            buffer.unset_flags(gst::BufferFlags::DISCONT);
+            Some((buffer, _timestamp, BufferLateness::LateOverThreshold))
+                if !state.pending_events() =>
+            {
+                gst::debug!(CAT, imp = self, "Accepting late {:?}", buffer);
+                state.num_in += 1;
 
-            state.out_timestamp = state.ts_range(
-                state.out_buffer.as_ref().unwrap(),
-                state.out_segment.as_ref().unwrap(),
-            );
-            duplicate = true;
-        };
+                self.patch_output_buffer(&mut state, Some(buffer))?;
+            }
+
+            Some((buffer, _timestamp, BufferLateness::LateOverThreshold)) => {
+                // Cannot accept late-over-threshold buffers while we have pending events
+                gst::debug!(CAT, imp = self, "Discarding late {:?}", buffer);
+                state.num_drop += 1;
+
+                self.patch_output_buffer(&mut state, None)?;
+            }
+
+            None => {
+                self.patch_output_buffer(&mut state, None)?;
+            }
+
+            Some((_, _, BufferLateness::LateUnderThreshold)) => {
+                // Is discarded before queueing
+                unreachable!();
+            }
+        }
 
         let buffer = state.out_buffer.clone().unwrap();
         let sync_ts = state
@@ -1119,18 +1230,29 @@ impl LiveSync {
             .map_or(gst::ClockTime::ZERO, |t| t.start);
 
         if let Some(caps) = caps {
-            gst::debug!(CAT, imp: self, "Sending new caps: {}", caps);
+            gst::debug!(CAT, imp = self, "Sending new caps: {}", caps);
 
             let event = gst::event::Caps::new(&caps);
             MutexGuard::unlocked(&mut state, || self.srcpad.push_event(event));
             state.srcresult?;
 
             state.out_audio_info = audio_info_from_caps(&caps).unwrap();
+            state.out_duration = duration_from_caps(&caps);
         }
 
-        if let Some(segment) = segment {
+        if let Some(mut segment) = segment {
             if !state.single_segment {
-                gst::debug!(CAT, imp: self, "Forwarding segment: {:?}", segment);
+                if let Some(stop) = segment.stop() {
+                    gst::debug!(
+                        CAT,
+                        imp = self,
+                        "Removing stop {} from outgoing segment",
+                        stop
+                    );
+                    segment.set_stop(gst::ClockTime::NONE);
+                }
+
+                gst::debug!(CAT, imp = self, "Forwarding segment: {:?}", segment);
 
                 let event = gst::event::Segment::new(&segment);
                 MutexGuard::unlocked(&mut state, || self.srcpad.push_event(event));
@@ -1143,7 +1265,7 @@ impl LiveSync {
                 live_segment.set_time(sync_ts);
                 live_segment.set_position(sync_ts + SEGMENT_OFFSET);
 
-                gst::debug!(CAT, imp: self, "Sending new segment: {:?}", live_segment);
+                gst::debug!(CAT, imp = self, "Sending new segment: {:?}", live_segment);
 
                 let event = gst::event::Segment::new(&live_segment);
                 MutexGuard::unlocked(&mut state, || self.srcpad.push_event(event));
@@ -1153,60 +1275,21 @@ impl LiveSync {
             state.out_segment = Some(segment);
         }
 
-        {
-            let element = self.obj();
-
-            let base_time = element.base_time().ok_or_else(|| {
-                gst::error!(CAT, imp: self, "Missing base time");
-                gst::FlowError::Flushing
-            })?;
-
-            let clock = element.clock().ok_or_else(|| {
-                gst::error!(CAT, imp: self, "Missing clock");
-                gst::FlowError::Flushing
-            })?;
-
-            let clock_id = clock.new_single_shot_id(base_time + sync_ts);
-            state.clock_id = Some(clock_id.clone());
-
-            gst::trace!(
-                CAT,
-                imp: self,
-                "Waiting for clock to reach {}",
-                clock_id.time(),
-            );
-
-            let (res, _) = MutexGuard::unlocked(&mut state, || clock_id.wait());
-            gst::trace!(CAT, imp: self, "Clock returned {res:?}",);
-
-            if res == Err(gst::ClockError::Unscheduled) {
-                return Err(gst::FlowError::Flushing);
-            }
-
-            state.srcresult?;
-            state.clock_id = None;
-        }
-
         state.num_out += 1;
-        if duplicate {
-            state.num_duplicate += 1;
-        }
 
         drop(state);
 
-        gst::trace!(CAT, imp: self, "Pushing {buffer:?}");
+        gst::trace!(CAT, imp = self, "Pushing {buffer:?}");
         self.srcpad.push(buffer)
     }
 
     fn buffer_is_backwards(&self, state: &State, timestamp: Option<Timestamps>) -> BufferLateness {
-        let timestamp = match timestamp {
-            Some(t) => t,
-            None => return BufferLateness::OnTime,
+        let Some(timestamp) = timestamp else {
+            return BufferLateness::OnTime;
         };
 
-        let out_timestamp = match state.out_timestamp {
-            Some(t) => t,
-            None => return BufferLateness::OnTime,
+        let Some(out_timestamp) = state.out_timestamp else {
+            return BufferLateness::OnTime;
         };
 
         if timestamp.end > out_timestamp.end {
@@ -1215,7 +1298,7 @@ impl LiveSync {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Timestamp regresses: buffer ends at {}, expected {}",
             timestamp.end,
             out_timestamp.end,
@@ -1227,9 +1310,8 @@ impl LiveSync {
             None => return BufferLateness::LateUnderThreshold,
         };
 
-        let in_timestamp = match state.in_timestamp {
-            Some(t) => t,
-            None => return BufferLateness::LateUnderThreshold,
+        let Some(in_timestamp) = state.in_timestamp else {
+            return BufferLateness::LateUnderThreshold;
         };
 
         if timestamp.start > in_timestamp.end + late_threshold {
@@ -1240,28 +1322,34 @@ impl LiveSync {
     }
 
     fn buffer_is_early(&self, state: &State, timestamp: Option<Timestamps>) -> bool {
-        let timestamp = match timestamp {
-            Some(t) => t,
-            None => return false,
+        let Some(timestamp) = timestamp else {
+            return false;
         };
 
-        let out_timestamp = match state.out_timestamp {
-            Some(t) => t,
-            None => return false,
+        let Some(out_timestamp) = state.out_timestamp else {
+            return false;
         };
 
-        let slack = state
-            .out_buffer
-            .as_deref()
-            .map_or(gst::ClockTime::ZERO, |b| b.duration().unwrap());
+        // When out_timestamp is set, we also have an out_buffer unless it is the first buffer
+        if state.out_buffer.is_none() {
+            return false;
+        }
+
+        // Use the duration we would insert as a gap filler in patch_output_buffer()
+        let slack = state.out_duration.map_or(DEFAULT_DURATION, |dur| {
+            dur.clamp(MINIMUM_DURATION, MAXIMUM_DURATION)
+        });
 
         if timestamp.start < out_timestamp.end + slack {
             return false;
         }
 
+        // This buffer would start beyond another buffer duration after our
+        // last emitted buffer ended
+
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Timestamp is too early: buffer starts at {}, expected {}",
             timestamp.start,
             out_timestamp.end,
@@ -1282,5 +1370,93 @@ impl LiveSync {
             ["streaming task paused, reason {} ({:?})", err, err],
             details: details
         );
+    }
+
+    /// Patches the output buffer for repeating, setting out_buffer, out_buffer_duplicate and
+    /// out_timestamp
+    fn patch_output_buffer(
+        &self,
+        state: &mut State,
+        source: Option<gst::Buffer>,
+    ) -> Result<(), gst::FlowError> {
+        let out_buffer = state.out_buffer.as_mut().unwrap();
+        let mut duplicate = state.out_buffer_duplicate;
+
+        let duration = out_buffer.duration().unwrap();
+        let dts = out_buffer.dts().map(|t| t + duration);
+        let pts = out_buffer.pts().map(|t| t + duration);
+
+        if let Some(source) = source {
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Repeating {:?} using {:?}",
+                out_buffer,
+                source
+            );
+            *out_buffer = source;
+            duplicate = false;
+        } else {
+            gst::debug!(CAT, imp = self, "Repeating {:?}", out_buffer);
+        }
+
+        let buffer = out_buffer.make_mut();
+
+        if !duplicate {
+            let duration_is_valid =
+                (MINIMUM_DURATION..=MAXIMUM_DURATION).contains(&buffer.duration().unwrap());
+
+            if state.out_duration.is_some() || !duration_is_valid {
+                // Resize the buffer if caps gave us a duration
+                // or the current duration is unreasonable
+
+                let duration = state.out_duration.map_or(DEFAULT_DURATION, |dur| {
+                    dur.clamp(MINIMUM_DURATION, MAXIMUM_DURATION)
+                });
+
+                if let Some(audio_info) = &state.out_audio_info {
+                    let Some(size) = audio_info
+                        .convert::<Option<gst::format::Bytes>>(duration)
+                        .flatten()
+                        .and_then(|bytes| usize::try_from(bytes).ok())
+                    else {
+                        gst::error!(CAT, imp = self, "Failed to calculate size of repeat buffer");
+                        return Err(gst::FlowError::Error);
+                    };
+
+                    buffer.replace_all_memory(gst::Memory::with_size(size));
+                }
+
+                buffer.set_duration(duration);
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Patched output buffer duration to {duration}"
+                );
+            }
+
+            if let Some(audio_info) = &state.out_audio_info {
+                let mut map_info = buffer.map_writable().map_err(|e| {
+                    gst::error!(CAT, imp = self, "Failed to map buffer: {}", e);
+                    gst::FlowError::Error
+                })?;
+                audio_info
+                    .format_info()
+                    .fill_silence(map_info.as_mut_slice());
+            }
+        }
+
+        buffer.set_dts(dts);
+        buffer.set_pts(pts);
+        buffer.set_flags(gst::BufferFlags::GAP);
+        buffer.unset_flags(gst::BufferFlags::DISCONT);
+
+        state.out_buffer_duplicate = true;
+        state.out_timestamp = state.ts_range(
+            state.out_buffer.as_ref().unwrap(),
+            state.out_segment.as_ref().unwrap(),
+        );
+        state.num_duplicate += 1;
+        Ok(())
     }
 }

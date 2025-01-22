@@ -14,12 +14,12 @@ use gst_base::{
 };
 use gst_video::{subclass::prelude::*, VideoFormat};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 const DEFAULT_BORDER_RADIUS: u32 = 0;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "roundedcorners",
         gst::DebugColorFlags::empty(),
@@ -207,7 +207,7 @@ impl RoundedCorners {
                         let copy_flags = gst::BufferCopyFlags::FLAGS
                             | gst::BufferCopyFlags::TIMESTAMPS
                             | gst::BufferCopyFlags::MEMORY;
-                        let mut buf = buf.copy_region(copy_flags, 0, None).unwrap();
+                        let mut buf = buf.copy_region(copy_flags, ..).unwrap();
                         let mut_buf = buf.make_mut();
                         gst_video::VideoMeta::add_full(
                             mut_buf,
@@ -277,7 +277,7 @@ impl ObjectSubclass for RoundedCorners {
 
 impl ObjectImpl for RoundedCorners {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecUInt::builder("border-radius-px")
                 .nick("Border radius in pixels")
                 .blurb("Draw rounded corners with given border radius")
@@ -298,7 +298,7 @@ impl ObjectImpl for RoundedCorners {
                     settings.changed = true;
                     gst::info!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Changing border radius from {} to {}",
                         settings.border_radius_px,
                         border_radius
@@ -326,7 +326,7 @@ impl GstObjectImpl for RoundedCorners {}
 
 impl ElementImpl for RoundedCorners {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Rounded Corners",
                 "Filter/Effect/Converter/Video",
@@ -339,7 +339,7 @@ impl ElementImpl for RoundedCorners {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst_video::VideoCapsBuilder::new()
                 .format(VideoFormat::I420)
                 .build();
@@ -378,7 +378,7 @@ impl BaseTransformImpl for RoundedCorners {
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
         let _ = self.state.lock().unwrap().take();
 
-        gst::info!(CAT, imp: self, "Stopped");
+        gst::info!(CAT, imp = self, "Stopped");
 
         Ok(())
     }
@@ -414,13 +414,7 @@ impl BaseTransformImpl for RoundedCorners {
                             ]),
                         );
                     } else {
-                        s_output.set(
-                            "format",
-                            gst::List::new([
-                                VideoFormat::A420.to_str(),
-                                VideoFormat::I420.to_str(),
-                            ]),
-                        );
+                        s_output.set("format", VideoFormat::A420.to_str());
                     }
                     output_caps.append_structure(s_output);
                 }
@@ -431,7 +425,7 @@ impl BaseTransformImpl for RoundedCorners {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Transformed caps from {} to {} in direction {:?}",
             caps,
             other_caps,
@@ -455,7 +449,7 @@ impl BaseTransformImpl for RoundedCorners {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Configured for caps {} to {}",
             incaps,
             outcaps
@@ -496,7 +490,7 @@ impl BaseTransformImpl for RoundedCorners {
             settings.changed = false;
             gst::debug!(
                 CAT,
-                imp: self,
+                imp = self,
                 "Caps or border radius changed, generating alpha mask"
             );
             let state_guard = self.state.lock().unwrap();
@@ -536,7 +530,7 @@ impl BaseTransformImpl for RoundedCorners {
             InputBuffer::Writable(outbuf) => {
                 gst::log!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Received writable input buffer of size: {}",
                     outbuf.size()
                 );
@@ -548,7 +542,7 @@ impl BaseTransformImpl for RoundedCorners {
             InputBuffer::Readable(buf) => {
                 gst::log!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Received readable input buffer of size: {}",
                     buf.size()
                 );

@@ -3,17 +3,16 @@
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use once_cell::sync::OnceCell;
+use std::{
+    sync::{atomic, Mutex, OnceLock},
+    thread,
+};
 
-use std::sync::atomic;
-use std::sync::Mutex;
-use std::thread;
-
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use crate::ndi;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ndideviceprovider",
         gst::DebugColorFlags::empty(),
@@ -51,7 +50,7 @@ impl GstObjectImpl for DeviceProvider {}
 
 impl DeviceProviderImpl for DeviceProvider {
     fn metadata() -> Option<&'static gst::subclass::DeviceProviderMetadata> {
-        static METADATA: Lazy<gst::subclass::DeviceProviderMetadata> = Lazy::new(|| {
+        static METADATA: LazyLock<gst::subclass::DeviceProviderMetadata> = LazyLock::new(|| {
             gst::subclass::DeviceProviderMetadata::new("NewTek NDI Device Provider",
             "Source/Audio/Video/Network",
             "NewTek NDI Device Provider",
@@ -77,7 +76,7 @@ impl DeviceProviderImpl for DeviceProvider {
 
         let mut thread_guard = self.thread.lock().unwrap();
         if thread_guard.is_some() {
-            gst::log!(CAT, imp: self, "Device provider already started");
+            gst::log!(CAT, imp = self, "Device provider already started");
             return Ok(());
         }
 
@@ -87,20 +86,19 @@ impl DeviceProviderImpl for DeviceProvider {
         let mut first = true;
         *thread_guard = Some(thread::spawn(move || {
             {
-                let imp = match imp_weak.upgrade() {
-                    None => return,
-                    Some(imp) => imp,
+                let Some(imp) = imp_weak.upgrade() else {
+                    return;
                 };
 
                 let mut find_guard = imp.find.lock().unwrap();
                 if find_guard.is_some() {
-                    gst::log!(CAT, imp: imp, "Already started");
+                    gst::log!(CAT, imp = imp, "Already started");
                     return;
                 }
 
                 let find = match ndi::FindInstance::builder().build() {
                     None => {
-                        gst::error!(CAT, imp: imp, "Failed to create Find instance");
+                        gst::error!(CAT, imp = imp, "Failed to create Find instance");
                         return;
                     }
                     Some(find) => find,
@@ -109,9 +107,8 @@ impl DeviceProviderImpl for DeviceProvider {
             }
 
             loop {
-                let imp = match imp_weak.upgrade() {
-                    None => return,
-                    Some(imp) => imp,
+                let Some(imp) = imp_weak.upgrade() else {
+                    return;
                 };
 
                 if !imp.is_running.load(atomic::Ordering::SeqCst) {
@@ -143,7 +140,7 @@ impl DeviceProvider {
         };
 
         if !find.wait_for_sources(if first { 1000 } else { 5000 }) {
-            gst::trace!(CAT, imp: self, "No new sources found");
+            gst::trace!(CAT, imp = self, "No new sources found");
             return;
         }
 
@@ -160,7 +157,7 @@ impl DeviceProvider {
             let old_source = old_device_imp.source.get().unwrap();
 
             if !sources.contains(old_source) {
-                gst::log!(CAT, imp: self, "Source {:?} disappeared", old_source);
+                gst::log!(CAT, imp = self, "Source {:?} disappeared", old_source);
                 expired_devices.push(old_device.clone());
             } else {
                 // Otherwise remember that we had it before already and don't have to announce it
@@ -182,7 +179,7 @@ impl DeviceProvider {
 
         // Now go through all new devices and announce them
         for source in sources {
-            gst::log!(CAT, imp: self, "Source {:?} appeared", source);
+            gst::log!(CAT, imp = self, "Source {:?} appeared", source);
             let device = super::Device::new(&source);
             self.obj().device_add(&device);
             current_devices_guard.push(device);
@@ -192,7 +189,7 @@ impl DeviceProvider {
 
 #[derive(Debug)]
 pub struct Device {
-    source: OnceCell<ndi::Source<'static>>,
+    source: OnceLock<ndi::Source<'static>>,
 }
 
 #[glib::object_subclass]
@@ -203,7 +200,7 @@ impl ObjectSubclass for Device {
 
     fn new() -> Self {
         Self {
-            source: OnceCell::new(),
+            source: OnceLock::new(),
         }
     }
 }
@@ -215,11 +212,12 @@ impl GstObjectImpl for Device {}
 impl DeviceImpl for Device {
     fn create_element(&self, name: Option<&str>) -> Result<gst::Element, gst::LoggableError> {
         let source_info = self.source.get().unwrap();
-        let element = glib::Object::builder::<crate::ndisrc::NdiSrc>()
-            .property("name", name)
+        let element = gst::Object::builder::<crate::ndisrc::NdiSrc>()
+            .name_if_some(name)
             .property("ndi-name", source_info.ndi_name())
             .property("url-address", source_info.url_address())
             .build()
+            .unwrap()
             .upcast::<gst::Element>();
 
         Ok(element)
@@ -242,12 +240,13 @@ impl super::Device {
             .field("url-address", source.url_address())
             .build();
 
-        let device = glib::Object::builder::<super::Device>()
+        let device = gst::Object::builder::<super::Device>()
             .property("caps", caps)
             .property("display-name", display_name)
             .property("device-class", device_class)
             .property("properties", extra_properties)
-            .build();
+            .build()
+            .unwrap();
 
         let imp = device.imp();
         imp.source.set(source.to_owned()).unwrap();

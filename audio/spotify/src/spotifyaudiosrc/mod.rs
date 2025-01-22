@@ -29,7 +29,7 @@ impl Default for Bitrate {
     }
 }
 
-impl From<Bitrate> for librespot::playback::config::Bitrate {
+impl From<Bitrate> for librespot_playback::config::Bitrate {
     fn from(value: Bitrate) -> Self {
         match value {
             Bitrate::B96 => Self::Bitrate96,
@@ -50,7 +50,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "spotifyaudiosrc",
-        gst::Rank::Primary,
+        gst::Rank::PRIMARY,
         SpotifyAudioSrc::static_type(),
     )
 }

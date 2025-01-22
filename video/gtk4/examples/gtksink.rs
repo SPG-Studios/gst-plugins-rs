@@ -6,14 +6,7 @@ use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
 
 fn create_ui(app: &gtk::Application) {
-    let window = gtk::ApplicationWindow::new(app);
-    window.set_default_size(640, 480);
-
-    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let picture = gtk::Picture::new();
-    let label = gtk::Label::new(Some("Position: 00:00:00"));
-
-    let pipeline = gst::Pipeline::new(None);
+    let pipeline = gst::Pipeline::new();
 
     let overlay = gst::ElementFactory::make("clockoverlay")
         .property("font-desc", "Monospace 42")
@@ -48,11 +41,8 @@ fn create_ui(app: &gtk::Application) {
         sink.add(&gtksink).unwrap();
         convert.link(&gtksink).unwrap();
 
-        sink.add_pad(
-            &gst::GhostPad::with_target(Some("sink"), &convert.static_pad("sink").unwrap())
-                .unwrap(),
-        )
-        .unwrap();
+        sink.add_pad(&gst::GhostPad::with_target(&convert.static_pad("sink").unwrap()).unwrap())
+            .unwrap();
 
         (src, sink.upcast())
     };
@@ -67,8 +57,15 @@ fn create_ui(app: &gtk::Application) {
     src.link_filtered(&overlay, &caps).unwrap();
     overlay.link(&sink).unwrap();
 
-    picture.set_paintable(Some(&paintable));
-    vbox.append(&picture);
+    let window = gtk::ApplicationWindow::new(app);
+    window.set_default_size(640, 480);
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+
+    let gst_widget = gstgtk4::RenderWidget::new(&gtksink);
+    vbox.append(&gst_widget);
+
+    let label = gtk::Label::new(Some("Position: 00:00:00"));
     vbox.append(&label);
 
     window.set_child(Some(&vbox));
@@ -78,14 +75,13 @@ fn create_ui(app: &gtk::Application) {
 
     let pipeline_weak = pipeline.downgrade();
     let timeout_id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-        let pipeline = match pipeline_weak.upgrade() {
-            Some(pipeline) => pipeline,
-            None => return glib::Continue(true),
+        let Some(pipeline) = pipeline_weak.upgrade() else {
+            return glib::ControlFlow::Break;
         };
 
         let position = pipeline.query_position::<gst::ClockTime>();
         label.set_text(&format!("Position: {:.0}", position.display()));
-        glib::Continue(true)
+        glib::ControlFlow::Continue
     });
 
     let bus = pipeline.bus().unwrap();
@@ -95,42 +91,43 @@ fn create_ui(app: &gtk::Application) {
         .expect("Unable to set the pipeline to the `Playing` state");
 
     let app_weak = app.downgrade();
-    bus.add_watch_local(move |_, msg| {
-        use gst::MessageView;
+    let bus_watch = bus
+        .add_watch_local(move |_, msg| {
+            use gst::MessageView;
 
-        let app = match app_weak.upgrade() {
-            Some(app) => app,
-            None => return glib::Continue(false),
-        };
+            let Some(app) = app_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
 
-        match msg.view() {
-            MessageView::Eos(..) => app.quit(),
-            MessageView::Error(err) => {
-                println!(
-                    "Error from {:?}: {} ({:?})",
-                    err.src().map(|s| s.path_string()),
-                    err.error(),
-                    err.debug()
-                );
-                app.quit();
-            }
-            _ => (),
-        };
+            match msg.view() {
+                MessageView::Eos(..) => app.quit(),
+                MessageView::Error(err) => {
+                    println!(
+                        "Error from {:?}: {} ({:?})",
+                        err.src().map(|s| s.path_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                    app.quit();
+                }
+                _ => (),
+            };
 
-        glib::Continue(true)
-    })
-    .expect("Failed to add bus watch");
+            glib::ControlFlow::Continue
+        })
+        .expect("Failed to add bus watch");
 
     let timeout_id = RefCell::new(Some(timeout_id));
     let pipeline = RefCell::new(Some(pipeline));
+    let bus_watch = RefCell::new(Some(bus_watch));
     app.connect_shutdown(move |_| {
         window.close();
 
+        drop(bus_watch.borrow_mut().take());
         if let Some(pipeline) = pipeline.borrow_mut().take() {
             pipeline
                 .set_state(gst::State::Null)
                 .expect("Unable to set the pipeline to the `Null` state");
-            pipeline.bus().unwrap().remove_watch().unwrap();
         }
 
         if let Some(timeout_id) = timeout_id.borrow_mut().take() {

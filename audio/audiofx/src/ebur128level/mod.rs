@@ -12,7 +12,7 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct EbuR128Level(ObjectSubclass<imp::EbuR128Level>) @extends gst_base::BaseTransform, gst::Element, gst::Object;
+    pub struct EbuR128Level(ObjectSubclass<imp::EbuR128Level>) @extends gst_audio::AudioFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -22,7 +22,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "ebur128level",
-        gst::Rank::None,
+        gst::Rank::NONE,
         EbuR128Level::static_type(),
     )
 }

@@ -23,8 +23,8 @@ use byte_slice_cast::*;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 
-use once_cell::sync::Lazy;
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+use std::sync::LazyLock;
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "hrtfrender",
         gst::DebugColorFlags::empty(),
@@ -32,7 +32,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     )
 });
 
-static THREAD_POOL: Lazy<Mutex<Weak<ThreadPool>>> = Lazy::new(|| Mutex::new(Weak::new()));
+static THREAD_POOL: LazyLock<Mutex<Weak<ThreadPool>>> = LazyLock::new(|| Mutex::new(Weak::new()));
 
 const DEFAULT_INTERPOLATION_STEPS: u64 = 8;
 const DEFAULT_BLOCK_LENGTH: u64 = 512;
@@ -224,7 +224,7 @@ impl HrtfRender {
         let mut outbuf =
             gst_audio::AudioBufferRef::from_buffer_ref_writable(outbuf, &state.outinfo).map_err(
                 |err| {
-                    gst::error!(CAT, imp: self, "Failed to map buffer : {}", err);
+                    gst::error!(CAT, imp = self, "Failed to map buffer : {}", err);
                     gst::FlowError::Error
                 },
             )?;
@@ -248,13 +248,13 @@ impl HrtfRender {
 
         while state.adapter.available() >= inblksz {
             let inbuf = state.adapter.take_buffer(inblksz).map_err(|_| {
-                gst::error!(CAT, imp: self, "Failed to map buffer");
+                gst::error!(CAT, imp = self, "Failed to map buffer");
                 gst::FlowError::Error
             })?;
 
             let inbuf = gst_audio::AudioBuffer::from_buffer_readable(inbuf, &state.ininfo)
                 .map_err(|_| {
-                    gst::error!(CAT, imp: self, "Failed to map buffer");
+                    gst::error!(CAT, imp = self, "Failed to map buffer");
                     gst::FlowError::Error
                 })?;
 
@@ -400,7 +400,7 @@ impl HrtfRender {
 
 impl ObjectImpl for HrtfRender {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecBoxed::builder::<glib::Bytes>("hrir-raw")
                     .nick("Head Transform Impulse Response")
@@ -533,7 +533,7 @@ impl GstObjectImpl for HrtfRender {}
 
 impl ElementImpl for HrtfRender {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Head-Related Transfer Function (HRTF) renderer",
                 "Filter/Effect/Audio",
@@ -546,7 +546,7 @@ impl ElementImpl for HrtfRender {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let src_caps = gst_audio::AudioCapsBuilder::new_interleaved()
                 .channels(2)
                 .format(gst_audio::AUDIO_FORMAT_F32)
@@ -624,7 +624,7 @@ impl BaseTransformImpl for HrtfRender {
 
         gst::log!(
             CAT,
-            imp: self,
+            imp = self,
             "Adapter size: {}, input size {}, transformed size {}",
             state.adapter.available(),
             size,
@@ -649,7 +649,7 @@ impl BaseTransformImpl for HrtfRender {
 
                 if direction == gst::PadDirection::Sink {
                     s.set("channels", 2);
-                    s.set("channel-mask", 0x3);
+                    s.set("channel-mask", gst::Bitmask(0x3));
                 } else {
                     let settings = self.settings.lock().unwrap();
                     if let Some(objs) = &settings.spatial_objects {
@@ -670,7 +670,7 @@ impl BaseTransformImpl for HrtfRender {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Transformed caps from {} to {} in direction {:?}",
             caps,
             other_caps,
@@ -741,7 +741,7 @@ impl BaseTransformImpl for HrtfRender {
             adapter: gst_base::UniqueAdapter::new(),
         });
 
-        gst::debug!(CAT, imp: self, "Configured for caps {}", incaps);
+        gst::debug!(CAT, imp = self, "Configured for caps {}", incaps);
 
         Ok(())
     }
@@ -749,7 +749,7 @@ impl BaseTransformImpl for HrtfRender {
     fn sink_event(&self, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::debug!(CAT, imp: self, "Handling event {:?}", event);
+        gst::debug!(CAT, imp = self, "Handling event {:?}", event);
 
         match event.view() {
             EventView::FlushStop(_) => {

@@ -17,25 +17,27 @@
  * responsible for determining what bitrate to give to each encode)
  *
  */
-use chrono::Duration;
 use gst::{glib, prelude::*, subclass::prelude::*};
-use once_cell::sync::Lazy;
+use smallvec::SmallVec;
+use std::sync::LazyLock;
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
     fmt::Debug,
     mem,
     sync::Mutex,
-    time,
+    time::Instant,
 };
+use time::Duration;
 
 type Bitrate = u32;
+type BufferList = SmallVec<[gst::Buffer; 10]>;
 
 const DEFAULT_MIN_BITRATE: Bitrate = 1000;
 const DEFAULT_ESTIMATED_BITRATE: Bitrate = 2_048_000;
 const DEFAULT_MAX_BITRATE: Bitrate = 8_192_000;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rtpgccbwe",
         gst::DebugColorFlags::empty(),
@@ -44,24 +46,13 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 });
 
 // Table1. Time limit in milliseconds  between packet bursts which  identifies a group
-static BURST_TIME: Lazy<Duration> = Lazy::new(|| Duration::milliseconds(5));
-
-// Table1. Coefficient used for the measured noise variance
-//  [0.1,0.001]
-const CHI: f64 = 0.01;
-const ONE_MINUS_CHI: f64 = 1. - CHI;
-
-// Table1. State noise covariance matrix
-const Q: f64 = 0.001;
+const BURST_TIME: Duration = Duration::milliseconds(5);
 
 // Table1. Initial value for the adaptive threshold
-static INITIAL_DEL_VAR_TH: Lazy<Duration> = Lazy::new(|| Duration::microseconds(12500));
-
-// Table1. Initial value of the system error covariance
-const INITIAL_ERROR_COVARIANCE: f64 = 0.1;
+const INITIAL_DEL_VAR_TH: Duration = Duration::microseconds(12500);
 
 // Table1. Time required to trigger an overuse signal
-static OVERUSE_TIME_TH: Lazy<Duration> = Lazy::new(|| Duration::milliseconds(10));
+const OVERUSE_TIME_TH: Duration = Duration::milliseconds(10);
 
 // from 5.5 "beta is typically chosen to be in the interval [0.8, 0.95], 0.85 is the RECOMMENDED value."
 const BETA: f64 = 0.85;
@@ -76,7 +67,7 @@ const MOVING_AVERAGE_SMOOTHING_FACTOR: f64 = 0.5;
 // `N(i)` is the number of packets received the past T seconds and `L(j)` is
 // the payload size of packet j.  A window between 0.5 and 1 second is
 // RECOMMENDED.
-static PACKETS_RECEIVED_WINDOW: Lazy<Duration> = Lazy::new(|| Duration::milliseconds(1000)); // ms
+const PACKETS_RECEIVED_WINDOW: Duration = Duration::milliseconds(1000); // ms
 
 // from "5.4 Over-use detector" ->
 // Moreover, del_var_th(i) SHOULD NOT be updated if this condition
@@ -85,32 +76,32 @@ static PACKETS_RECEIVED_WINDOW: Lazy<Duration> = Lazy::new(|| Duration::millisec
 // ```
 // |m(i)| - del_var_th(i) > 15
 // ```
-static MAX_M_MINUS_DEL_VAR_TH: Lazy<Duration> = Lazy::new(|| Duration::milliseconds(15));
+const MAX_M_MINUS_DEL_VAR_TH: Duration = Duration::milliseconds(15);
 
 // from 5.4 "It is also RECOMMENDED to clamp del_var_th(i) to the range [6, 600]"
-static MIN_THRESHOLD: Lazy<Duration> = Lazy::new(|| Duration::milliseconds(6));
-static MAX_THRESHOLD: Lazy<Duration> = Lazy::new(|| Duration::milliseconds(600));
+const MIN_THRESHOLD: Duration = Duration::milliseconds(6);
+const MAX_THRESHOLD: Duration = Duration::milliseconds(600);
 
 // From 5.5 ""Close" is defined as three standard deviations around this average"
 const STANDARD_DEVIATION_CLOSE_NUM: f64 = 3.;
 
 // Minimal duration between 2 updates on the lost based rate controller
-static LOSS_UPDATE_INTERVAL: Lazy<time::Duration> = Lazy::new(|| time::Duration::from_millis(200));
-static LOSS_DECREASE_THRESHOLD: f64 = 0.1;
-static LOSS_INCREASE_THRESHOLD: f64 = 0.02;
-static LOSS_INCREASE_FACTOR: f64 = 1.05;
+const LOSS_UPDATE_INTERVAL: Duration = Duration::milliseconds(200);
+const LOSS_DECREASE_THRESHOLD: f64 = 0.1;
+const LOSS_INCREASE_THRESHOLD: f64 = 0.02;
+const LOSS_INCREASE_FACTOR: f64 = 1.05;
 
 // Minimal duration between 2 updates on the lost based rate controller
-static DELAY_UPDATE_INTERVAL: Lazy<time::Duration> = Lazy::new(|| time::Duration::from_millis(100));
+const DELAY_UPDATE_INTERVAL: Duration = Duration::milliseconds(100);
 
-static ROUND_TRIP_TIME_WINDOW_SIZE: usize = 100;
+const ROUND_TRIP_TIME_WINDOW_SIZE: usize = 100;
 
-fn ts2dur(t: gst::ClockTime) -> Duration {
+const fn ts2dur(t: gst::ClockTime) -> Duration {
     Duration::nanoseconds(t.nseconds() as i64)
 }
 
-fn dur2ts(t: Duration) -> gst::ClockTime {
-    gst::ClockTime::from_nseconds(t.num_nanoseconds().unwrap() as u64)
+const fn dur2ts(t: Duration) -> gst::ClockTime {
+    gst::ClockTime::from_nseconds(t.whole_nanoseconds() as u64)
 }
 
 #[derive(Debug)]
@@ -118,7 +109,9 @@ enum BandwidthEstimationOp {
     /// Don't update target bitrate
     Hold,
     /// Decrease target bitrate
+    #[allow(unused)]
     Decrease(String /* reason */),
+    #[allow(unused)]
     Increase(String /* reason */),
 }
 
@@ -160,7 +153,7 @@ impl Packet {
         let seqnum = structure.get::<u32>("seqnum").unwrap() as u64;
         if lost {
             return Some(Packet {
-                arrival: Duration::zero(),
+                arrival: Duration::ZERO,
                 departure: ts2dur(departure),
                 size: structure.get::<u32>("size").unwrap() as usize,
                 seqnum,
@@ -189,16 +182,10 @@ impl Default for PacketGroup {
     fn default() -> Self {
         Self {
             packets: Default::default(),
-            departure: Duration::zero(),
+            departure: Duration::ZERO,
             arrival: None,
         }
     }
-}
-
-fn pdur(d: &Duration) -> String {
-    let stdd = time::Duration::from_nanos(d.num_nanoseconds().unwrap().unsigned_abs());
-
-    format!("{}{stdd:?}", if d.lt(&Duration::zero()) { "-" } else { "" })
 }
 
 impl PacketGroup {
@@ -263,33 +250,73 @@ enum NetworkUsage {
     Under,
 }
 
+/// Simple abstraction over an estimator that allows different estimator
+/// implementations, and allows them to be changed at runtime.
+trait EstimatorImpl: Send {
+    /// Update the estimator.
+    fn update(&mut self, prev_group: &PacketGroup, group: &PacketGroup);
+
+    /// Get the estimate that will be compared against the dynamic delay
+    /// threshold of GCC. Note that this value will be multiplied by a dynamic
+    /// factor before being compared against the threshold.
+    fn estimate(&self) -> Duration;
+
+    /// Get the most recent measurement used as input to the estimator.
+    /// Typically this will be the most recent inter-group delay variation.
+    fn measure(&self) -> Duration;
+}
+
+mod kalman_estimator;
+use kalman_estimator::KalmanEstimator;
+
+mod linear_regression_estimator;
+use linear_regression_estimator::LinearRegressionEstimator;
+
+/// An enum will all known estimators. The active estimator can be changed at
+/// runtime through the "estimator" property.
+#[derive(Debug, Default, Copy, Clone, glib::Enum)]
+#[repr(i32)]
+#[enum_type(name = "GstRtpGCCBwEEstimator")]
+pub enum Estimator {
+    #[default]
+    #[enum_value(name = "Use Kalman filter")]
+    Kalman = 0,
+    #[enum_value(name = "Use linear regression slope")]
+    LinearRegression = 1,
+}
+
+impl Estimator {
+    fn to_impl(self) -> Box<dyn EstimatorImpl> {
+        match self {
+            Estimator::Kalman => Box::<KalmanEstimator>::default(),
+            Estimator::LinearRegression => Box::<LinearRegressionEstimator>::default(),
+        }
+    }
+}
+
 struct Detector {
     group: PacketGroup,              // Packet group that is being filled
     prev_group: Option<PacketGroup>, // Group that is ready to be used once "group" is filled
-    measure: Duration,               // Delay variation measure
 
     last_received_packets: BTreeMap<u64, Packet>, // Order by seqnums, front is the newest, back is the oldest
 
     // Last loss update
-    last_loss_update: Option<time::Instant>,
+    last_loss_update: Option<Instant>,
     // Moving average of the packet loss
     loss_average: f64,
 
-    // Kalman filter fields
-    gain: f64,
-    measurement_uncertainty: f64, // var_v_hat(i-1)
-    estimate_error: f64,          // e(i-1)
-    estimate: Duration,           // m_hat(i-1)
+    // Estimator fields
+    estimator_impl: Box<dyn EstimatorImpl>,
 
     // Threshold fields
     threshold: Duration,
-    last_threshold_update: Option<time::Instant>,
+    last_threshold_update: Option<Instant>,
     num_deltas: i64,
 
     // Overuse related fields
     increasing_counter: u32,
     last_overuse_estimate: Duration,
-    last_use_detector_update: time::Instant,
+    last_use_detector_update: Instant,
     increasing_duration: Duration,
 
     // round-trip-time estimations
@@ -310,20 +337,19 @@ impl Debug for Detector {
             "Network Usage: {:?}. Effective bitrate: {}ps - Measure: {} Estimate: {} threshold {} - overuse_estimate {}",
             self.usage,
             human_kbits(self.effective_bitrate()),
-            pdur(&self.measure),
-            pdur(&self.estimate),
-            pdur(&self.threshold),
-            pdur(&self.last_overuse_estimate),
+            self.estimator_impl.measure(),
+            self.estimator_impl.estimate(),
+            self.threshold,
+            self.last_overuse_estimate,
         )
     }
 }
 
 impl Detector {
-    fn new() -> Self {
+    fn new(estimator: Estimator) -> Self {
         Detector {
             group: Default::default(),
             prev_group: Default::default(),
-            measure: Duration::zero(),
 
             /* Smallish value to hold PACKETS_RECEIVED_WINDOW packets */
             last_received_packets: BTreeMap::new(),
@@ -331,19 +357,16 @@ impl Detector {
             last_loss_update: None,
             loss_average: 0.,
 
-            gain: 0.,
-            measurement_uncertainty: 0.,
-            estimate_error: INITIAL_ERROR_COVARIANCE,
-            estimate: Duration::zero(),
+            estimator_impl: estimator.to_impl(),
 
-            threshold: *INITIAL_DEL_VAR_TH,
+            threshold: INITIAL_DEL_VAR_TH,
             last_threshold_update: None,
             num_deltas: 0,
 
-            last_use_detector_update: time::Instant::now(),
+            last_use_detector_update: Instant::now(),
             increasing_counter: 0,
-            last_overuse_estimate: Duration::zero(),
-            increasing_duration: Duration::zero(),
+            last_overuse_estimate: Duration::ZERO,
+            increasing_duration: Duration::ZERO,
 
             rtts: Default::default(),
             clock: gst::SystemClock::obtain(),
@@ -371,7 +394,7 @@ impl Detector {
             .unwrap()
             .arrival;
 
-        while last_arrival - self.oldest_packet_in_window_ts() > *PACKETS_RECEIVED_WINDOW {
+        while last_arrival - self.oldest_packet_in_window_ts() > PACKETS_RECEIVED_WINDOW {
             let oldest_seqnum = *self.last_received_packets.iter().next().unwrap().0;
             self.last_received_packets.remove(&oldest_seqnum);
         }
@@ -398,9 +421,8 @@ impl Detector {
             .sum::<f64>()
             * 8.;
 
-        (bits
-            / (duration.num_nanoseconds().unwrap() as f64
-                / gst::ClockTime::SECOND.nseconds() as f64)) as Bitrate
+        (bits / (duration.whole_nanoseconds() as f64 / gst::ClockTime::SECOND.nseconds() as f64))
+            as Bitrate
     }
 
     fn oldest_packet_in_window_ts(&self) -> Duration {
@@ -425,7 +447,7 @@ impl Detector {
             (self
                 .rtts
                 .iter()
-                .map(|d| d.num_nanoseconds().unwrap() as f64)
+                .map(|d| d.whole_nanoseconds() as f64)
                 .sum::<f64>()
                 / self.rtts.len() as f64) as i64,
         )
@@ -481,7 +503,7 @@ impl Detector {
             }
 
             if pkt.departure >= self.group.departure {
-                if self.group.inter_departure_time_pkt(pkt) < *BURST_TIME {
+                if self.group.inter_departure_time_pkt(pkt) < BURST_TIME {
                     self.group.add(*pkt);
                     continue;
                 }
@@ -491,8 +513,8 @@ impl Detector {
                 // A Packet which has an inter-arrival time less than burst_time and
                 // an inter-group delay variation d(i) less than 0 is considered
                 // being part of the current group of packets.
-                if self.group.inter_arrival_time_pkt(pkt) < *BURST_TIME
-                    && self.group.inter_delay_variation_pkt(pkt) < Duration::zero()
+                if self.group.inter_arrival_time_pkt(pkt) < BURST_TIME
+                    && self.group.inter_delay_variation_pkt(pkt) < Duration::ZERO
                 {
                     self.group.add(*pkt);
                     continue;
@@ -502,11 +524,11 @@ impl Detector {
                 gst::trace!(
                     CAT,
                     "Packet group done: {:?}",
-                    gst::ClockTime::from_nseconds(group.departure.num_nanoseconds().unwrap() as u64)
+                    gst::ClockTime::from_nseconds(group.departure.whole_nanoseconds() as u64)
                 );
                 if let Some(prev_group) = mem::replace(&mut self.prev_group, Some(group.clone())) {
                     // 5.3 Arrival-time filter
-                    self.kalman_estimate(&prev_group, &group);
+                    self.estimator_impl.update(&prev_group, &group);
                     // 5.4 Over-use detector
                     self.overuse_filter();
                 }
@@ -514,7 +536,7 @@ impl Detector {
                 gst::debug!(
                     CAT,
                     "Ignoring packet departed at {:?} as we got feedback too late",
-                    gst::ClockTime::from_nseconds(pkt.departure.num_nanoseconds().unwrap() as u64)
+                    gst::ClockTime::from_nseconds(pkt.departure.whole_nanoseconds() as u64)
                 );
             }
         }
@@ -523,45 +545,18 @@ impl Detector {
     }
 
     fn compute_loss_average(&mut self, loss_fraction: f64) {
-        let now = time::Instant::now();
+        let now = Instant::now();
 
         if let Some(ref last_update) = self.last_loss_update {
             self.loss_average = loss_fraction
-                + (-Duration::from_std(now - *last_update)
+                + (-Duration::try_from(now - *last_update)
                     .unwrap()
-                    .num_milliseconds() as f64)
+                    .whole_milliseconds() as f64)
                     .exp()
                     * (self.loss_average - loss_fraction);
         }
 
         self.last_loss_update = Some(now);
-    }
-
-    fn kalman_estimate(&mut self, prev_group: &PacketGroup, group: &PacketGroup) {
-        self.measure = group.inter_delay_variation(prev_group);
-
-        let z = self.measure - self.estimate;
-        let zms = z.num_microseconds().unwrap() as f64 / 1000.0;
-
-        // This doesn't exactly follows the spec as we should compute and
-        // use f_max here, no implementation we have found actually uses it.
-        let alpha = ONE_MINUS_CHI.powf(30.0 / (1000. * 5. * 1_000_000.));
-        let root = self.measurement_uncertainty.sqrt();
-        let root3 = 3. * root;
-
-        if zms > root3 {
-            self.measurement_uncertainty =
-                (alpha * self.measurement_uncertainty + (1. - alpha) * root3.powf(2.)).max(1.);
-        } else {
-            self.measurement_uncertainty =
-                (alpha * self.measurement_uncertainty + (1. - alpha) * zms.powf(2.)).max(1.);
-        }
-
-        let estimate_uncertainty = self.estimate_error + Q;
-        self.gain = estimate_uncertainty / (estimate_uncertainty + self.measurement_uncertainty);
-        self.estimate =
-            self.estimate + Duration::nanoseconds((self.gain * zms * 1_000_000.) as i64);
-        self.estimate_error = (1. - self.gain) * estimate_uncertainty;
     }
 
     fn compare_threshold(&mut self) -> (NetworkUsage, Duration) {
@@ -572,37 +567,38 @@ impl Detector {
 
         self.num_deltas += 1;
         if self.num_deltas < 2 {
-            return (NetworkUsage::Normal, self.estimate);
+            return (NetworkUsage::Normal, self.estimator_impl.estimate());
         }
 
-        let t = Duration::nanoseconds(
-            self.estimate.num_nanoseconds().unwrap() * i64::min(self.num_deltas, MAX_DELTAS),
+        let amplified_estimate = Duration::nanoseconds(
+            self.estimator_impl.estimate().whole_nanoseconds() as i64
+                * i64::min(self.num_deltas, MAX_DELTAS),
         );
-        let usage = if t > self.threshold {
+        let usage = if amplified_estimate > self.threshold {
             NetworkUsage::Over
-        } else if t.num_nanoseconds().unwrap() < -self.threshold.num_nanoseconds().unwrap() {
+        } else if amplified_estimate.whole_nanoseconds() < -self.threshold.whole_nanoseconds() {
             NetworkUsage::Under
         } else {
             NetworkUsage::Normal
         };
 
-        self.update_threshold(&t);
+        self.update_threshold(&amplified_estimate);
 
-        (usage, t)
+        (usage, amplified_estimate)
     }
 
     fn update_threshold(&mut self, estimate: &Duration) {
         const K_U: f64 = 0.01; // Table1. Coefficient for the adaptive threshold
         const K_D: f64 = 0.00018; // Table1. Coefficient for the adaptive threshold
-        const MAX_TIME_DELTA: time::Duration = time::Duration::from_millis(100);
+        const MAX_TIME_DELTA: Duration = Duration::milliseconds(100);
 
-        let now = time::Instant::now();
+        let now = Instant::now();
         if self.last_threshold_update.is_none() {
             self.last_threshold_update = Some(now);
         }
 
-        let abs_estimate = Duration::nanoseconds(estimate.num_nanoseconds().unwrap().abs());
-        if abs_estimate > self.threshold + *MAX_M_MINUS_DEL_VAR_TH {
+        let abs_estimate = estimate.abs();
+        if abs_estimate > self.threshold + MAX_M_MINUS_DEL_VAR_TH {
             self.last_threshold_update = Some(now);
             return;
         }
@@ -612,51 +608,54 @@ impl Detector {
         } else {
             K_U
         };
-        let time_delta =
-            Duration::from_std((now - self.last_threshold_update.unwrap()).min(MAX_TIME_DELTA))
-                .unwrap();
+        let time_delta = Duration::try_from(now - self.last_threshold_update.unwrap())
+            .unwrap()
+            .min(MAX_TIME_DELTA);
         let d = abs_estimate - self.threshold;
-        let add = k * d.num_milliseconds() as f64 * time_delta.num_milliseconds() as f64;
+        let add = k * d.whole_milliseconds() as f64 * time_delta.whole_milliseconds() as f64;
 
-        self.threshold = self.threshold + Duration::nanoseconds((add * 100. * 1_000.) as i64);
-        self.threshold = self.threshold.clamp(*MIN_THRESHOLD, *MAX_THRESHOLD);
+        self.threshold += Duration::nanoseconds((add * 100. * 1_000.) as i64);
+        self.threshold = self.threshold.clamp(MIN_THRESHOLD, MAX_THRESHOLD);
         self.last_threshold_update = Some(now);
     }
 
     fn overuse_filter(&mut self) {
-        let (th_usage, estimate) = self.compare_threshold();
+        let (th_usage, amplified_estimate) = self.compare_threshold();
 
-        let now = time::Instant::now();
-        let delta = Duration::from_std(now - self.last_use_detector_update).unwrap();
+        let now = Instant::now();
+        let delta = now - self.last_use_detector_update;
         self.last_use_detector_update = now;
-        gst::log!(
-            CAT,
-            "{:?} - self.estimate {} - estimate: {} - th: {}",
-            th_usage,
-            pdur(&self.estimate),
-            pdur(&estimate),
-            pdur(&self.threshold)
-        );
         match th_usage {
             NetworkUsage::Over => {
-                self.increasing_duration = self.increasing_duration + delta;
+                self.increasing_duration += delta;
                 self.increasing_counter += 1;
 
-                if self.increasing_duration > *OVERUSE_TIME_TH
+                if self.increasing_duration > OVERUSE_TIME_TH
                     && self.increasing_counter > 1
-                    && estimate > self.last_overuse_estimate
+                    && amplified_estimate > self.last_overuse_estimate
                 {
                     self.usage = NetworkUsage::Over;
                 }
             }
             NetworkUsage::Under | NetworkUsage::Normal => {
-                self.increasing_duration = Duration::zero();
+                self.increasing_duration = Duration::ZERO;
                 self.increasing_counter = 0;
 
                 self.usage = th_usage;
             }
         }
-        self.last_overuse_estimate = estimate;
+        gst::log!(
+            CAT,
+            "{:?} - measure: {} - estimate: {} - amp_est: {} - th: {} - inc_dur: {} - inc_cnt: {}",
+            th_usage,
+            self.estimator_impl.measure(),
+            self.estimator_impl.estimate(),
+            amplified_estimate,
+            self.threshold,
+            self.increasing_duration,
+            self.increasing_counter,
+        );
+        self.last_overuse_estimate = amplified_estimate;
     }
 }
 
@@ -683,7 +682,7 @@ impl ExponentialMovingAverage {
     }
 
     fn estimate_is_close(&self, value: Bitrate) -> bool {
-        self.average.map_or(false, |avg| {
+        self.average.is_some_and(|avg| {
             ((avg - STANDARD_DEVIATION_CLOSE_NUM * self.standard_dev)
                 ..(avg + STANDARD_DEVIATION_CLOSE_NUM * self.standard_dev))
                 .contains(&(value as f64))
@@ -703,14 +702,14 @@ struct State {
 
     /// Used in additive mode to track last control time, influences
     /// calculation of added value according to gcc section 5.5
-    last_increase_on_delay: Option<time::Instant>,
-    last_decrease_on_delay: time::Instant,
+    last_increase_on_delay: Option<Instant>,
+    last_decrease_on_delay: Instant,
 
     /// Bitrate target based on loss for all video streams.
     target_bitrate_on_loss: Bitrate,
 
-    last_increase_on_loss: time::Instant,
-    last_decrease_on_loss: time::Instant,
+    last_increase_on_loss: Instant,
+    last_decrease_on_loss: Instant,
 
     /// Exponential moving average, updated when bitrate is
     /// decreased
@@ -721,6 +720,7 @@ struct State {
     min_bitrate: Bitrate,
     max_bitrate: Bitrate,
 
+    estimator: Estimator,
     detector: Detector,
 
     clock_entry: Option<gst::SingleShotClockId>,
@@ -731,28 +731,30 @@ struct State {
     budget_offset: i64,
 
     flow_return: Result<gst::FlowSuccess, gst::FlowError>,
-    last_push: time::Instant,
+    last_push: Instant,
 }
 
 impl Default for State {
     fn default() -> Self {
+        let estimator = Estimator::default();
         Self {
             target_bitrate_on_delay: DEFAULT_ESTIMATED_BITRATE,
             target_bitrate_on_loss: DEFAULT_ESTIMATED_BITRATE,
-            last_increase_on_loss: time::Instant::now(),
-            last_decrease_on_loss: time::Instant::now(),
+            last_increase_on_loss: Instant::now(),
+            last_decrease_on_loss: Instant::now(),
             ema: Default::default(),
             last_increase_on_delay: None,
-            last_decrease_on_delay: time::Instant::now(),
+            last_decrease_on_delay: Instant::now(),
             min_bitrate: DEFAULT_MIN_BITRATE,
             max_bitrate: DEFAULT_MAX_BITRATE,
-            detector: Detector::new(),
+            estimator,
+            detector: Detector::new(estimator),
             buffers: Default::default(),
             estimated_bitrate: DEFAULT_ESTIMATED_BITRATE,
             last_control_op: BandwidthEstimationOp::Increase("Initial increase".into()),
             flow_return: Err(gst::FlowError::Flushing),
             clock_entry: None,
-            last_push: time::Instant::now(),
+            last_push: Instant::now(),
             budget_offset: 0,
         }
     }
@@ -760,10 +762,10 @@ impl Default for State {
 
 impl State {
     // 4. sending engine implementing a "leaky bucket"
-    fn create_buffer_list(&mut self, bwe: &super::BandwidthEstimator) -> gst::BufferList {
-        let now = time::Instant::now();
-        let elapsed = Duration::from_std(now - self.last_push).unwrap();
-        let mut budget = (elapsed.num_nanoseconds().unwrap())
+    fn create_buffer_list(&mut self, bwe: &super::BandwidthEstimator) -> BufferList {
+        let now = Instant::now();
+        let elapsed = Duration::try_from(now - self.last_push).unwrap();
+        let mut budget = (elapsed.whole_nanoseconds() as i64)
             .mul_div_round(
                 self.estimated_bitrate as i64,
                 gst::ClockTime::SECOND.nseconds() as i64,
@@ -774,8 +776,8 @@ impl State {
         let mut remaining = self.buffers.iter().map(|b| b.size() as f64).sum::<f64>() * 8.;
         let total_size = remaining;
 
-        let mut list = gst::BufferList::new();
-        let mutlist = list.get_mut().unwrap();
+        let mut list_size = 0;
+        let mut list = BufferList::new();
 
         // Leak the bucket so it can hold at most 30ms of data
         let maximum_remaining_bits = 30. * self.estimated_bitrate as f64 / 1000.;
@@ -785,20 +787,21 @@ impl State {
             let n_bits = buf.size() * 8;
 
             leaked = budget <= 0 && remaining > maximum_remaining_bits;
-            mutlist.add(buf);
+            list_size += buf.size();
+            list.push(buf);
             budget -= n_bits as i64;
             remaining -= n_bits as f64;
         }
 
         gst::trace!(
             CAT,
-            obj: bwe,
+            obj = bwe,
             "{} bitrate: {}ps budget: {}/{} sending: {} Remaining: {}/{}",
-            pdur(&elapsed),
+            elapsed,
             human_kbits(self.estimated_bitrate),
             human_kbits(budget as f64),
             human_kbits(total_budget as f64),
-            human_kbits(list.calculate_size() as f64 * 8.),
+            human_kbits(list_size as f64 * 8.),
             human_kbits(remaining),
             human_kbits(total_size)
         );
@@ -810,17 +813,17 @@ impl State {
     }
 
     fn compute_increased_rate(&mut self, bwe: &super::BandwidthEstimator) -> Option<Bitrate> {
-        let now = time::Instant::now();
+        let now = Instant::now();
         let target_bitrate = self.target_bitrate_on_delay as f64;
         let effective_bitrate = self.detector.effective_bitrate();
         let time_since_last_update_ms = match self.last_increase_on_delay {
             None => 0.,
             Some(prev) => {
-                if now - prev < *DELAY_UPDATE_INTERVAL {
+                if now - prev < DELAY_UPDATE_INTERVAL {
                     return None;
                 }
 
-                (now - prev).as_millis() as f64
+                Duration::try_from(now - prev).unwrap().whole_milliseconds() as f64
             }
         };
 
@@ -840,7 +843,7 @@ impl State {
             let packets_per_frame = f64::ceil(bits_per_frame / (1200. * 8.));
             let avg_packet_size_bits = bits_per_frame / packets_per_frame;
 
-            let rtt_ms = self.detector.rtt().num_milliseconds() as f64;
+            let rtt_ms = self.detector.rtt().whole_milliseconds() as f64;
             let response_time_ms = 100. + rtt_ms;
             let alpha = 0.5 * f64::min(time_since_last_update_ms / response_time_ms, 1.0);
             let threshold_on_effective_bitrate = 1.5 * effective_bitrate as f64;
@@ -879,9 +882,10 @@ impl State {
             if rate > received_max && received_max > self.target_bitrate_on_delay as f64 {
                 gst::log!(
                     CAT,
-                    obj: bwe,
-                    "Increasing == received_max rate: {}ps",
-                    human_kbits(received_max)
+                    obj = bwe,
+                    "Increasing == received_max rate: {}ps - effective bitrate: {}ps",
+                    human_kbits(received_max),
+                    human_kbits(effective_bitrate),
                 );
 
                 self.last_control_op = BandwidthEstimationOp::Increase(format!(
@@ -892,19 +896,21 @@ impl State {
             } else if rate < self.target_bitrate_on_delay as f64 {
                 gst::log!(
                     CAT,
-                    obj: bwe,
-                    "Rate < target, returning {}ps",
-                    human_kbits(self.target_bitrate_on_delay)
+                    obj = bwe,
+                    "Rate < target, returning {}ps - effective bitrate: {}ps",
+                    human_kbits(self.target_bitrate_on_delay),
+                    human_kbits(effective_bitrate),
                 );
 
                 None
             } else {
                 gst::log!(
                     CAT,
-                    obj: bwe,
-                    "Increase mult {eta}x{}ps={}ps",
+                    obj = bwe,
+                    "Increase mult {eta}x{}ps={}ps - effective bitrate: {}ps",
                     human_kbits(self.target_bitrate_on_delay),
-                    human_kbits(rate)
+                    human_kbits(rate),
+                    human_kbits(effective_bitrate),
                 );
 
                 self.last_control_op =
@@ -942,8 +948,8 @@ impl State {
 
         gst::info!(
             CAT,
-            obj: bwe,
-            "{controller_type:?}: {}ps => {}ps ({:?}) - effective bitrate: {}",
+            obj = bwe,
+            "{controller_type:?}: {}ps => {}ps ({:?}) - effective bitrate: {}ps",
             human_kbits(prev_bitrate),
             human_kbits(target_bitrate),
             self.last_control_op,
@@ -957,10 +963,10 @@ impl State {
 
     fn loss_control(&mut self, bwe: &super::BandwidthEstimator) -> bool {
         let loss_ratio = self.detector.loss_ratio();
-        let now = time::Instant::now();
+        let now = Instant::now();
 
         if loss_ratio > LOSS_DECREASE_THRESHOLD
-            && (now - self.last_decrease_on_loss) > *LOSS_UPDATE_INTERVAL
+            && (now - self.last_decrease_on_loss) > LOSS_UPDATE_INTERVAL
         {
             let factor = 1. - (0.5 * loss_ratio);
 
@@ -974,7 +980,7 @@ impl State {
                 ControllerType::Loss,
             )
         } else if loss_ratio < LOSS_INCREASE_THRESHOLD
-            && (now - self.last_increase_on_loss) > *LOSS_UPDATE_INTERVAL
+            && (now - self.last_increase_on_loss) > LOSS_UPDATE_INTERVAL
         {
             self.last_control_op = BandwidthEstimationOp::Increase("Low loss".into());
             self.last_increase_on_loss = now;
@@ -1000,8 +1006,8 @@ impl State {
                 _ => (),
             },
             NetworkUsage::Over => {
-                let now = time::Instant::now();
-                if now - self.last_decrease_on_delay > *DELAY_UPDATE_INTERVAL {
+                let now = Instant::now();
+                if now - self.last_decrease_on_delay > DELAY_UPDATE_INTERVAL {
                     let effective_bitrate = self.detector.effective_bitrate();
                     let target =
                         (self.estimated_bitrate as f64 * 0.95).min(BETA * effective_bitrate as f64);
@@ -1038,8 +1044,14 @@ pub struct BandwidthEstimator {
 }
 
 impl BandwidthEstimator {
-    fn push_list(&self, list: gst::BufferList) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let res = self.srcpad.push_list(list);
+    fn push_list(&self, list: BufferList) -> Result<gst::FlowSuccess, gst::FlowError> {
+        let mut res = Ok(gst::FlowSuccess::Ok);
+        for buf in list {
+            res = self.srcpad.push(buf);
+            if res.is_err() {
+                break;
+            }
+        }
 
         self.state.lock().unwrap().flow_return = res;
 
@@ -1052,7 +1064,7 @@ impl BandwidthEstimator {
         let clock = gst::SystemClock::obtain();
 
         bwe.imp().state.lock().unwrap().clock_entry =
-            Some(clock.new_single_shot_id(clock.time().unwrap() + dur2ts(*BURST_TIME)));
+            Some(clock.new_single_shot_id(clock.time().unwrap() + dur2ts(BURST_TIME)));
 
         self.srcpad.start_task(move || {
             let pause = || {
@@ -1089,10 +1101,7 @@ impl BandwidthEstimator {
             let list = {
                 let mut state = lock_state();
                 clock
-                    .single_shot_id_reinit(
-                        &clock_entry,
-                        clock.time().unwrap() + dur2ts(*BURST_TIME),
-                    )
+                    .single_shot_id_reinit(&clock_entry, clock.time().unwrap() + dur2ts(BURST_TIME))
                     .unwrap();
                 state.clock_entry = Some(clock_entry);
                 state.create_buffer_list(&bwe)
@@ -1100,7 +1109,9 @@ impl BandwidthEstimator {
 
             if !list.is_empty() {
                 if let Err(err) = bwe.imp().push_list(list) {
-                    gst::error!(CAT, obj: bwe, "pause task, reason: {err:?}");
+                    if err != gst::FlowError::Flushing {
+                        gst::error!(CAT, obj = bwe, "pause task, reason: {err:?}");
+                    }
                     pause()
                 }
             }
@@ -1146,16 +1157,13 @@ impl ObjectSubclass for BandwidthEstimator {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
-            .chain_function(|_pad, parent, mut buffer| {
+        let sinkpad = gst::Pad::builder_from_template(&templ)
+            .chain_function(|_pad, parent, buffer| {
                 BandwidthEstimator::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
                     |this| {
                         let mut state = this.state.lock().unwrap();
-                        let mutbuf = buffer.make_mut();
-                        mutbuf.set_pts(None);
-                        mutbuf.set_dts(None);
                         state.buffers.push_front(buffer);
 
                         state.flow_return
@@ -1166,7 +1174,7 @@ impl ObjectSubclass for BandwidthEstimator {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .event_function(|pad, parent, event| {
                 BandwidthEstimator::catch_panic_pad_function(
                     parent,
@@ -1184,19 +1192,42 @@ impl ObjectSubclass for BandwidthEstimator {
                                     })
                                     .collect::<Vec<Packet>>();
 
-                                let bitrate_changed = {
-                                    let mut state = this.state.lock().unwrap();
+                                // The list of packets could be empty once parsed
+                                if !packets.is_empty() {
+                                    let mut logged_bitrates = None;
 
-                                    state.detector.update(&mut packets);
-                                    if !state.delay_control(&bwe) {
-                                        state.loss_control(&bwe)
-                                    } else {
-                                        true
+                                    let bitrate_changed = {
+                                        let mut state = this.state.lock().unwrap();
+
+                                        state.detector.update(&mut packets);
+                                        let bitrate_updated_by_delay = state.delay_control(&bwe);
+                                        let bitrate_updated_by_loss = state.loss_control(&bwe);
+                                        let bitrate_changed = bitrate_updated_by_delay || bitrate_updated_by_loss;
+
+                                        if bitrate_changed {
+                                            // So we don't have to hold the state mutex while logging.
+                                            logged_bitrates = Some((
+                                                state.target_bitrate_on_delay,
+                                                state.target_bitrate_on_loss,
+                                            ));
+                                        }
+
+                                        bitrate_changed
+                                    };
+
+                                    if let Some(bitrates) = logged_bitrates {
+                                        gst::log!(
+                                            CAT,
+                                            obj = bwe,
+                                            "target bitrate on delay: {}ps - target bitrate on loss: {}ps",
+                                            human_kbits(bitrates.0),
+                                            human_kbits(bitrates.1),
+                                        );
                                     }
-                                };
 
-                                if bitrate_changed {
-                                    bwe.notify("estimated-bitrate")
+                                    if bitrate_changed {
+                                        bwe.notify("estimated-bitrate")
+                                    }
                                 }
                             }
                         }
@@ -1238,7 +1269,7 @@ impl ObjectImpl for BandwidthEstimator {
     }
 
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 /*
                  *  gcc:estimated-bitrate:
@@ -1265,11 +1296,16 @@ impl ObjectImpl for BandwidthEstimator {
                     .mutable_ready()
                     .build(),
                 glib::ParamSpecUInt::builder("max-bitrate")
-                    .nick("Maximal Bitrate")
-                    .blurb("Maximal bitrate to use (in bit/sec) when computing it through the bandwidth estimation algorithm")
+                    .nick("Maximum Bitrate")
+                    .blurb("Maximum bitrate to use (in bit/sec) when computing it through the bandwidth estimation algorithm")
                     .minimum(1)
                     .maximum(u32::MAX)
                     .default_value(DEFAULT_MAX_BITRATE)
+                    .mutable_ready()
+                    .build(),
+                glib::ParamSpecEnum::builder_with_default("estimator", Estimator::default())
+                    .nick("Estimator")
+                    .blurb("How to calculate the delay estimate that will be compared against the dynamic delay threshold.")
                     .mutable_ready()
                     .build(),
             ]
@@ -1295,6 +1331,11 @@ impl ObjectImpl for BandwidthEstimator {
                 state.target_bitrate_on_loss = bitrate;
                 state.estimated_bitrate = bitrate;
             }
+            "estimator" => {
+                let mut state = self.state.lock().unwrap();
+                state.estimator = value.get().unwrap();
+                state.detector.estimator_impl = state.estimator.to_impl()
+            }
             _ => unimplemented!(),
         }
     }
@@ -1313,6 +1354,10 @@ impl ObjectImpl for BandwidthEstimator {
                 let state = self.state.lock().unwrap();
                 state.estimated_bitrate.to_value()
             }
+            "estimator" => {
+                let state = self.state.lock().unwrap();
+                state.estimator.to_value()
+            }
             _ => unimplemented!(),
         }
     }
@@ -1322,7 +1367,7 @@ impl GstObjectImpl for BandwidthEstimator {}
 
 impl ElementImpl for BandwidthEstimator {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Google Congestion Control bandwidth estimator",
                 "Network/WebRTC/RTP/Filter",
@@ -1336,7 +1381,7 @@ impl ElementImpl for BandwidthEstimator {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder_full()
                 .structure(gst::Structure::builder("application/x-rtp").build())
                 .build();

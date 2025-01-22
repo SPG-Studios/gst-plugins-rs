@@ -26,19 +26,22 @@ use gst::subclass::prelude::*;
 use gst::EventView;
 use gst::{element_error, error_msg};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
+use crate::net;
 use crate::runtime::executor::block_on_or_add_sub_task;
 use crate::runtime::prelude::*;
 use crate::runtime::{self, Async, Context, PadSink};
 use crate::socket::{wrap_socket, GioSocketWrapper};
 
 use std::collections::BTreeSet;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::u16;
-use std::u8;
+
+//FIXME: Remove this when https://github.com/mmastrac/getifaddrs/issues/5 is fixed in the `getifaddrs` crate
+#[cfg(target_os = "android")]
+use net::getifaddrs;
 
 const DEFAULT_HOST: Option<&str> = Some("127.0.0.1");
 const DEFAULT_PORT: i32 = 5004;
@@ -59,6 +62,7 @@ const DEFAULT_QOS_DSCP: i32 = -1;
 const DEFAULT_CLIENTS: &str = "";
 const DEFAULT_CONTEXT: &str = "";
 const DEFAULT_CONTEXT_WAIT: Duration = Duration::ZERO;
+const DEFAULT_MULTICAST_IFACE: Option<&str> = None;
 
 #[derive(Debug, Clone, Copy)]
 struct SocketConf {
@@ -94,6 +98,7 @@ struct Settings {
     qos_dscp: i32,
     context: String,
     context_wait: Duration,
+    multicast_iface: Option<String>,
 }
 
 impl Default for Settings {
@@ -112,11 +117,12 @@ impl Default for Settings {
             qos_dscp: DEFAULT_QOS_DSCP,
             context: DEFAULT_CONTEXT.into(),
             context_wait: DEFAULT_CONTEXT_WAIT,
+            multicast_iface: DEFAULT_MULTICAST_IFACE.map(Into::into),
         }
     }
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-udpsink",
         gst::DebugColorFlags::empty(),
@@ -130,7 +136,7 @@ struct UdpSinkPadHandler(Arc<futures::lock::Mutex<UdpSinkPadHandlerInner>>);
 impl UdpSinkPadHandler {
     fn prepare(
         &self,
-        _imp: &UdpSink,
+        imp: &UdpSink,
         socket: Option<Async<UdpSocket>>,
         socket_v6: Option<Async<UdpSocket>>,
         settings: &Settings,
@@ -142,6 +148,62 @@ impl UdpSinkPadHandler {
             inner.socket_conf = settings.socket_conf;
             inner.socket = socket;
             inner.socket_v6 = socket_v6;
+
+            if let Some(multicast_iface) = &settings.multicast_iface {
+                gst::debug!(
+                    CAT,
+                    imp = imp,
+                    "searching for interface: {}",
+                    multicast_iface
+                );
+
+                // The 'InterfaceFilter::name' only checks for the 'name' field , it does not check
+                // whether the given name with the interface 'description' (Friendly Name) on Windows
+
+                // So we first get all the interfaces and then apply filter
+                // for name and description (Friendly Name) of each interface.
+
+                //FIXME: Remove this when https://github.com/mmastrac/getifaddrs/issues/5 is fixed in the `getifaddrs` crate
+                #[cfg(not(target_os = "android"))]
+                {
+                    let ifaces = getifaddrs::getifaddrs().map_err(|err| {
+                        gst::error_msg!(
+                            gst::ResourceError::OpenRead,
+                            ["Failed to find interface {}: {}", multicast_iface, err]
+                        )
+                    })?;
+
+                    let iface_filter = ifaces.filter(|i| {
+                        let ip_ver = if i.address.is_ipv4() { "IPv4" } else { "IPv6" };
+
+                        if &i.name == multicast_iface {
+                            gst::debug!(
+                                CAT,
+                                imp = imp,
+                                "Found interface: {}, version: {ip_ver}",
+                                i.name,
+                            );
+                            true
+                        } else {
+                            #[cfg(windows)]
+                            if &i.description == multicast_iface {
+                                gst::debug!(
+                                    CAT,
+                                    imp = imp,
+                                    "Found interface: {}, version: {ip_ver}",
+                                    i.description,
+                                );
+                                return true;
+                            }
+
+                            gst::trace!(CAT, imp = imp, "skipping interface {}", i.name);
+                            false
+                        }
+                    });
+
+                    inner.multicast_ifaces = iface_filter.collect();
+                }
+            }
 
             for addr in inner.clients.iter() {
                 inner.configure_client(addr)?;
@@ -202,17 +264,17 @@ impl UdpSinkPadHandler {
         futures::executor::block_on(async move {
             let mut inner = self.0.lock().await;
             if inner.clients.contains(&addr) {
-                gst::warning!(CAT, imp: imp, "Not adding client {addr:?} again");
+                gst::warning!(CAT, imp = imp, "Not adding client {addr:?} again");
                 return;
             }
 
             match inner.configure_client(&addr) {
                 Ok(()) => {
-                    gst::info!(CAT, imp: imp, "Added client {addr:?}");
+                    gst::info!(CAT, imp = imp, "Added client {addr:?}");
                     inner.clients.insert(addr);
                 }
                 Err(err) => {
-                    gst::error!(CAT, imp: imp, "Failed to add client {addr:?}: {err}");
+                    gst::error!(CAT, imp = imp, "Failed to add client {addr:?}: {err}");
                     imp.obj().post_error_message(err);
                 }
             }
@@ -223,16 +285,16 @@ impl UdpSinkPadHandler {
         futures::executor::block_on(async move {
             let mut inner = self.0.lock().await;
             if inner.clients.take(&addr).is_none() {
-                gst::warning!(CAT, imp: imp, "Not removing unknown client {addr:?}");
+                gst::warning!(CAT, imp = imp, "Not removing unknown client {addr:?}");
                 return;
             }
 
             match inner.unconfigure_client(&addr) {
                 Ok(()) => {
-                    gst::info!(CAT, imp: imp, "Removed client {addr:?}");
+                    gst::info!(CAT, imp = imp, "Removed client {addr:?}");
                 }
                 Err(err) => {
-                    gst::error!(CAT, imp: imp, "Failed to remove client {addr:?}: {err}");
+                    gst::error!(CAT, imp = imp, "Failed to remove client {addr:?}: {err}");
                     imp.obj().post_error_message(err);
                 }
             }
@@ -243,9 +305,9 @@ impl UdpSinkPadHandler {
         futures::executor::block_on(async move {
             let mut inner = self.0.lock().await;
             if new_clients.is_empty() {
-                gst::info!(CAT, imp: imp, "Clearing clients");
+                gst::info!(CAT, imp = imp, "Clearing clients");
             } else {
-                gst::info!(CAT, imp: imp, "Replacing clients");
+                gst::info!(CAT, imp = imp, "Replacing clients");
             }
 
             let old_clients = std::mem::take(&mut inner.clients);
@@ -257,19 +319,19 @@ impl UdpSinkPadHandler {
                     // client is already configured
                     inner.clients.insert(*addr);
                 } else if let Err(err) = inner.unconfigure_client(addr) {
-                    gst::error!(CAT, imp: imp, "Failed to remove client {addr:?}: {err}");
+                    gst::error!(CAT, imp = imp, "Failed to remove client {addr:?}: {err}");
                     res = Err(err);
                 } else {
-                    gst::info!(CAT, imp: imp, "Removed client {addr:?}");
+                    gst::info!(CAT, imp = imp, "Removed client {addr:?}");
                 }
             }
 
             for addr in new_clients.into_iter() {
                 if let Err(err) = inner.configure_client(&addr) {
-                    gst::error!(CAT, imp: imp, "Failed to add client {addr:?}: {err}");
+                    gst::error!(CAT, imp = imp, "Failed to add client {addr:?}: {err}");
                     res = Err(err);
                 } else {
-                    gst::info!(CAT, imp: imp, "Added client {addr:?}");
+                    gst::info!(CAT, imp = imp, "Added client {addr:?}");
                     inner.clients.insert(addr);
                 }
             }
@@ -321,7 +383,7 @@ impl PadSinkHandler for UdpSinkPadHandler {
         event: gst::Event,
     ) -> BoxFuture<'static, bool> {
         async move {
-            gst::debug!(CAT, obj: elem, "Handling {event:?}");
+            gst::debug!(CAT, obj = elem, "Handling {event:?}");
 
             match event.view() {
                 EventView::Eos(_) => {
@@ -345,7 +407,7 @@ impl PadSinkHandler for UdpSinkPadHandler {
     }
 
     fn sink_event(self, _pad: &gst::Pad, imp: &UdpSink, event: gst::Event) -> bool {
-        gst::debug!(CAT, imp: imp, "Handling {event:?}");
+        gst::debug!(CAT, imp = imp, "Handling {event:?}");
 
         if let EventView::FlushStart(..) = event.view() {
             block_on_or_add_sub_task(async move {
@@ -367,6 +429,7 @@ struct UdpSinkPadHandlerInner {
     clients: BTreeSet<SocketAddr>,
     socket_conf: SocketConf,
     segment: Option<gst::Segment>,
+    multicast_ifaces: Vec<getifaddrs::Interface>,
 }
 
 impl Default for UdpSinkPadHandlerInner {
@@ -383,6 +446,7 @@ impl Default for UdpSinkPadHandlerInner {
             )]),
             socket_conf: Default::default(),
             segment: None,
+            multicast_ifaces: Vec::<getifaddrs::Interface>::new(),
         }
     }
 }
@@ -393,62 +457,103 @@ impl UdpSinkPadHandlerInner {
         if client.ip().is_multicast() {
             match client.ip() {
                 IpAddr::V4(addr) => {
-                    if let Some(socket) = self.socket.as_ref() {
-                        if self.socket_conf.auto_multicast {
+                    let Some(socket) = self.socket.as_ref() else {
+                        return Ok(());
+                    };
+
+                    if self.socket_conf.auto_multicast {
+                        for iface in &self.multicast_ifaces {
+                            if !iface.address.is_ipv4() {
+                                gst::debug!(
+                                    CAT,
+                                    "Skipping the IPv6 version of the interface {}",
+                                    iface.name
+                                );
+                                continue;
+                            }
+
+                            gst::debug!(CAT, "interface {} joining the multicast", iface.name);
+                            net::imp::join_multicast_v4(socket.as_ref(), &addr, iface).map_err(
+                                |err| {
+                                    error_msg!(
+                                        gst::ResourceError::OpenWrite,
+                                        [
+                                            "Failed to join multicast group on iface {} for {:?}: {}",
+                                            iface.name,
+                                            client,
+                                            err
+                                        ]
+                                    )
+                                },
+                            )?;
+                        }
+                    }
+
+                    if self.socket_conf.multicast_loop {
+                        socket.as_ref().set_multicast_loop_v4(true).map_err(|err| {
+                            error_msg!(
+                                gst::ResourceError::OpenWrite,
+                                ["Failed to set multicast loop for {:?}: {}", client, err]
+                            )
+                        })?;
+                    }
+
+                    socket
+                        .as_ref()
+                        .set_multicast_ttl_v4(self.socket_conf.ttl_mc)
+                        .map_err(|err| {
+                            error_msg!(
+                                gst::ResourceError::OpenWrite,
+                                ["Failed to set multicast ttl for {:?}: {}", client, err]
+                            )
+                        })?;
+                }
+                IpAddr::V6(addr) => {
+                    let Some(socket) = self.socket.as_ref() else {
+                        return Err(error_msg!(
+                            gst::ResourceError::OpenWrite,
+                            ["Socket not available"]
+                        ));
+                    };
+
+                    if self.socket_conf.auto_multicast {
+                        for iface in &self.multicast_ifaces {
+                            if !iface.address.is_ipv6() {
+                                gst::debug!(
+                                    CAT,
+                                    "Skipping the IPv4 version of the interface {}",
+                                    iface.name
+                                );
+                                continue;
+                            }
+
+                            gst::debug!(CAT, "interface {} joining the multicast", iface.name);
                             socket
                                 .as_ref()
-                                .join_multicast_v4(&addr, &Ipv4Addr::new(0, 0, 0, 0))
+                                .join_multicast_v6(&addr, iface.index.unwrap_or(0))
                                 .map_err(|err| {
                                     error_msg!(
                                         gst::ResourceError::OpenWrite,
                                         [
-                                            "Failed to join multicast group for {:?}: {}",
+                                            "Failed to join multicast group on iface {} for {:?}: {}",
+                                            iface.name,
                                             client,
                                             err
                                         ]
                                     )
                                 })?;
                         }
-                        if self.socket_conf.multicast_loop {
-                            socket.as_ref().set_multicast_loop_v4(true).map_err(|err| {
-                                error_msg!(
-                                    gst::ResourceError::OpenWrite,
-                                    ["Failed to set multicast loop for {:?}: {}", client, err]
-                                )
-                            })?;
-                        }
+                    }
 
-                        socket
-                            .as_ref()
-                            .set_multicast_ttl_v4(self.socket_conf.ttl_mc)
-                            .map_err(|err| {
-                                error_msg!(
-                                    gst::ResourceError::OpenWrite,
-                                    ["Failed to set multicast ttl for {:?}: {}", client, err]
-                                )
-                            })?;
+                    if self.socket_conf.multicast_loop {
+                        socket.as_ref().set_multicast_loop_v6(true).map_err(|err| {
+                            error_msg!(
+                                gst::ResourceError::OpenWrite,
+                                ["Failed to set multicast loop for {:?}: {}", client, err]
+                            )
+                        })?;
                     }
-                }
-                IpAddr::V6(addr) => {
-                    if let Some(socket) = self.socket_v6.as_ref() {
-                        if self.socket_conf.auto_multicast {
-                            socket.as_ref().join_multicast_v6(&addr, 0).map_err(|err| {
-                                error_msg!(
-                                    gst::ResourceError::OpenWrite,
-                                    ["Failed to join multicast group for {:?}: {}", client, err]
-                                )
-                            })?;
-                        }
-                        if self.socket_conf.multicast_loop {
-                            socket.as_ref().set_multicast_loop_v6(true).map_err(|err| {
-                                error_msg!(
-                                    gst::ResourceError::OpenWrite,
-                                    ["Failed to set multicast loop for {:?}: {}", client, err]
-                                )
-                            })?;
-                        }
-                        /* FIXME no API for set_multicast_ttl_v6 ? */
-                    }
+                    /* FIXME no API for set_multicast_ttl_v6 ? */
                 }
             }
         } else {
@@ -489,12 +594,27 @@ impl UdpSinkPadHandlerInner {
         if client.ip().is_multicast() {
             match client.ip() {
                 IpAddr::V4(addr) => {
-                    if let Some(socket) = self.socket.as_ref() {
-                        if self.socket_conf.auto_multicast {
-                            socket
-                                .as_ref()
-                                .leave_multicast_v4(&addr, &Ipv4Addr::new(0, 0, 0, 0))
-                                .map_err(|err| {
+                    let Some(socket) = self.socket.as_ref() else {
+                        return Err(error_msg!(
+                            gst::ResourceError::OpenWrite,
+                            ["Socket not available"]
+                        ));
+                    };
+
+                    if self.socket_conf.auto_multicast {
+                        for iface in &self.multicast_ifaces {
+                            if !iface.address.is_ipv4() {
+                                gst::debug!(
+                                    CAT,
+                                    "Skipping the IPv6 version of the interface {}",
+                                    iface.name
+                                );
+                                continue;
+                            }
+
+                            gst::debug!(CAT, "interface {} leaving the multicast", iface.name);
+                            net::imp::leave_multicast_v4(socket.as_ref(), &addr, iface).map_err(
+                                |err| {
                                     error_msg!(
                                         gst::ResourceError::OpenWrite,
                                         [
@@ -503,16 +623,34 @@ impl UdpSinkPadHandlerInner {
                                             err
                                         ]
                                     )
-                                })?;
+                                },
+                            )?;
                         }
                     }
                 }
                 IpAddr::V6(addr) => {
-                    if let Some(socket) = self.socket_v6.as_ref() {
-                        if self.socket_conf.auto_multicast {
+                    let Some(socket) = self.socket.as_ref() else {
+                        return Err(error_msg!(
+                            gst::ResourceError::OpenWrite,
+                            ["Socket not available"]
+                        ));
+                    };
+
+                    if self.socket_conf.auto_multicast {
+                        for iface in &self.multicast_ifaces {
+                            if !iface.address.is_ipv6() {
+                                gst::debug!(
+                                    CAT,
+                                    "Skipping the IPv4 version of the interface {}",
+                                    iface.name
+                                );
+                                continue;
+                            }
+
+                            gst::debug!(CAT, "interface {} leaving the multicast", iface.name);
                             socket
                                 .as_ref()
-                                .leave_multicast_v6(&addr, 0)
+                                .leave_multicast_v6(&addr, iface.index.unwrap_or(0))
                                 .map_err(|err| {
                                     error_msg!(
                                         gst::ResourceError::OpenWrite,
@@ -556,7 +694,7 @@ impl UdpSinkPadHandlerInner {
             };
 
             if let Some(socket) = socket.as_mut() {
-                gst::log!(CAT, obj: elem, "Sending to {client:?}");
+                gst::log!(CAT, obj = elem, "Sending to {client:?}");
                 socket.send_to(&data, *client).await.map_err(|err| {
                     gst::element_error!(
                         elem,
@@ -577,7 +715,7 @@ impl UdpSinkPadHandlerInner {
             }
         }
 
-        gst::log!(CAT, obj: elem, "Sent buffer {buffer:?} to all clients");
+        gst::log!(CAT, obj = elem, "Sent buffer {buffer:?} to all clients");
 
         Ok(gst::FlowSuccess::Ok)
     }
@@ -587,7 +725,7 @@ impl UdpSinkPadHandlerInner {
         let now = elem.current_running_time();
 
         if let Ok(Some(delay)) = running_time.opt_checked_sub(now) {
-            gst::trace!(CAT, obj: elem, "sync: waiting {delay}");
+            gst::trace!(CAT, obj = elem, "sync: waiting {delay}");
             runtime::timer::delay_for(delay.into()).await;
         }
     }
@@ -598,7 +736,7 @@ impl UdpSinkPadHandlerInner {
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         if self.is_flushing {
-            gst::info!(CAT, obj: elem, "Discarding {buffer:?} (flushing)");
+            gst::info!(CAT, obj = elem, "Discarding {buffer:?} (flushing)");
 
             return Err(gst::FlowError::Flushing);
         }
@@ -614,14 +752,14 @@ impl UdpSinkPadHandlerInner {
                 self.sync(elem, rtime).await;
 
                 if self.is_flushing {
-                    gst::info!(CAT, obj: elem, "Discarding {buffer:?} (flushing)");
+                    gst::info!(CAT, obj = elem, "Discarding {buffer:?} (flushing)");
 
                     return Err(gst::FlowError::Flushing);
                 }
             }
         }
 
-        gst::debug!(CAT, obj: elem, "Handling {buffer:?}");
+        gst::debug!(CAT, obj = elem, "Handling {buffer:?}");
 
         self.render(elem, buffer).await.map_err(|err| {
             element_error!(
@@ -700,7 +838,7 @@ impl UdpSink {
             };
 
             let saddr = SocketAddr::new(bind_addr, bind_port as u16);
-            gst::debug!(CAT, imp: self, "Binding to {:?}", saddr);
+            gst::debug!(CAT, imp = self, "Binding to {:?}", saddr);
 
             let socket = match family {
                 SocketFamily::Ipv4 => socket2::Socket::new(
@@ -720,7 +858,7 @@ impl UdpSink {
                 Err(err) => {
                     gst::warning!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Failed to create {} socket: {}",
                         match family {
                             SocketFamily::Ipv4 => "IPv4",
@@ -773,7 +911,7 @@ impl UdpSink {
     }
 
     fn prepare(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Preparing");
+        gst::debug!(CAT, imp = self, "Preparing");
 
         let mut settings = self.settings.lock().unwrap();
 
@@ -791,36 +929,36 @@ impl UdpSink {
             .prepare(self, socket, socket_v6, &settings)?;
         *self.ts_ctx.lock().unwrap() = Some(ts_ctx);
 
-        gst::debug!(CAT, imp: self, "Started preparation");
+        gst::debug!(CAT, imp = self, "Started preparation");
 
         Ok(())
     }
 
     fn unprepare(&self) {
-        gst::debug!(CAT, imp: self, "Unpreparing");
+        gst::debug!(CAT, imp = self, "Unpreparing");
         self.sink_pad_handler.unprepare();
         *self.ts_ctx.lock().unwrap() = None;
-        gst::debug!(CAT, imp: self, "Unprepared");
+        gst::debug!(CAT, imp = self, "Unprepared");
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Stopping");
+        gst::debug!(CAT, imp = self, "Stopping");
         self.sink_pad_handler.stop();
-        gst::debug!(CAT, imp: self, "Stopped");
+        gst::debug!(CAT, imp = self, "Stopped");
         Ok(())
     }
 
     fn start(&self) -> Result<(), gst::ErrorMessage> {
-        gst::debug!(CAT, imp: self, "Starting");
+        gst::debug!(CAT, imp = self, "Starting");
         self.sink_pad_handler.start();
-        gst::debug!(CAT, imp: self, "Started");
+        gst::debug!(CAT, imp = self, "Started");
         Ok(())
     }
 
     fn try_into_socket_addr(&self, host: &str, port: i32) -> Result<SocketAddr, ()> {
         let addr: IpAddr = match host.parse() {
             Err(err) => {
-                gst::error!(CAT, imp: self, "Failed to parse host {}: {}", host, err);
+                gst::error!(CAT, imp = self, "Failed to parse host {}: {}", host, err);
                 return Err(());
             }
             Ok(addr) => addr,
@@ -828,7 +966,7 @@ impl UdpSink {
 
         let port: u16 = match port.try_into() {
             Err(err) => {
-                gst::error!(CAT, imp: self, "Invalid port {}: {}", port, err);
+                gst::error!(CAT, imp = self, "Invalid port {}: {}", port, err);
                 return Err(());
             }
             Ok(port) => port,
@@ -848,7 +986,7 @@ impl ObjectSubclass for UdpSink {
         let sink_pad_handler = UdpSinkPadHandler::default();
         Self {
             sink_pad: PadSink::new(
-                gst::Pad::from_template(&klass.pad_template("sink").unwrap(), Some("sink")),
+                gst::Pad::from_template(&klass.pad_template("sink").unwrap()),
                 sink_pad_handler.clone(),
             ),
             sink_pad_handler,
@@ -860,7 +998,7 @@ impl ObjectSubclass for UdpSink {
 
 impl ObjectImpl for UdpSink {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecString::builder("context")
                     .nick("Context")
@@ -954,6 +1092,11 @@ impl ObjectImpl for UdpSink {
                     .blurb("A comma separated list of host:port pairs with destinations")
                     .default_value(Some(DEFAULT_CLIENTS))
                     .build(),
+                glib::ParamSpecString::builder("multicast-iface")
+                    .nick("Multicast Interface")
+                    .blurb("The network interface on which to join the multicast group. (Supports only single interface)")
+                    .default_value(DEFAULT_MULTICAST_IFACE)
+                    .build(),
             ]
         });
 
@@ -961,12 +1104,12 @@ impl ObjectImpl for UdpSink {
     }
 
     fn signals() -> &'static [glib::subclass::Signal] {
-        static SIGNALS: Lazy<Vec<glib::subclass::Signal>> = Lazy::new(|| {
+        static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
             vec![
                 glib::subclass::Signal::builder("add")
                     .param_types([String::static_type(), i32::static_type()])
                     .action()
-                    .class_handler(|_, args| {
+                    .class_handler(|args| {
                         let elem = args[0].get::<super::UdpSink>().expect("signal arg");
                         let host = args[1].get::<String>().expect("signal arg");
                         let port = args[2].get::<i32>().expect("signal arg");
@@ -982,7 +1125,7 @@ impl ObjectImpl for UdpSink {
                 glib::subclass::Signal::builder("remove")
                     .param_types([String::static_type(), i32::static_type()])
                     .action()
-                    .class_handler(|_, args| {
+                    .class_handler(|args| {
                         let elem = args[0].get::<super::UdpSink>().expect("signal arg");
                         let host = args[1].get::<String>().expect("signal arg");
                         let port = args[2].get::<i32>().expect("signal arg");
@@ -997,7 +1140,7 @@ impl ObjectImpl for UdpSink {
                     .build(),
                 glib::subclass::Signal::builder("clear")
                     .action()
-                    .class_handler(|_, args| {
+                    .class_handler(|args| {
                         let elem = args[0].get::<super::UdpSink>().expect("signal arg");
 
                         let imp = elem.imp();
@@ -1082,27 +1225,27 @@ impl ObjectImpl for UdpSink {
                     .unwrap_or_else(|| "".into());
 
                 let clients = clients.split(',').filter_map(|client| {
-                    let mut splited = client.splitn(2, ':');
-                    if let Some((addr, port)) = splited.next().zip(splited.next()) {
+                    let mut split = client.splitn(2, ':');
+                    if let Some((addr, port)) = split.next().zip(split.next()) {
                         match port.parse::<i32>() {
                             Ok(port) => match self.try_into_socket_addr(addr, port) {
                                 Ok(socket_addr) => Some(socket_addr),
                                 Err(()) => {
                                     gst::error!(
                                         CAT,
-                                        imp: self,
+                                        imp = self,
                                         "Invalid socket address {addr}:{port}"
                                     );
                                     None
                                 }
                             },
                             Err(err) => {
-                                gst::error!(CAT, imp: self, "Invalid port {err}");
+                                gst::error!(CAT, imp = self, "Invalid port {err}");
                                 None
                             }
                         }
                     } else {
-                        gst::error!(CAT, imp: self, "Invalid client {client}");
+                        gst::error!(CAT, imp = self, "Invalid client {client}");
                         None
                     }
                 });
@@ -1120,6 +1263,9 @@ impl ObjectImpl for UdpSink {
                 settings.context_wait = Duration::from_millis(
                     value.get::<u32>().expect("type checked upstream").into(),
                 );
+            }
+            "multicast-iface" => {
+                settings.multicast_iface = value.get().expect("type checked upstream");
             }
             _ => unimplemented!(),
         }
@@ -1166,6 +1312,7 @@ impl ObjectImpl for UdpSink {
             }
             "context" => settings.context.to_value(),
             "context-wait" => (settings.context_wait.as_millis() as u32).to_value(),
+            "multicast-iface" => settings.multicast_iface.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -1183,7 +1330,7 @@ impl GstObjectImpl for UdpSink {}
 
 impl ElementImpl for UdpSink {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Thread-sharing UDP sink",
                 "Sink/Network",
@@ -1196,7 +1343,7 @@ impl ElementImpl for UdpSink {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
 
             let sink_pad_template = gst::PadTemplate::new(
@@ -1217,7 +1364,7 @@ impl ElementImpl for UdpSink {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::NullToReady => {

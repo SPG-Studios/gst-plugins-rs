@@ -10,8 +10,9 @@
 
 #![allow(clippy::single_match)]
 
-use gst::glib;
-use gst::prelude::*;
+use gst::{glib, prelude::*};
+use http_body_util::combinators::BoxBody;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use std::sync::mpsc;
 
@@ -33,7 +34,7 @@ struct Harness {
     src: gst::Element,
     pad: gst::Pad,
     receiver: Option<mpsc::Receiver<Message>>,
-    rt: Option<tokio::runtime::Runtime>,
+    rt: tokio::runtime::Runtime,
 }
 
 /// Messages sent from our test harness
@@ -46,20 +47,34 @@ enum Message {
     ServerError(String),
 }
 
+fn full_body(s: impl Into<bytes::Bytes>) -> BoxBody<bytes::Bytes, hyper::Error> {
+    use http_body_util::{BodyExt, Full};
+    Full::new(s.into()).map_err(|never| match never {}).boxed()
+}
+
+fn empty_body() -> BoxBody<bytes::Bytes, hyper::Error> {
+    use http_body_util::{BodyExt, Empty};
+    Empty::new().map_err(|never| match never {}).boxed()
+}
+
 impl Harness {
     /// Creates a new HTTP source and test harness around it
     ///
     /// `http_func`: Function to generate HTTP responses based on a request
     /// `setup_func`: Setup function for the HTTP source, should only set properties and similar
     fn new<
-        F: FnMut(hyper::Request<hyper::Body>) -> hyper::Response<hyper::Body> + Send + 'static,
+        F: FnMut(
+                hyper::Request<hyper::body::Incoming>,
+            ) -> hyper::Response<BoxBody<bytes::Bytes, hyper::Error>>
+            + Send
+            + 'static,
         G: FnOnce(&gst::Element),
     >(
         http_func: F,
         setup_func: G,
     ) -> Harness {
-        use hyper::service::{make_service_fn, service_fn};
-        use hyper::Server;
+        use hyper::server::conn::http1;
+        use hyper::service::service_fn;
         use std::sync::{Arc, Mutex};
 
         // Create the HTTP source
@@ -72,7 +87,8 @@ impl Harness {
         let (sender, receiver) = mpsc::sync_channel(0);
 
         // Sink pad that receives everything the source is generating
-        let pad = gst::Pad::builder(Some("sink"), gst::PadDirection::Sink)
+        let pad = gst::Pad::builder(gst::PadDirection::Sink)
+            .name("sink")
             .chain_function({
                 let sender_clone = sender.clone();
                 move |_pad, _parent, buffer| {
@@ -111,21 +127,15 @@ impl Harness {
             .unwrap();
 
         // Create an HTTP sever that listens on localhost on some random, free port
-        let addr = ([127, 0, 0, 1], 0).into();
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
 
         // Whenever a new client is connecting, a new service function is requested. For each
         // client we use the same service function, which simply calls the function used by the
         // test
         let http_func = Arc::new(Mutex::new(http_func));
-        let make_service = make_service_fn(move |_ctx| {
+        let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
             let http_func = http_func.clone();
-            async move {
-                let http_func = http_func.clone();
-                Ok::<_, hyper::Error>(service_fn(move |req| {
-                    let http_func = http_func.clone();
-                    async move { Ok::<_, hyper::Error>((*http_func.lock().unwrap())(req)) }
-                }))
-            }
+            async move { Ok::<_, hyper::Error>((*http_func.lock().unwrap())(req)) }
         });
 
         let (local_addr_sender, local_addr_receiver) = tokio::sync::oneshot::channel();
@@ -134,13 +144,22 @@ impl Harness {
         rt.spawn(async move {
             // Bind the server, retrieve the local port that was selected in the end and set this as
             // the location property on the source
-            let server = Server::bind(&addr).serve(make_service);
-            let local_addr = server.local_addr();
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            let local_addr = listener.local_addr().unwrap();
 
             local_addr_sender.send(local_addr).unwrap();
 
-            if let Err(e) = server.await {
-                let _ = sender.send(Message::ServerError(format!("{e:?}")));
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = tokio_io::TokioIo::new(stream);
+                let service = service.clone();
+                let sender = sender.clone();
+                tokio::task::spawn(async move {
+                    let http = http1::Builder::new().serve_connection(io, service);
+                    if let Err(e) = http.await {
+                        let _ = sender.send(Message::ServerError(format!("{e}")));
+                    }
+                });
             }
         });
 
@@ -154,7 +173,7 @@ impl Harness {
             src,
             pad,
             receiver: Some(receiver),
-            rt: Some(rt),
+            rt,
         }
     }
 
@@ -235,11 +254,16 @@ impl Harness {
     fn wait_for_segment(
         &mut self,
         allow_buffer: bool,
+        mut allow_server_error: bool,
     ) -> gst::FormattedSegment<gst::format::Bytes> {
         loop {
             match self.receiver.as_mut().unwrap().recv().unwrap() {
                 Message::ServerError(err) => {
-                    panic!("Got server error: {err}");
+                    if allow_server_error {
+                        allow_server_error = false;
+                    } else {
+                        panic!("Got server error: {err}");
+                    }
                 }
                 Message::Event(ev) => {
                     use gst::EventView;
@@ -336,28 +360,25 @@ impl Drop for Harness {
 
         self.pad.set_active(false).unwrap();
         self.src.set_state(gst::State::Null).unwrap();
-
-        self.rt.take().unwrap();
     }
 }
 
 #[test]
 fn test_basic_request() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request and checks if the
     // default headers are all sent
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             assert_eq!(headers.get("connection").unwrap(), "keep-alive");
             assert_eq!(headers.get("accept-encoding").unwrap(), "identity");
             assert_eq!(headers.get("icy-metadata").unwrap(), "1");
 
-            Response::new(Body::from("Hello World"))
+            hyper::Response::new(full_body("Hello World"))
         },
         |_src| {
             // No additional setup needed here
@@ -398,21 +419,20 @@ fn test_basic_request() {
 #[test]
 fn test_basic_request_inverted_defaults() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request and override various
     // default properties to check if the corresponding headers are set correctly
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             assert_eq!(headers.get("connection").unwrap(), "close");
             assert_eq!(headers.get("accept-encoding").unwrap(), "gzip");
             assert_eq!(headers.get("icy-metadata"), None);
             assert_eq!(headers.get("user-agent").unwrap(), "test user-agent");
 
-            Response::new(Body::from("Hello World"))
+            hyper::Response::new(full_body("Hello World"))
         },
         |src| {
             src.set_property("keep-alive", false);
@@ -456,14 +476,13 @@ fn test_basic_request_inverted_defaults() {
 #[test]
 fn test_extra_headers() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request and check if the
     // extra-headers property works correctly for setting additional headers
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             assert_eq!(headers.get("foo").unwrap(), "bar");
             assert_eq!(headers.get("baz").unwrap(), "1");
@@ -484,12 +503,12 @@ fn test_extra_headers() {
                 vec!["1", "2"]
             );
 
-            Response::new(Body::from("Hello World"))
+            hyper::Response::new(full_body("Hello World"))
         },
         |src| {
             src.set_property(
                 "extra-headers",
-                &gst::Structure::builder("headers")
+                gst::Structure::builder("headers")
                     .field("foo", "bar")
                     .field("baz", 1i32)
                     .field("list", gst::List::new([1i32, 2i32]))
@@ -533,23 +552,22 @@ fn test_extra_headers() {
 #[test]
 fn test_cookies_property() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request and check if the
     // cookies property can be used to set cookies correctly
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             assert_eq!(headers.get("cookie").unwrap(), "foo=1; bar=2; baz=3");
 
-            Response::new(Body::from("Hello World"))
+            hyper::Response::new(full_body("Hello World"))
         },
         |src| {
             src.set_property(
                 "cookies",
-                &vec![
+                vec![
                     String::from("foo=1"),
                     String::from("bar=2"),
                     String::from("baz=3"),
@@ -592,6 +610,7 @@ fn test_cookies_property() {
 #[test]
 fn test_iradio_mode() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request and check if the
@@ -599,18 +618,16 @@ fn test_iradio_mode() {
     // and put into caps/tags
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             assert_eq!(headers.get("icy-metadata").unwrap(), "1");
 
-            Response::builder()
+            hyper::Response::builder()
                 .header("icy-metaint", "8192")
                 .header("icy-name", "Name")
                 .header("icy-genre", "Genre")
                 .header("icy-url", "http://www.example.com")
                 .header("Content-Type", "audio/mpeg; rate=44100")
-                .body(Body::from("Hello World"))
+                .body(full_body("Hello World"))
                 .unwrap()
         },
         |_src| {
@@ -676,17 +693,16 @@ fn test_iradio_mode() {
 #[test]
 fn test_audio_l16() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request and check if the
     // audio/L16 content type is parsed correctly and put into the caps
     let mut h = Harness::new(
         |_req| {
-            use hyper::{Body, Response};
-
-            Response::builder()
+            hyper::Response::builder()
                 .header("Content-Type", "audio/L16; rate=48000; channels=2")
-                .body(Body::from("Hello World"))
+                .body(full_body("Hello World"))
                 .unwrap()
         },
         |_src| {
@@ -740,25 +756,23 @@ fn test_audio_l16() {
 #[test]
 fn test_authorization() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Set up a harness that returns "Hello World" for any HTTP request
     // but requires authentication first
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-            use reqwest::StatusCode;
-
             let headers = req.headers();
 
             if let Some(authorization) = headers.get("authorization") {
                 assert_eq!(authorization, "Basic dXNlcjpwYXNzd29yZA==");
-                Response::new(Body::from("Hello World"))
+                hyper::Response::new(full_body("Hello World"))
             } else {
-                Response::builder()
-                    .status(StatusCode::UNAUTHORIZED.as_u16())
+                hyper::Response::builder()
+                    .status(reqwest::StatusCode::UNAUTHORIZED.as_u16())
                     .header("WWW-Authenticate", "Basic realm=\"realm\"")
-                    .body(Body::empty())
+                    .body(empty_body())
                     .unwrap()
             }
         },
@@ -801,17 +815,14 @@ fn test_authorization() {
 
 #[test]
 fn test_404_error() {
-    use reqwest::StatusCode;
     init();
 
     // Harness that always returns 404 and we check if that is mapped to the correct error code
     let mut h = Harness::new(
         |_req| {
-            use hyper::{Body, Response};
-
-            Response::builder()
-                .status(StatusCode::NOT_FOUND.as_u16())
-                .body(Body::empty())
+            hyper::Response::builder()
+                .status(reqwest::StatusCode::NOT_FOUND.as_u16())
+                .body(empty_body())
                 .unwrap()
         },
         |_src| {},
@@ -829,17 +840,14 @@ fn test_404_error() {
 
 #[test]
 fn test_403_error() {
-    use reqwest::StatusCode;
     init();
 
     // Harness that always returns 403 and we check if that is mapped to the correct error code
     let mut h = Harness::new(
         |_req| {
-            use hyper::{Body, Response};
-
-            Response::builder()
-                .status(StatusCode::FORBIDDEN.as_u16())
-                .body(Body::empty())
+            hyper::Response::builder()
+                .status(reqwest::StatusCode::FORBIDDEN.as_u16())
+                .body(empty_body())
                 .unwrap()
         },
         |_src| {},
@@ -880,13 +888,12 @@ fn test_network_error() {
 #[test]
 fn test_seek_after_ready() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Harness that checks if seeking in Ready state works correctly
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             if let Some(range) = headers.get("Range") {
                 if range == "bytes=123-" {
@@ -895,11 +902,11 @@ fn test_seek_after_ready() {
                         *d = ((i + 123) % 256) as u8;
                     }
 
-                    Response::builder()
+                    hyper::Response::builder()
                         .header("content-length", 8192 - 123)
                         .header("accept-ranges", "bytes")
                         .header("content-range", "bytes 123-8192/8192")
-                        .body(Body::from(data_seek))
+                        .body(full_body(data_seek))
                         .unwrap()
                 } else {
                     panic!("Received an unexpected Range header")
@@ -915,10 +922,10 @@ fn test_seek_after_ready() {
                     *d = (i % 256) as u8;
                 }
 
-                Response::builder()
+                hyper::Response::builder()
                     .header("content-length", 8192)
                     .header("accept-ranges", "bytes")
-                    .body(Body::from(data_full))
+                    .body(full_body(data_full))
                     .unwrap()
             }
         },
@@ -937,7 +944,7 @@ fn test_seek_after_ready() {
         src.set_state(gst::State::Playing).unwrap();
     });
 
-    let segment = h.wait_for_segment(false);
+    let segment = h.wait_for_segment(false, true);
     assert_eq!(segment.start(), Some(123.bytes()));
 
     let mut expected_output = vec![0; 8192 - 123];
@@ -960,14 +967,13 @@ fn test_seek_after_ready() {
 #[test]
 fn test_seek_after_buffer_received() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Harness that checks if seeking in Playing state after having received a buffer works
     // correctly
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             if let Some(range) = headers.get("Range") {
                 if range == "bytes=123-" {
@@ -976,11 +982,11 @@ fn test_seek_after_buffer_received() {
                         *d = ((i + 123) % 256) as u8;
                     }
 
-                    Response::builder()
+                    hyper::Response::builder()
                         .header("content-length", 8192 - 123)
                         .header("accept-ranges", "bytes")
                         .header("content-range", "bytes 123-8192/8192")
-                        .body(Body::from(data_seek))
+                        .body(full_body(data_seek))
                         .unwrap()
                 } else {
                     panic!("Received an unexpected Range header")
@@ -991,10 +997,10 @@ fn test_seek_after_buffer_received() {
                     *d = (i % 256) as u8;
                 }
 
-                Response::builder()
+                hyper::Response::builder()
                     .header("content-length", 8192)
                     .header("accept-ranges", "bytes")
-                    .body(Body::from(data_full))
+                    .body(full_body(data_full))
                     .unwrap()
             }
         },
@@ -1014,7 +1020,7 @@ fn test_seek_after_buffer_received() {
         src.seek_simple(gst::SeekFlags::FLUSH, 123.bytes()).unwrap();
     });
 
-    let segment = h.wait_for_segment(true);
+    let segment = h.wait_for_segment(true, true);
     assert_eq!(segment.start(), Some(123.bytes()));
 
     let mut expected_output = vec![0; 8192 - 123];
@@ -1037,14 +1043,13 @@ fn test_seek_after_buffer_received() {
 #[test]
 fn test_seek_with_stop_position() {
     use std::io::{Cursor, Read};
+
     init();
 
     // Harness that checks if seeking in Playing state after having received a buffer works
     // correctly
     let mut h = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             if let Some(range) = headers.get("Range") {
                 if range == "bytes=123-130" {
@@ -1053,11 +1058,11 @@ fn test_seek_with_stop_position() {
                         *d = ((i + 123) % 256) as u8;
                     }
 
-                    Response::builder()
+                    hyper::Response::builder()
                         .header("content-length", 8)
                         .header("accept-ranges", "bytes")
                         .header("content-range", "bytes 123-130/8192")
-                        .body(Body::from(data_seek))
+                        .body(full_body(data_seek))
                         .unwrap()
                 } else {
                     panic!("Received an unexpected Range header")
@@ -1068,10 +1073,10 @@ fn test_seek_with_stop_position() {
                     *d = (i % 256) as u8;
                 }
 
-                Response::builder()
+                hyper::Response::builder()
                     .header("content-length", 8192)
                     .header("accept-ranges", "bytes")
-                    .body(Body::from(data_full))
+                    .body(full_body(data_full))
                     .unwrap()
             }
         },
@@ -1101,7 +1106,7 @@ fn test_seek_with_stop_position() {
         .unwrap();
     });
 
-    let segment = h.wait_for_segment(true);
+    let segment = h.wait_for_segment(true, true);
     assert_eq!(segment.start(), Some(start));
     assert_eq!(segment.stop(), Some(stop));
 
@@ -1130,11 +1135,9 @@ fn test_cookies() {
     // client
     let mut h = Harness::new(
         |_req| {
-            use hyper::{Body, Response};
-
-            Response::builder()
+            hyper::Response::builder()
                 .header("Set-Cookie", "foo=bar")
-                .body(Body::from("Hello World"))
+                .body(full_body("Hello World"))
                 .unwrap()
         },
         |_src| {
@@ -1157,8 +1160,6 @@ fn test_cookies() {
     // client provides the cookie that was set in the previous request
     let mut h2 = Harness::new(
         |req| {
-            use hyper::{Body, Response};
-
             let headers = req.headers();
             let cookies = headers
                 .get("Cookie")
@@ -1166,8 +1167,8 @@ fn test_cookies() {
                 .to_str()
                 .unwrap();
             assert!(cookies.split(';').any(|c| c == "foo=bar"));
-            Response::builder()
-                .body(Body::from("Hello again!"))
+            hyper::Response::builder()
+                .body(full_body("Hello again!"))
                 .unwrap()
         },
         |_src| {
@@ -1223,63 +1224,76 @@ fn test_proxy_prop_souphttpsrc_compatibility() {
 fn test_proxy() {
     init();
 
-    // Simplest possible implementation of naive oneshot proxy server?
-    // Listen on socket before spawning thread (we won't error out with connection refused).
-    let incoming = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let proxy_addr = incoming.local_addr().unwrap();
-    println!("listening on {proxy_addr}, starting proxy server");
-    let proxy_server = std::thread::spawn(move || {
-        use std::io::*;
-        println!("awaiting connection to proxy server");
-        let (mut conn, _addr) = incoming.accept().unwrap();
-
-        println!("client connected, reading request line");
-        let mut reader = BufReader::new(conn.try_clone().unwrap());
-        let mut buf = String::new();
-        reader.read_line(&mut buf).unwrap();
-        let parts: Vec<&str> = buf.split(' ').collect();
-        let url = reqwest::Url::parse(parts[1]).unwrap();
-        let host = format!(
-            "{}:{}",
-            url.host_str().unwrap(),
-            url.port_or_known_default().unwrap()
-        );
-
-        println!("connecting to target server {host}");
-        let mut server_connection = std::net::TcpStream::connect(host).unwrap();
-
-        println!("connected to target server, sending modified request line");
-        server_connection
-            .write_all(format!("{} {} {}\r\n", parts[0], url.path(), parts[2]).as_bytes())
-            .unwrap();
-
-        println!("sent modified request line, forwarding data in both directions");
-        let send_join_handle = {
-            let mut server_connection = server_connection.try_clone().unwrap();
-            std::thread::spawn(move || {
-                copy(&mut reader, &mut server_connection).unwrap();
-            })
-        };
-        copy(&mut server_connection, &mut conn).unwrap();
-        send_join_handle.join().unwrap();
-        println!("shutting down proxy server");
-    });
-
     let mut h = Harness::new(
         |_req| {
-            use hyper::{Body, Response};
-
-            Response::builder()
-                .body(Body::from("Hello Proxy World"))
+            hyper::Response::builder()
+                .body(full_body("Hello Proxy World"))
                 .unwrap()
         },
-        |src| {
-            src.set_property("proxy", proxy_addr.to_string());
-        },
+        |_src| {},
     );
 
+    // Simplest possible implementation of naive oneshot proxy server?
+    // Listen on socket before spawning thread (we won't error out with connection refused).
+    let (proxy_handle, proxy_addr) = {
+        let (proxy_addr_sender, proxy_addr_receiver) = tokio::sync::oneshot::channel();
+
+        let proxy_handle = h.rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            println!("listening on {proxy_addr}, starting proxy server");
+
+            proxy_addr_sender.send(proxy_addr).unwrap();
+
+            println!("awaiting connection to proxy server");
+            let (conn, _addr) = listener.accept().await.unwrap();
+
+            let (conn_reader, mut conn_writer) = tokio::io::split(conn);
+            println!("client connected, reading request line");
+            let mut reader = tokio::io::BufReader::new(conn_reader);
+            let mut buf = String::new();
+            reader.read_line(&mut buf).await.unwrap();
+            let parts: Vec<&str> = buf.split(' ').collect();
+            let url = reqwest::Url::parse(parts[1]).unwrap();
+            let host = format!(
+                "{}:{}",
+                url.host_str().unwrap(),
+                url.port_or_known_default().unwrap()
+            );
+
+            println!("connecting to target server {host}");
+            let mut server_connection = tokio::net::TcpStream::connect(host).await.unwrap();
+
+            println!("connected to target server, sending modified request line");
+            server_connection
+                .write_all(format!("{} {} {}", parts[0], url.path(), parts[2]).as_bytes())
+                .await
+                .unwrap();
+
+            let (mut server_reader, mut server_writer) = tokio::io::split(server_connection);
+
+            println!("sent modified request line, forwarding data in both directions");
+            let send_join_handle = tokio::task::spawn(async move {
+                tokio::io::copy(&mut reader, &mut server_writer)
+                    .await
+                    .unwrap();
+            });
+            tokio::io::copy(&mut server_reader, &mut conn_writer)
+                .await
+                .unwrap();
+            send_join_handle.await.unwrap();
+            println!("shutting down proxy server");
+        });
+
+        (
+            proxy_handle,
+            futures::executor::block_on(proxy_addr_receiver).unwrap(),
+        )
+    };
+
     // Set the HTTP source to Playing so that everything can start.
-    h.run(|src| {
+    h.run(move |src| {
+        src.set_property("proxy", proxy_addr.to_string());
         src.set_state(gst::State::Playing).unwrap();
     });
 
@@ -1291,5 +1305,90 @@ fn test_proxy() {
     assert_eq!(num_bytes, "Hello Proxy World".len());
 
     // Don't leave threads hanging around.
-    proxy_server.join().unwrap();
+    proxy_handle.abort();
+    let _ = futures::executor::block_on(proxy_handle);
+}
+
+/// Adapter from tokio IO traits to hyper IO traits.
+mod tokio_io {
+    use pin_project_lite::pin_project;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    pin_project! {
+        #[derive(Debug)]
+        pub struct TokioIo<T> {
+            #[pin]
+            inner: T,
+        }
+    }
+
+    impl<T> TokioIo<T> {
+        pub fn new(inner: T) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl<T> hyper::rt::Read for TokioIo<T>
+    where
+        T: tokio::io::AsyncRead,
+    {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            mut buf: hyper::rt::ReadBufCursor<'_>,
+        ) -> Poll<Result<(), std::io::Error>> {
+            let n = unsafe {
+                let mut tbuf = tokio::io::ReadBuf::uninit(buf.as_mut());
+                match tokio::io::AsyncRead::poll_read(self.project().inner, cx, &mut tbuf) {
+                    Poll::Ready(Ok(())) => tbuf.filled().len(),
+                    other => return other,
+                }
+            };
+
+            unsafe {
+                buf.advance(n);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl<T> hyper::rt::Write for TokioIo<T>
+    where
+        T: tokio::io::AsyncWrite,
+    {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<Result<usize, std::io::Error>> {
+            tokio::io::AsyncWrite::poll_write(self.project().inner, cx, buf)
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), std::io::Error>> {
+            tokio::io::AsyncWrite::poll_flush(self.project().inner, cx)
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Result<(), std::io::Error>> {
+            tokio::io::AsyncWrite::poll_shutdown(self.project().inner, cx)
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            tokio::io::AsyncWrite::is_write_vectored(&self.inner)
+        }
+
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bufs: &[std::io::IoSlice<'_>],
+        ) -> Poll<Result<usize, std::io::Error>> {
+            tokio::io::AsyncWrite::poll_write_vectored(self.project().inner, cx, bufs)
+        }
+    }
 }

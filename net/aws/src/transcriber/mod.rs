@@ -10,8 +10,21 @@ use gst::glib;
 use gst::prelude::*;
 
 mod imp;
+mod remote_types;
+mod transcribe;
+mod translate;
 
-use aws_sdk_transcribestreaming::model::{PartialResultsStability, VocabularyFilterMethod};
+use std::sync::LazyLock;
+
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new(
+        "awstranscribe",
+        gst::DebugColorFlags::empty(),
+        Some("AWS Transcribe element"),
+    )
+});
+
+use aws_sdk_transcribestreaming::types::{PartialResultsStability, VocabularyFilterMethod};
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
@@ -67,8 +80,27 @@ impl From<AwsTranscriberVocabularyFilterMethod> for VocabularyFilterMethod {
     }
 }
 
+#[derive(Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstAwsTranscriberTranslationTokenizationMethod")]
+#[non_exhaustive]
+pub enum TranslationTokenizationMethod {
+    #[default]
+    #[enum_value(name = "None: don't tokenize translations", nick = "none")]
+    None = 0,
+    #[enum_value(
+        name = "Span based: insert spans in the transript text and use the resulting spans in the translations to reproduce speech pacing.",
+        nick = "span-based"
+    )]
+    SpanBased = 1,
+}
+
 glib::wrapper! {
-    pub struct Transcriber(ObjectSubclass<imp::Transcriber>) @extends gst::Element, gst::Object;
+    pub struct Transcriber(ObjectSubclass<imp::Transcriber>) @extends gst::Element, gst::Object, @implements gst::ChildProxy;
+}
+
+glib::wrapper! {
+    pub struct TranslateSrcPad(ObjectSubclass<imp::TranslateSrcPad>) @extends gst::Pad, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -78,11 +110,14 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
             .mark_as_plugin_api(gst::PluginAPIFlags::empty());
         AwsTranscriberVocabularyFilterMethod::static_type()
             .mark_as_plugin_api(gst::PluginAPIFlags::empty());
+        TranslationTokenizationMethod::static_type()
+            .mark_as_plugin_api(gst::PluginAPIFlags::empty());
+        TranslateSrcPad::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
     }
     gst::Element::register(
         Some(plugin),
         "awstranscriber",
-        gst::Rank::None,
+        gst::Rank::NONE,
         Transcriber::static_type(),
     )
 }

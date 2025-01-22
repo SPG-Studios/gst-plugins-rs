@@ -127,7 +127,7 @@ async fn run(args: Args) -> Result<(), Error> {
         args.uri
     );
 
-    let pipeline = gst::parse_launch(&pipeline_str)?;
+    let pipeline = gst::parse::launch(&pipeline_str)?;
     let ws = pipeline
         .downcast_ref::<gst::Bin>()
         .unwrap()
@@ -137,9 +137,8 @@ async fn run(args: Args) -> Result<(), Error> {
     ws.connect("encoder-setup", false, |values| {
         let encoder = values[3].get::<gst::Element>().unwrap();
 
-        info!("Encoder: {}", encoder.factory().unwrap().name());
-
         let configured = if let Some(factory) = encoder.factory() {
+            info!("Encoder: {}", factory.name());
             matches!(factory.name().as_str(), "does-not-exist")
         } else {
             false

@@ -4,31 +4,45 @@ use gst::prelude::*;
 use std::fmt;
 use std::mem;
 
+use crate::ndi::{AudioFrame, MetadataFrame, VideoFrame};
+
 #[repr(transparent)]
 pub struct NdiSrcMeta(imp::NdiSrcMeta);
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum StreamType {
-    Audio,
-    Video,
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum Buffer {
+    Audio {
+        frame: AudioFrame,
+        discont: bool,
+        receive_time_gst: gst::ClockTime,
+        receive_time_real: gst::ClockTime,
+    },
+    Video {
+        frame: VideoFrame,
+        discont: bool,
+        receive_time_gst: gst::ClockTime,
+        receive_time_real: gst::ClockTime,
+    },
+    Metadata {
+        frame: MetadataFrame,
+        receive_time_gst: gst::ClockTime,
+        receive_time_real: gst::ClockTime,
+    },
 }
 
 unsafe impl Send for NdiSrcMeta {}
 unsafe impl Sync for NdiSrcMeta {}
 
 impl NdiSrcMeta {
-    pub fn add<'a>(
-        buffer: &'a mut gst::BufferRef,
-        stream_type: StreamType,
-        caps: &gst::Caps,
-    ) -> gst::MetaRefMut<'a, Self, gst::meta::Standalone> {
+    pub fn add(
+        buffer: &mut gst::BufferRef,
+        ndi_buffer: Buffer,
+    ) -> gst::MetaRefMut<Self, gst::meta::Standalone> {
         unsafe {
             // Manually dropping because gst_buffer_add_meta() takes ownership of the
             // content of the struct
-            let mut params = mem::ManuallyDrop::new(imp::NdiSrcMetaParams {
-                caps: caps.clone(),
-                stream_type,
-            });
+            let mut params = mem::ManuallyDrop::new(imp::NdiSrcMetaParams { ndi_buffer });
 
             let meta = gst::ffi::gst_buffer_add_meta(
                 buffer.as_mut_ptr(),
@@ -40,12 +54,8 @@ impl NdiSrcMeta {
         }
     }
 
-    pub fn stream_type(&self) -> StreamType {
-        self.0.stream_type
-    }
-
-    pub fn caps(&self) -> gst::Caps {
-        self.0.caps.clone()
+    pub fn take_ndi_buffer(&mut self) -> Buffer {
+        self.0.ndi_buffer.take().expect("can only take buffer once")
     }
 }
 
@@ -60,35 +70,32 @@ unsafe impl MetaAPI for NdiSrcMeta {
 impl fmt::Debug for NdiSrcMeta {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("NdiSrcMeta")
-            .field("stream_type", &self.stream_type())
-            .field("caps", &self.caps())
+            .field("ndi_buffer", &self.0.ndi_buffer)
             .finish()
     }
 }
 
 mod imp {
-    use super::StreamType;
+    use super::Buffer;
     use glib::translate::*;
-    use once_cell::sync::Lazy;
     use std::mem;
     use std::ptr;
+    use std::sync::LazyLock;
 
     pub(super) struct NdiSrcMetaParams {
-        pub caps: gst::Caps,
-        pub stream_type: StreamType,
+        pub ndi_buffer: Buffer,
     }
 
     #[repr(C)]
     pub struct NdiSrcMeta {
         parent: gst::ffi::GstMeta,
-        pub(super) caps: gst::Caps,
-        pub(super) stream_type: StreamType,
+        pub(super) ndi_buffer: Option<Buffer>,
     }
 
     pub(super) fn ndi_src_meta_api_get_type() -> glib::Type {
-        static TYPE: Lazy<glib::Type> = Lazy::new(|| unsafe {
+        static TYPE: LazyLock<glib::Type> = LazyLock::new(|| unsafe {
             let t = from_glib(gst::ffi::gst_meta_api_type_register(
-                b"GstNdiSrcMetaAPI\0".as_ptr() as *const _,
+                c"GstNdiSrcMetaAPI".as_ptr() as *const _,
                 [ptr::null::<std::os::raw::c_char>()].as_ptr() as *mut *const _,
             ));
 
@@ -110,8 +117,7 @@ mod imp {
         let meta = &mut *(meta as *mut NdiSrcMeta);
         let params = ptr::read(params as *const NdiSrcMetaParams);
 
-        ptr::write(&mut meta.stream_type, params.stream_type);
-        ptr::write(&mut meta.caps, params.caps);
+        ptr::write(&mut meta.ndi_buffer, Some(params.ndi_buffer));
 
         true.into_glib()
     }
@@ -122,8 +128,7 @@ mod imp {
     ) {
         let meta = &mut *(meta as *mut NdiSrcMeta);
 
-        ptr::drop_in_place(&mut meta.stream_type);
-        ptr::drop_in_place(&mut meta.caps);
+        ptr::drop_in_place(&mut meta.ndi_buffer);
     }
 
     unsafe extern "C" fn ndi_src_meta_transform(
@@ -141,11 +146,11 @@ mod imp {
         unsafe impl Send for MetaInfo {}
         unsafe impl Sync for MetaInfo {}
 
-        static META_INFO: Lazy<MetaInfo> = Lazy::new(|| unsafe {
+        static META_INFO: LazyLock<MetaInfo> = LazyLock::new(|| unsafe {
             MetaInfo(
                 ptr::NonNull::new(gst::ffi::gst_meta_register(
                     ndi_src_meta_api_get_type().into_glib(),
-                    b"GstNdiSrcMeta\0".as_ptr() as *const _,
+                    c"GstNdiSrcMeta".as_ptr() as *const _,
                     mem::size_of::<NdiSrcMeta>(),
                     Some(ndi_src_meta_init),
                     Some(ndi_src_meta_free),

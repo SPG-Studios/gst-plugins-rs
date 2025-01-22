@@ -13,13 +13,13 @@ use color_thief::{get_palette, Color, ColorFormat};
 use gst::{glib, subclass::prelude::*};
 use gst_base::prelude::*;
 use gst_video::{subclass::prelude::*, VideoFormat};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 const DEFAULT_QUALITY: u32 = 10;
 const DEFAULT_MAX_COLORS: u32 = 2;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "colordetect",
         gst::DebugColorFlags::empty(),
@@ -80,11 +80,7 @@ impl ColorDetect {
         let dominant_color_name =
             color_name::Color::similar([dominant_color.r, dominant_color.g, dominant_color.b])
                 .to_lowercase();
-        if state
-            .current_color
-            .as_ref()
-            .map_or(true, |current_color| current_color != &dominant_color_name)
-        {
+        if state.current_color.as_ref() != Some(&dominant_color_name) {
             let name = dominant_color_name.clone();
             state.current_color = Some(dominant_color_name);
             return Ok(Some((name, palette)));
@@ -95,7 +91,7 @@ impl ColorDetect {
     fn color_changed(&self, dominant_color_name: &str, palette: Vec<Color>) {
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Dominant color changed to {}",
             dominant_color_name
         );
@@ -128,7 +124,7 @@ impl ObjectSubclass for ColorDetect {
 
 impl ObjectImpl for ColorDetect {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("quality")
                     .nick("Quality of an output colors")
@@ -159,7 +155,7 @@ impl ObjectImpl for ColorDetect {
                 if settings.quality != quality {
                     gst::info!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Changing quality from {} to {}",
                         settings.quality,
                         quality
@@ -173,7 +169,7 @@ impl ObjectImpl for ColorDetect {
                 if settings.max_colors != max_colors {
                     gst::info!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Changing max_colors from {} to {}",
                         settings.max_colors,
                         max_colors
@@ -204,7 +200,7 @@ impl GstObjectImpl for ColorDetect {}
 
 impl ElementImpl for ColorDetect {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Dominant color detection",
                 "Filter/Video",
@@ -217,7 +213,7 @@ impl ElementImpl for ColorDetect {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_video::VideoCapsBuilder::new()
                 .format_list([
                     VideoFormat::Rgb,
@@ -258,7 +254,7 @@ impl BaseTransformImpl for ColorDetect {
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
         *self.state.borrow_mut() = None;
-        gst::info!(CAT, imp: self, "Stopped");
+        gst::info!(CAT, imp = self, "Stopped");
         Ok(())
     }
 
@@ -275,7 +271,7 @@ impl BaseTransformImpl for ColorDetect {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Configured for caps {} to {}",
             incaps,
             outcaps

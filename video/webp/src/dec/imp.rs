@@ -11,13 +11,13 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 
 use libwebp_sys as ffi;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::sync::Mutex;
 
 use std::marker::PhantomData;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rswebpdec",
         gst::DebugColorFlags::empty(),
@@ -47,8 +47,8 @@ struct Info {
     frame_count: u32,
 }
 
-impl<'a> Decoder<'_> {
-    fn from_data(data: &'a [u8]) -> Option<Self> {
+impl Decoder<'_> {
+    fn from_data(data: &[u8]) -> Option<Self> {
         unsafe {
             let mut options = std::mem::MaybeUninit::zeroed();
             if ffi::WebPAnimDecoderOptionsInit(options.as_mut_ptr()) == 0 {
@@ -138,7 +138,7 @@ impl WebPDec {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         let mut state = self.state.lock().unwrap();
 
@@ -236,7 +236,7 @@ impl WebPDec {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         match event.view() {
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
@@ -257,7 +257,7 @@ impl WebPDec {
     fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         match event.view() {
             EventView::Seek(..) => false,
             _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
@@ -273,7 +273,7 @@ impl ObjectSubclass for WebPDec {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 WebPDec::catch_panic_pad_function(
                     parent,
@@ -291,7 +291,7 @@ impl ObjectSubclass for WebPDec {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .event_function(|pad, parent, event| {
                 WebPDec::catch_panic_pad_function(parent, || false, |dec| dec.src_event(pad, event))
             })
@@ -319,7 +319,7 @@ impl GstObjectImpl for WebPDec {}
 
 impl ElementImpl for WebPDec {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "WebP decoder",
                 "Codec/Decoder/Video",
@@ -332,7 +332,7 @@ impl ElementImpl for WebPDec {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("image/webp").build();
 
             let sink_pad_template = gst::PadTemplate::new(
@@ -365,7 +365,7 @@ impl ElementImpl for WebPDec {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         if transition == gst::StateChange::PausedToReady {
             *self.state.lock().unwrap() = State::default();

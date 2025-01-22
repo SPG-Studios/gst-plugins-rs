@@ -23,9 +23,7 @@ use futures::future::BoxFuture;
 use gst::glib;
 use gst::prelude::*;
 
-use once_cell::sync::Lazy;
-
-use gio::prelude::*;
+use std::sync::LazyLock;
 
 use std::error;
 use std::fmt;
@@ -35,12 +33,15 @@ use std::net::UdpSocket;
 use crate::runtime::Async;
 
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::{
+    fd::BorrowedFd,
+    unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd},
+};
 
 #[cfg(windows)]
 use std::os::windows::io::{AsRawSocket, FromRawSocket, IntoRawSocket, RawSocket};
 
-static SOCKET_CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static SOCKET_CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-socket",
         gst::DebugColorFlags::empty(),
@@ -76,7 +77,7 @@ impl<T: SocketRead> Socket<T> {
         buffer_pool.set_active(true).map_err(|err| {
             gst::error!(
                 SOCKET_CAT,
-                obj: element,
+                obj = element,
                 "Failed to prepare socket: {}",
                 err
             );
@@ -97,6 +98,10 @@ impl<T: SocketRead> Socket<T> {
     pub fn set_clock(&mut self, clock: Option<gst::Clock>, base_time: Option<gst::ClockTime>) {
         self.clock = clock;
         self.base_time = base_time;
+    }
+
+    pub fn get(&self) -> &T {
+        &self.reader
     }
 }
 
@@ -124,7 +129,7 @@ impl<T: SocketRead> Socket<T> {
     pub async fn try_next(
         &mut self,
     ) -> Result<(gst::Buffer, Option<std::net::SocketAddr>), SocketError> {
-        gst::log!(SOCKET_CAT, obj: self.element, "Trying to read data");
+        gst::log!(SOCKET_CAT, obj = self.element, "Trying to read data");
 
         if self.mapped_buffer.is_none() {
             match self.buffer_pool.acquire_buffer(None) {
@@ -132,7 +137,12 @@ impl<T: SocketRead> Socket<T> {
                     self.mapped_buffer = Some(buffer.into_mapped_buffer_writable().unwrap());
                 }
                 Err(err) => {
-                    gst::debug!(SOCKET_CAT, obj: self.element, "Failed to acquire buffer {:?}", err);
+                    gst::debug!(
+                        SOCKET_CAT,
+                        obj = self.element,
+                        "Failed to acquire buffer {:?}",
+                        err
+                    );
                     return Err(SocketError::Gst(err));
                 }
             }
@@ -151,7 +161,7 @@ impl<T: SocketRead> Socket<T> {
                     // so as to display another message
                     gst::debug!(
                         SOCKET_CAT,
-                        obj: self.element,
+                        obj = self.element,
                         "Read {} bytes at {} (clock {})",
                         len,
                         running_time.display(),
@@ -159,7 +169,7 @@ impl<T: SocketRead> Socket<T> {
                     );
                     running_time
                 } else {
-                    gst::debug!(SOCKET_CAT, obj: self.element, "Read {} bytes", len);
+                    gst::debug!(SOCKET_CAT, obj = self.element, "Read {} bytes", len);
                     gst::ClockTime::NONE
                 };
 
@@ -175,7 +185,7 @@ impl<T: SocketRead> Socket<T> {
                 Ok((buffer, saddr))
             }
             Err(err) => {
-                gst::debug!(SOCKET_CAT, obj: self.element, "Read error {:?}", err);
+                gst::debug!(SOCKET_CAT, obj = self.element, "Read error {:?}", err);
 
                 Err(SocketError::Io(err))
             }
@@ -186,7 +196,12 @@ impl<T: SocketRead> Socket<T> {
 impl<T: SocketRead> Drop for Socket<T> {
     fn drop(&mut self) {
         if let Err(err) = self.buffer_pool.set_active(false) {
-            gst::error!(SOCKET_CAT, obj: self.element, "Failed to unprepare socket: {}", err);
+            gst::error!(
+                SOCKET_CAT,
+                obj = self.element,
+                "Failed to unprepare socket: {}",
+                err
+            );
         }
     }
 }
@@ -222,31 +237,75 @@ impl GioSocketWrapper {
         }
     }
 
-    #[cfg(unix)]
-    pub fn set_tos(&self, qos_dscp: i32) -> Result<(), glib::Error> {
-        use libc::{IPPROTO_IP, IPPROTO_IPV6, IPV6_TCLASS, IP_TOS};
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "linux",
+        target_os = "android",
+        target_os = "aix",
+        target_os = "fuchsia",
+        target_os = "haiku",
+        target_env = "newlib"
+    ))]
+    pub fn set_tos(&self, qos_dscp: i32) -> rustix::io::Result<()> {
+        use gio::prelude::*;
+        use rustix::net::sockopt;
 
         let tos = (qos_dscp & 0x3f) << 2;
 
         let socket = self.as_socket();
 
-        socket.set_option(IPPROTO_IP, IP_TOS, tos)?;
+        sockopt::set_ip_tos(
+            unsafe { BorrowedFd::borrow_raw(socket.as_raw_fd()) },
+            tos as u8,
+        )?;
 
         if socket.family() == gio::SocketFamily::Ipv6 {
-            socket.set_option(IPPROTO_IPV6, IPV6_TCLASS, tos)?;
+            sockopt::set_ipv6_tclass(
+                unsafe { BorrowedFd::borrow_raw(socket.as_raw_fd()) },
+                tos as u32,
+            )?;
         }
 
         Ok(())
     }
 
-    #[cfg(not(unix))]
-    pub fn set_tos(&self, qos_dscp: i32) -> Result<(), glib::Error> {
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "linux",
+        target_os = "android",
+        target_os = "aix",
+        target_os = "fuchsia",
+        target_os = "haiku",
+        target_env = "newlib"
+    )))]
+    pub fn set_tos(&self, _qos_dscp: i32) -> rustix::io::Result<()> {
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     pub fn get<T: FromRawFd>(&self) -> T {
-        unsafe { FromRawFd::from_raw_fd(libc::dup(gio::ffi::g_socket_get_fd(self.socket))) }
+        unsafe {
+            let borrowed =
+                rustix::fd::BorrowedFd::borrow_raw(gio::ffi::g_socket_get_fd(self.socket));
+
+            let dupped = rustix::io::dup(borrowed).unwrap();
+            let res = FromRawFd::from_raw_fd(dupped.as_raw_fd());
+
+            // We transferred ownership to T so don't drop dupped
+            std::mem::forget(dupped);
+
+            res
+        }
     }
 
     #[cfg(windows)]
@@ -308,7 +367,7 @@ unsafe fn dup_socket(socket: usize) -> usize {
 pub fn wrap_socket(socket: &Async<UdpSocket>) -> Result<GioSocketWrapper, gst::ErrorMessage> {
     #[cfg(unix)]
     unsafe {
-        let fd = libc::dup(socket.as_raw_fd());
+        let dupped = rustix::io::dup(socket).unwrap();
 
         // This is unsafe because it allows us to share the fd between the socket and the
         // GIO socket below, but safety of this is the job of the application
@@ -319,14 +378,18 @@ pub fn wrap_socket(socket: &Async<UdpSocket>) -> Result<GioSocketWrapper, gst::E
             }
         }
 
-        let fd = FdConverter(fd);
+        let fd = FdConverter(dupped.as_raw_fd());
 
-        let gio_socket = gio::Socket::from_fd(fd).map_err(|err| {
+        let gio_socket = gio::Socket::from_fd(fd);
+        // We transferred ownership to gio_socket so don't drop dupped
+        std::mem::forget(dupped);
+        let gio_socket = gio_socket.map_err(|err| {
             gst::error_msg!(
                 gst::ResourceError::OpenWrite,
                 ["Failed to create wrapped GIO socket: {}", err]
             )
         })?;
+
         Ok(GioSocketWrapper::new(&gio_socket))
     }
     #[cfg(windows)]

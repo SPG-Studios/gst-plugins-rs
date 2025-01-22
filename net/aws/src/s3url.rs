@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use aws_sdk_s3::Region;
+use aws_sdk_s3::config::Region;
 use percent_encoding::{percent_decode, percent_encode, AsciiSet, CONTROLS};
 use url::Url;
 
@@ -25,9 +25,10 @@ const FRAGMENT: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'<').add(b'>').ad
 const PATH: &AsciiSet = &FRAGMENT.add(b'#').add(b'?').add(b'{').add(b'}');
 const PATH_SEGMENT: &AsciiSet = &PATH.add(b'/').add(b'%');
 
-impl ToString for GstS3Url {
-    fn to_string(&self) -> String {
-        format!(
+impl std::fmt::Display for GstS3Url {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
             "s3://{}/{}/{}{}",
             self.region,
             self.bucket,
@@ -59,9 +60,9 @@ pub fn parse_s3_url(url_str: &str) -> Result<GstS3Url, String> {
         .or_else(|_| {
             let (name, endpoint) = host.split_once('+').ok_or(())?;
             let name =
-                base32::decode(base32::Alphabet::RFC4648 { padding: true }, name).ok_or(())?;
+                base32::decode(base32::Alphabet::Rfc4648 { padding: true }, name).ok_or(())?;
             let endpoint =
-                base32::decode(base32::Alphabet::RFC4648 { padding: true }, endpoint).ok_or(())?;
+                base32::decode(base32::Alphabet::Rfc4648 { padding: true }, endpoint).ok_or(())?;
             let name = String::from_utf8(name).map_err(|_| ())?;
             let endpoint = String::from_utf8(endpoint).map_err(|_| ())?;
             Ok(format!("{name}{endpoint}"))
@@ -83,15 +84,21 @@ pub fn parse_s3_url(url_str: &str) -> Result<GstS3Url, String> {
         .next()
         .ok_or_else(|| format!("Invalid empty object/bucket '{url}'"))?;
 
-    let mut object = percent_decode(o.as_bytes())
-        .decode_utf8()
-        .unwrap()
-        .to_string();
     if o.is_empty() {
         return Err(format!("Invalid empty object/bucket '{url}'"));
     }
 
-    object = path.fold(object, |o, p| format!("{o}/{p}"));
+    let mut object = percent_decode(o.as_bytes())
+        .decode_utf8()
+        .unwrap()
+        .to_string();
+
+    object = path.fold(object, |o, p| {
+        format!(
+            "{o}/{}",
+            percent_decode(p.as_bytes()).decode_utf8().unwrap()
+        )
+    });
 
     let mut q = url.query_pairs();
     let v = q.next();

@@ -20,14 +20,25 @@ use gst::prelude::*;
 struct Opt {
     #[clap(short, default_value = "1")]
     iterations: u32,
+    #[clap(long, help = "Enable items cache")]
+    cache: bool,
+    #[clap(long, help = "Cache directory")]
+    cache_dir: Option<String>,
     uris: Vec<String>,
 }
 
-fn create_pipeline(uris: Vec<String>, iterations: u32) -> anyhow::Result<gst::Pipeline> {
+fn create_pipeline(
+    uris: Vec<String>,
+    iterations: u32,
+    cache: bool,
+    cache_dir: Option<String>,
+) -> anyhow::Result<gst::Pipeline> {
     let pipeline = gst::Pipeline::default();
     let playlist = gst::ElementFactory::make("uriplaylistbin")
         .property("uris", &uris)
         .property("iterations", iterations)
+        .property("cache", cache)
+        .property("cache-dir", cache_dir)
         .build()?;
 
     pipeline.add(&playlist)?;
@@ -37,17 +48,19 @@ fn create_pipeline(uris: Vec<String>, iterations: u32) -> anyhow::Result<gst::Pi
 
     let pipeline_weak = pipeline.downgrade();
     playlist.connect_pad_added(move |_playlist, src_pad| {
-        let pipeline = match pipeline_weak.upgrade() {
-            None => return,
-            Some(pipeline) => pipeline,
+        let Some(pipeline) = pipeline_weak.upgrade() else {
+            return;
         };
         let pad_name = src_pad.name();
 
         let sink = if pad_name.starts_with("audio") {
-            gst::parse_bin_from_description("audioconvert ! audioresample ! autoaudiosink", true)
-                .unwrap()
+            gst::parse::bin_from_description(
+                "queue ! audioconvert ! audioresample ! autoaudiosink",
+                true,
+            )
+            .unwrap()
         } else if pad_name.starts_with("video") {
-            gst::parse_bin_from_description("videoconvert ! autovideosink", true).unwrap()
+            gst::parse::bin_from_description("queue ! videoconvert ! autovideosink", true).unwrap()
         } else {
             unimplemented!();
         };
@@ -63,9 +76,8 @@ fn create_pipeline(uris: Vec<String>, iterations: u32) -> anyhow::Result<gst::Pi
 
     let pipeline_weak = pipeline.downgrade();
     playlist.connect_pad_removed(move |_playlist, pad| {
-        let pipeline = match pipeline_weak.upgrade() {
-            None => return,
-            Some(pipeline) => pipeline,
+        let Some(pipeline) = pipeline_weak.upgrade() else {
+            return;
         };
 
         // remove sink bin that was handling the pad
@@ -73,6 +85,22 @@ fn create_pipeline(uris: Vec<String>, iterations: u32) -> anyhow::Result<gst::Pi
         let sink = sink_bins.get(&pad.name()).unwrap();
         pipeline.remove(sink).unwrap();
         let _ = sink.set_state(gst::State::Null);
+    });
+
+    fn display_current(uriplaylistbin: &gst::Element) {
+        let uris = uriplaylistbin.property::<Vec<String>>("uris");
+        let uri_index = uriplaylistbin.property::<u64>("current-uri-index");
+        let iteration = uriplaylistbin.property::<u32>("current-iteration");
+
+        println!("-> {} (iteration {})", uris[uri_index as usize], iteration);
+    }
+
+    playlist.connect_notify(Some("current-iteration"), |uriplaylistbin, _param_spec| {
+        display_current(uriplaylistbin);
+    });
+
+    playlist.connect_notify(Some("current-uri-index"), |uriplaylistbin, _param_spec| {
+        display_current(uriplaylistbin);
     });
 
     Ok(pipeline)
@@ -100,7 +128,7 @@ fn main() -> anyhow::Result<()> {
         .collect();
 
     {
-        let pipeline = create_pipeline(uris, opt.iterations)?;
+        let pipeline = create_pipeline(uris, opt.iterations, opt.cache, opt.cache_dir)?;
 
         pipeline
             .set_state(gst::State::Playing)
@@ -119,7 +147,10 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("Debugging information: {:?}", err.debug());
                     break;
                 }
-                MessageView::Eos(..) => break,
+                MessageView::Eos(..) => {
+                    println!("eos");
+                    break;
+                }
                 _ => (),
             }
         }

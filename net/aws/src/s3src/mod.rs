@@ -12,7 +12,7 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct S3Src(ObjectSubclass<imp::S3Src>) @extends gst_base::BaseSrc, gst::Element, gst::Object;
+    pub struct S3Src(ObjectSubclass<imp::S3Src>) @extends gst_base::BaseSrc, gst::Element, gst::Object, @implements gst::URIHandler;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -20,13 +20,13 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "rusotos3src",
-        gst::Rank::Primary,
+        gst::Rank::PRIMARY,
         S3Src::static_type(),
     )?;
     gst::Element::register(
         Some(plugin),
         "awss3src",
-        gst::Rank::Primary,
+        gst::Rank::PRIMARY,
         S3Src::static_type(),
     )
 }

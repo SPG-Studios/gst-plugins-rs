@@ -6,8 +6,11 @@ use std::ffi;
 use std::fmt;
 use std::mem;
 use std::ptr;
+use std::sync::Arc;
 
 use byte_slice_cast::*;
+
+use gst_video::prelude::*;
 
 pub fn load() -> Result<(), glib::BoolError> {
     ndisys::load()
@@ -20,7 +23,7 @@ pub struct FindBuilder<'a> {
     extra_ips: Option<&'a str>,
 }
 
-impl<'a> Default for FindBuilder<'a> {
+impl Default for FindBuilder<'_> {
     fn default() -> Self {
         Self {
             show_local_sources: true,
@@ -76,6 +79,7 @@ impl<'a> FindBuilder<'a> {
 
 #[derive(Debug)]
 pub struct FindInstance(ptr::NonNull<::std::os::raw::c_void>);
+
 unsafe impl Send for FindInstance {}
 
 impl FindInstance {
@@ -125,10 +129,10 @@ pub enum Source<'a> {
     Owned(NDIlib_source_t, ffi::CString, ffi::CString),
 }
 
-unsafe impl<'a> Send for Source<'a> {}
-unsafe impl<'a> Sync for Source<'a> {}
+unsafe impl Send for Source<'_> {}
+unsafe impl Sync for Source<'_> {}
 
-impl<'a> Source<'a> {
+impl Source<'_> {
     pub fn ndi_name(&self) -> &str {
         unsafe {
             let ptr = match *self {
@@ -194,7 +198,7 @@ pub struct RecvBuilder<'a> {
     ndi_recv_name: &'a str,
 }
 
-impl<'a> RecvBuilder<'a> {
+impl RecvBuilder<'_> {
     pub fn allow_video_fields(self, allow_video_fields: bool) -> Self {
         Self {
             allow_video_fields,
@@ -244,14 +248,32 @@ impl<'a> RecvBuilder<'a> {
             if ptr.is_null() {
                 None
             } else {
-                Some(RecvInstance(ptr::NonNull::new_unchecked(ptr)))
+                #[allow(clippy::arc_with_non_send_sync)]
+                Some(RecvInstance(Arc::new(RecvInstancePtr(
+                    ptr::NonNull::new_unchecked(ptr),
+                ))))
             }
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RecvInstance(ptr::NonNull<::std::os::raw::c_void>);
+#[derive(Debug)]
+struct RecvInstancePtr(ptr::NonNull<::std::os::raw::c_void>);
+
+impl Drop for RecvInstancePtr {
+    fn drop(&mut self) {
+        unsafe { NDIlib_recv_destroy(self.0.as_ptr() as *mut _) }
+    }
+}
+
+impl RecvInstancePtr {
+    fn as_ptr(&self) -> *mut ::std::os::raw::c_void {
+        self.0.as_ptr()
+    }
+}
+
+#[derive(Debug)]
+pub struct RecvInstance(Arc<RecvInstancePtr>);
 
 unsafe impl Send for RecvInstance {}
 
@@ -315,25 +337,21 @@ impl RecvInstance {
             );
 
             match res {
-                NDIlib_frame_type_e::NDIlib_frame_type_audio => Ok(Some(Frame::Audio(
-                    AudioFrame::BorrowedRecv(audio_frame, self),
-                ))),
-                NDIlib_frame_type_e::NDIlib_frame_type_video => Ok(Some(Frame::Video(
-                    VideoFrame::BorrowedRecv(video_frame, self),
-                ))),
-                NDIlib_frame_type_e::NDIlib_frame_type_metadata => Ok(Some(Frame::Metadata(
-                    MetadataFrame::Borrowed(metadata_frame, self),
-                ))),
+                NDIlib_frame_type_e::NDIlib_frame_type_audio => Ok(Some(Frame::Audio(AudioFrame(
+                    AudioFrameInner::BorrowedRecv(audio_frame, Arc::clone(&self.0)),
+                )))),
+                NDIlib_frame_type_e::NDIlib_frame_type_video => Ok(Some(Frame::Video(VideoFrame(
+                    VideoFrameInner::BorrowedRecv(video_frame, Arc::clone(&self.0)),
+                )))),
+                NDIlib_frame_type_e::NDIlib_frame_type_metadata => {
+                    Ok(Some(Frame::Metadata(MetadataFrame(
+                        MetadataFrameInner::Borrowed(metadata_frame, Arc::clone(&self.0)),
+                    ))))
+                }
                 NDIlib_frame_type_e::NDIlib_frame_type_error => Err(ReceiveError),
                 _ => Ok(None),
             }
         }
-    }
-}
-
-impl Drop for RecvInstance {
-    fn drop(&mut self) {
-        unsafe { NDIlib_recv_destroy(self.0.as_ptr() as *mut _) }
     }
 }
 
@@ -344,7 +362,7 @@ pub struct SendBuilder<'a> {
     clock_video: bool,
 }
 
-impl<'a> SendBuilder<'a> {
+impl SendBuilder<'_> {
     pub fn clock_audio(self) -> Self {
         Self {
             clock_audio: true,
@@ -403,6 +421,10 @@ impl SendInstance {
             NDIlib_send_send_audio_v3(self.0.as_ptr(), frame.as_ptr());
         }
     }
+
+    pub fn send_metadata(&self, metadata: &MetadataFrame) {
+        unsafe { NDIlib_send_send_metadata(self.0.as_ptr(), metadata.as_ptr()) }
+    }
 }
 
 impl Drop for SendInstance {
@@ -413,7 +435,6 @@ impl Drop for SendInstance {
 
 #[derive(Debug)]
 pub struct Tally(NDIlib_tally_t);
-unsafe impl Send for Tally {}
 
 impl Default for Tally {
     fn default() -> Self {
@@ -442,21 +463,39 @@ impl Tally {
 }
 
 #[derive(Debug)]
-pub enum Frame<'a> {
-    Video(VideoFrame<'a>),
-    Audio(AudioFrame<'a>),
-    Metadata(MetadataFrame<'a>),
+pub enum Frame {
+    Video(VideoFrame),
+    Audio(AudioFrame),
+    Metadata(MetadataFrame),
 }
 
 #[derive(Debug)]
-pub enum VideoFrame<'a> {
+pub struct VideoFrame(VideoFrameInner);
+
+#[derive(Debug)]
+enum VideoFrameInner {
     //Owned(NDIlib_video_frame_v2_t, Option<ffi::CString>, Option<Vec<u8>>),
-    BorrowedRecv(NDIlib_video_frame_v2_t, &'a RecvInstance),
+    BorrowedRecv(NDIlib_video_frame_v2_t, Arc<RecvInstancePtr>),
     BorrowedGst(
         NDIlib_video_frame_v2_t,
-        &'a gst_video::VideoFrameRef<&'a gst::BufferRef>,
+        gst_video::VideoFrame<gst_video::video_frame::Readable>,
+        Option<std::ffi::CString>,
     ),
 }
+
+impl Drop for VideoFrameInner {
+    #[allow(irrefutable_let_patterns)]
+    fn drop(&mut self) {
+        if let VideoFrameInner::BorrowedRecv(ref mut frame, ref recv) = *self {
+            unsafe {
+                NDIlib_recv_free_video_v2(recv.0.as_ptr() as *mut _, frame);
+            }
+        }
+    }
+}
+
+unsafe impl Send for VideoFrameInner {}
+unsafe impl Sync for VideoFrameInner {}
 
 #[derive(Debug, Copy, Clone)]
 pub struct TryFromVideoFrameError;
@@ -469,60 +508,55 @@ impl fmt::Display for TryFromVideoFrameError {
 
 impl std::error::Error for TryFromVideoFrameError {}
 
-impl<'a> VideoFrame<'a> {
+impl VideoFrame {
     pub fn xres(&self) -> i32 {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.xres
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.xres,
         }
     }
 
     pub fn yres(&self) -> i32 {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.yres
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.yres,
         }
     }
 
     pub fn fourcc(&self) -> NDIlib_FourCC_video_type_e {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.FourCC
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.FourCC,
         }
     }
 
     pub fn frame_rate(&self) -> (i32, i32) {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => {
                 (frame.frame_rate_N, frame.frame_rate_D)
             }
         }
     }
 
     pub fn picture_aspect_ratio(&self) -> f32 {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.picture_aspect_ratio
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.picture_aspect_ratio,
         }
     }
 
     pub fn frame_format_type(&self) -> NDIlib_frame_format_type_e {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.frame_format_type
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.frame_format_type,
         }
     }
 
     pub fn timecode(&self) -> i64 {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.timecode
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.timecode,
         }
     }
 
@@ -558,9 +592,9 @@ impl<'a> VideoFrame<'a> {
 
             return unsafe {
                 use std::slice;
-                match self {
-                    VideoFrame::BorrowedRecv(ref frame, _)
-                    | VideoFrame::BorrowedGst(ref frame, _) => Some(slice::from_raw_parts(
+                match self.0 {
+                    VideoFrameInner::BorrowedRecv(ref frame, ..)
+                    | VideoFrameInner::BorrowedGst(ref frame, ..) => Some(slice::from_raw_parts(
                         frame.p_data as *const u8,
                         frame_size as usize,
                     )),
@@ -581,9 +615,9 @@ impl<'a> VideoFrame<'a> {
         {
             return unsafe {
                 use std::slice;
-                match self {
-                    VideoFrame::BorrowedRecv(ref frame, _)
-                    | VideoFrame::BorrowedGst(ref frame, _) => Some(slice::from_raw_parts(
+                match self.0 {
+                    VideoFrameInner::BorrowedRecv(ref frame, ..)
+                    | VideoFrameInner::BorrowedGst(ref frame, ..) => Some(slice::from_raw_parts(
                         frame.p_data as *const u8,
                         frame.line_stride_or_data_size_in_bytes as usize,
                     )),
@@ -618,13 +652,12 @@ impl<'a> VideoFrame<'a> {
                 return None;
             }
 
-            let data = match self {
-                VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                    slice::from_raw_parts(
-                        frame.p_data as *const u8,
-                        frame.line_stride_or_data_size_in_bytes as usize,
-                    )
-                }
+            let data = match self.0 {
+                VideoFrameInner::BorrowedRecv(ref frame, ..)
+                | VideoFrameInner::BorrowedGst(ref frame, ..) => slice::from_raw_parts(
+                    frame.p_data as *const u8,
+                    frame.line_stride_or_data_size_in_bytes as usize,
+                ),
             };
 
             let mut cursor = Cursor::new(data);
@@ -668,8 +701,9 @@ impl<'a> VideoFrame<'a> {
     }
 
     pub fn line_stride_or_data_size_in_bytes(&self) -> i32 {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => {
                 let stride = frame.line_stride_or_data_size_in_bytes;
 
                 if stride != 0 {
@@ -698,8 +732,9 @@ impl<'a> VideoFrame<'a> {
 
     pub fn metadata(&self) -> Option<&str> {
         unsafe {
-            match self {
-                VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
+            match self.0 {
+                VideoFrameInner::BorrowedRecv(ref frame, _)
+                | VideoFrameInner::BorrowedGst(ref frame, ..) => {
                     if frame.p_metadata.is_null() {
                         None
                     } else {
@@ -711,21 +746,22 @@ impl<'a> VideoFrame<'a> {
     }
 
     pub fn timestamp(&self) -> i64 {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => {
-                frame.timestamp
-            }
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame.timestamp,
         }
     }
 
     pub fn as_ptr(&self) -> *const NDIlib_video_frame_v2_t {
-        match self {
-            VideoFrame::BorrowedRecv(ref frame, _) | VideoFrame::BorrowedGst(ref frame, _) => frame,
+        match self.0 {
+            VideoFrameInner::BorrowedRecv(ref frame, _)
+            | VideoFrameInner::BorrowedGst(ref frame, ..) => frame,
         }
     }
 
     pub fn try_from_video_frame(
-        frame: &'a gst_video::VideoFrameRef<&'a gst::BufferRef>,
+        frame: gst_video::VideoFrame<gst_video::video_frame::Readable>,
+        metadata: Option<std::ffi::CString>,
         timecode: i64,
     ) -> Result<Self, TryFromVideoFrameError> {
         // Planar formats must be in contiguous memory
@@ -800,13 +836,11 @@ impl<'a> VideoFrame<'a> {
                 NDIlib_frame_format_type_e::NDIlib_frame_format_type_interleaved
             }
             // FIXME: Is this correct?
-            #[cfg(feature = "interlaced-fields")]
             gst_video::VideoInterlaceMode::Alternate
                 if frame.flags().contains(gst_video::VideoFrameFlags::TFF) =>
             {
                 NDIlib_frame_format_type_e::NDIlib_frame_format_type_field_0
             }
-            #[cfg(feature = "interlaced-fields")]
             gst_video::VideoInterlaceMode::Alternate
                 if !frame.flags().contains(gst_video::VideoFrameFlags::TFF) =>
             {
@@ -831,34 +865,42 @@ impl<'a> VideoFrame<'a> {
             timecode,
             p_data: frame.plane_data(0).unwrap().as_ptr() as *const ::std::os::raw::c_char,
             line_stride_or_data_size_in_bytes: frame.plane_stride()[0],
-            p_metadata: ptr::null(),
+            p_metadata: metadata.as_ref().map_or(ptr::null(), |meta| meta.as_ptr()),
             timestamp: 0,
         };
 
-        Ok(VideoFrame::BorrowedGst(ndi_frame, frame))
-    }
-}
-
-impl<'a> Drop for VideoFrame<'a> {
-    #[allow(irrefutable_let_patterns)]
-    fn drop(&mut self) {
-        if let VideoFrame::BorrowedRecv(ref mut frame, recv) = *self {
-            unsafe {
-                NDIlib_recv_free_video_v2(recv.0.as_ptr() as *mut _, frame);
-            }
-        }
+        Ok(VideoFrame(VideoFrameInner::BorrowedGst(
+            ndi_frame, frame, metadata,
+        )))
     }
 }
 
 #[derive(Debug)]
-pub enum AudioFrame<'a> {
+pub struct AudioFrame(AudioFrameInner);
+
+#[derive(Debug)]
+enum AudioFrameInner {
     Owned(
         NDIlib_audio_frame_v3_t,
         Option<ffi::CString>,
         Option<Vec<f32>>,
     ),
-    BorrowedRecv(NDIlib_audio_frame_v3_t, &'a RecvInstance),
+    BorrowedRecv(NDIlib_audio_frame_v3_t, Arc<RecvInstancePtr>),
 }
+
+impl Drop for AudioFrameInner {
+    #[allow(irrefutable_let_patterns)]
+    fn drop(&mut self) {
+        if let AudioFrameInner::BorrowedRecv(ref mut frame, ref recv) = *self {
+            unsafe {
+                NDIlib_recv_free_audio_v3(recv.0.as_ptr() as *mut _, frame);
+            }
+        }
+    }
+}
+
+unsafe impl Send for AudioFrameInner {}
+unsafe impl Sync for AudioFrameInner {}
 
 #[derive(Debug, Copy, Clone)]
 pub struct TryFromAudioBufferError;
@@ -871,44 +913,39 @@ impl fmt::Display for TryFromAudioBufferError {
 
 impl std::error::Error for TryFromAudioBufferError {}
 
-impl<'a> AudioFrame<'a> {
+impl AudioFrame {
     pub fn sample_rate(&self) -> i32 {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.sample_rate
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.sample_rate,
         }
     }
 
     pub fn no_channels(&self) -> i32 {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.no_channels
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.no_channels,
         }
     }
 
     pub fn no_samples(&self) -> i32 {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.no_samples
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.no_samples,
         }
     }
 
     pub fn timecode(&self) -> i64 {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.timecode
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.timecode,
         }
     }
 
     pub fn fourcc(&self) -> NDIlib_FourCC_audio_type_e {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.FourCC
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.FourCC,
         }
     }
 
@@ -919,26 +956,23 @@ impl<'a> AudioFrame<'a> {
             let fourcc = self.fourcc();
 
             if [NDIlib_FourCC_audio_type_FLTp].contains(&fourcc) {
-                return match self {
-                    AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                        Some(slice::from_raw_parts(
-                            frame.p_data as *const u8,
-                            (frame.no_channels * frame.channel_stride_or_data_size_in_bytes)
-                                as usize,
-                        ))
-                    }
+                return match self.0 {
+                    AudioFrameInner::BorrowedRecv(ref frame, _)
+                    | AudioFrameInner::Owned(ref frame, _, _) => Some(slice::from_raw_parts(
+                        frame.p_data as *const u8,
+                        (frame.no_channels * frame.channel_stride_or_data_size_in_bytes) as usize,
+                    )),
                 };
             }
 
             #[cfg(feature = "advanced-sdk")]
             if [NDIlib_FourCC_audio_type_Opus].contains(&fourcc) {
-                return match self {
-                    AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                        Some(slice::from_raw_parts(
-                            frame.p_data as *const u8,
-                            frame.channel_stride_or_data_size_in_bytes as usize,
-                        ))
-                    }
+                return match self.0 {
+                    AudioFrameInner::BorrowedRecv(ref frame, _)
+                    | AudioFrameInner::Owned(ref frame, _, _) => Some(slice::from_raw_parts(
+                        frame.p_data as *const u8,
+                        frame.channel_stride_or_data_size_in_bytes as usize,
+                    )),
                 };
             }
 
@@ -959,13 +993,12 @@ impl<'a> AudioFrame<'a> {
                 return None;
             }
 
-            let data = match self {
-                AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                    slice::from_raw_parts(
-                        frame.p_data as *const u8,
-                        frame.channel_stride_or_data_size_in_bytes as usize,
-                    )
-                }
+            let data = match self.0 {
+                AudioFrameInner::BorrowedRecv(ref frame, _)
+                | AudioFrameInner::Owned(ref frame, _, _) => slice::from_raw_parts(
+                    frame.p_data as *const u8,
+                    frame.channel_stride_or_data_size_in_bytes as usize,
+                ),
             };
 
             let mut cursor = Cursor::new(data);
@@ -1009,17 +1042,17 @@ impl<'a> AudioFrame<'a> {
     }
 
     pub fn channel_stride_or_data_size_in_bytes(&self) -> i32 {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.channel_stride_or_data_size_in_bytes
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.channel_stride_or_data_size_in_bytes,
         }
     }
 
     pub fn metadata(&self) -> Option<&str> {
         unsafe {
-            match self {
-                AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
+            match self.0 {
+                AudioFrameInner::BorrowedRecv(ref frame, _)
+                | AudioFrameInner::Owned(ref frame, _, _) => {
                     if frame.p_metadata.is_null() {
                         None
                     } else {
@@ -1031,16 +1064,16 @@ impl<'a> AudioFrame<'a> {
     }
 
     pub fn timestamp(&self) -> i64 {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => {
-                frame.timestamp
-            }
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame.timestamp,
         }
     }
 
     pub fn as_ptr(&self) -> *const NDIlib_audio_frame_v3_t {
-        match self {
-            AudioFrame::BorrowedRecv(ref frame, _) | AudioFrame::Owned(ref frame, _, _) => frame,
+        match self.0 {
+            AudioFrameInner::BorrowedRecv(ref frame, _)
+            | AudioFrameInner::Owned(ref frame, _, _) => frame,
         }
     }
 
@@ -1089,18 +1122,11 @@ impl<'a> AudioFrame<'a> {
             timestamp: 0,
         };
 
-        Ok(AudioFrame::Owned(dest, None, Some(dest_data)))
-    }
-}
-
-impl<'a> Drop for AudioFrame<'a> {
-    #[allow(irrefutable_let_patterns)]
-    fn drop(&mut self) {
-        if let AudioFrame::BorrowedRecv(ref mut frame, recv) = *self {
-            unsafe {
-                NDIlib_recv_free_audio_v3(recv.0.as_ptr() as *mut _, frame);
-            }
-        }
+        Ok(AudioFrame(AudioFrameInner::Owned(
+            dest,
+            None,
+            Some(dest_data),
+        )))
     }
 }
 
@@ -1115,16 +1141,32 @@ pub struct CompressedPacket<'a> {
 }
 
 #[derive(Debug)]
-pub enum MetadataFrame<'a> {
+pub struct MetadataFrame(MetadataFrameInner);
+
+#[derive(Debug)]
+enum MetadataFrameInner {
     Owned(NDIlib_metadata_frame_t, Option<ffi::CString>),
-    Borrowed(NDIlib_metadata_frame_t, &'a RecvInstance),
+    Borrowed(NDIlib_metadata_frame_t, Arc<RecvInstancePtr>),
 }
 
-impl<'a> MetadataFrame<'a> {
+impl Drop for MetadataFrameInner {
+    fn drop(&mut self) {
+        if let MetadataFrameInner::Borrowed(ref mut frame, ref recv) = *self {
+            unsafe {
+                NDIlib_recv_free_metadata(recv.0.as_ptr() as *mut _, frame);
+            }
+        }
+    }
+}
+
+unsafe impl Send for MetadataFrameInner {}
+unsafe impl Sync for MetadataFrameInner {}
+
+impl MetadataFrame {
     pub fn new(timecode: i64, data: Option<&str>) -> Self {
         let data = data.map(|s| ffi::CString::new(s).unwrap());
 
-        MetadataFrame::Owned(
+        MetadataFrame(MetadataFrameInner::Owned(
             NDIlib_metadata_frame_t {
                 length: data
                     .as_ref()
@@ -1137,23 +1179,23 @@ impl<'a> MetadataFrame<'a> {
                     .unwrap_or(ptr::null_mut()),
             },
             data,
-        )
+        ))
     }
 
     pub fn timecode(&self) -> i64 {
-        match self {
-            MetadataFrame::Owned(ref frame, _) => frame.timecode,
-            MetadataFrame::Borrowed(ref frame, _) => frame.timecode,
+        match self.0 {
+            MetadataFrameInner::Owned(ref frame, _) => frame.timecode,
+            MetadataFrameInner::Borrowed(ref frame, _) => frame.timecode,
         }
     }
 
     pub fn metadata(&self) -> Option<&str> {
         unsafe {
-            match self {
-                MetadataFrame::Owned(_, ref metadata) => {
+            match self.0 {
+                MetadataFrameInner::Owned(_, ref metadata) => {
                     metadata.as_ref().map(|s| s.to_str().unwrap())
                 }
-                MetadataFrame::Borrowed(ref frame, _) => {
+                MetadataFrameInner::Borrowed(ref frame, _) => {
                     if frame.p_data.is_null() || frame.length == 0 {
                         None
                     } else if frame.length != 0 {
@@ -1176,33 +1218,23 @@ impl<'a> MetadataFrame<'a> {
     }
 
     pub fn as_ptr(&self) -> *const NDIlib_metadata_frame_t {
-        match self {
-            MetadataFrame::Owned(ref frame, _) => frame,
-            MetadataFrame::Borrowed(ref frame, _) => frame,
+        match self.0 {
+            MetadataFrameInner::Owned(ref frame, _) => frame,
+            MetadataFrameInner::Borrowed(ref frame, _) => frame,
         }
     }
 }
 
-impl<'a> Default for MetadataFrame<'a> {
+impl Default for MetadataFrame {
     fn default() -> Self {
-        MetadataFrame::Owned(
+        MetadataFrame(MetadataFrameInner::Owned(
             NDIlib_metadata_frame_t {
                 length: 0,
                 timecode: 0, //NDIlib_send_timecode_synthesize,
                 p_data: ptr::null(),
             },
             None,
-        )
-    }
-}
-
-impl<'a> Drop for MetadataFrame<'a> {
-    fn drop(&mut self) {
-        if let MetadataFrame::Borrowed(ref mut frame, recv) = *self {
-            unsafe {
-                NDIlib_recv_free_metadata(recv.0.as_ptr() as *mut _, frame);
-            }
-        }
+        ))
     }
 }
 

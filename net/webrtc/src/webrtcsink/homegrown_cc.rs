@@ -4,11 +4,11 @@ use gst::{
     glib::{self, value::FromValue},
     prelude::*,
 };
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use super::imp::VideoEncoder;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "webrtcsink-homegrowncc",
         gst::DebugColorFlags::empty(),
@@ -110,7 +110,7 @@ impl CongestionController {
 
     fn update_delay(
         &mut self,
-        element: &super::WebRTCSink,
+        element: &super::BaseWebRTCSink,
         twcc_stats: &gst::StructureRef,
         rtt: f64,
     ) -> CongestionControlOp {
@@ -131,7 +131,7 @@ impl CongestionController {
 
         gst::trace!(
             CAT,
-            obj: element,
+            obj = element,
             "consumer {}: considering stats {}",
             self.peer_id,
             twcc_stats
@@ -159,7 +159,7 @@ impl CongestionController {
 
                 gst::trace!(
                     CAT,
-                    obj: element,
+                    obj = element,
                     "consumer {}: Old bitrate: {}, ema: {}, stddev: {}",
                     self.peer_id,
                     target_bitrate,
@@ -174,7 +174,7 @@ impl CongestionController {
                 if target_bitrate < ema - 7. * bitrate_stdev {
                     gst::trace!(
                         CAT,
-                        obj: element,
+                        obj = element,
                         "consumer {}: below last congestion window",
                         self.peer_id
                     );
@@ -183,7 +183,7 @@ impl CongestionController {
                 } else if target_bitrate > ema + 7. * bitrate_stdev {
                     gst::trace!(
                         CAT,
-                        obj: element,
+                        obj = element,
                         "consumer {}: above last congestion window",
                         self.peer_id
                     );
@@ -213,7 +213,7 @@ impl CongestionController {
 
                     gst::trace!(
                         CAT,
-                        obj: element,
+                        obj = element,
                         "consumer {}: still in last congestion window",
                         self.peer_id,
                     );
@@ -225,7 +225,7 @@ impl CongestionController {
                 /* Multiplicative increase */
                 gst::trace!(
                     CAT,
-                    obj: element,
+                    obj = element,
                     "consumer {}: outside congestion window",
                     self.peer_id
                 );
@@ -291,9 +291,9 @@ impl CongestionController {
 
     pub fn loss_control(
         &mut self,
-        element: &super::WebRTCSink,
+        element: &super::BaseWebRTCSink,
         stats: &gst::StructureRef,
-        encoders: &mut Vec<VideoEncoder>,
+        encoders: &mut [VideoEncoder],
     ) {
         let loss_percentage = stats.get::<f64>("packet-loss-pct").unwrap();
 
@@ -316,9 +316,9 @@ impl CongestionController {
 
     pub fn delay_control(
         &mut self,
-        element: &super::WebRTCSink,
+        element: &super::BaseWebRTCSink,
         stats: &gst::StructureRef,
-        encoders: &mut Vec<VideoEncoder>,
+        encoders: &mut [VideoEncoder],
     ) {
         if let Some(twcc_stats) = lookup_twcc_stats(stats) {
             let op = self.update_delay(element, &twcc_stats, self.lookup_rtt(stats));
@@ -328,14 +328,14 @@ impl CongestionController {
 
     fn apply_control_op(
         &mut self,
-        element: &super::WebRTCSink,
-        encoders: &mut Vec<VideoEncoder>,
+        element: &super::BaseWebRTCSink,
+        encoders: &mut [VideoEncoder],
         control_op: CongestionControlOp,
         controller_type: ControllerType,
     ) {
         gst::trace!(
             CAT,
-            obj: element,
+            obj = element,
             "consumer {}: applying congestion control operation {:?}",
             self.peer_id,
             control_op
@@ -413,10 +413,11 @@ impl CongestionController {
         let fec_percentage = (fec_ratio * 50f64) as u32;
 
         for encoder in encoders.iter_mut() {
-            encoder.set_bitrate(element, target_bitrate);
-            encoder
-                .transceiver
-                .set_property("fec-percentage", fec_percentage);
+            if encoder.set_bitrate(element, target_bitrate).is_ok() {
+                encoder
+                    .transceiver
+                    .set_property("fec-percentage", fec_percentage);
+            }
         }
     }
 }

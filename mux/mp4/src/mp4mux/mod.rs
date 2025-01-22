@@ -11,6 +11,7 @@ use gst::prelude::*;
 
 mod boxes;
 mod imp;
+mod obu;
 
 glib::wrapper! {
     pub(crate) struct MP4MuxPad(ObjectSubclass<imp::MP4MuxPad>) @extends gst_base::AggregatorPad, gst::Pad, gst::Object;
@@ -37,17 +38,91 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "isomp4mux",
-        gst::Rank::Marginal,
+        gst::Rank::MARGINAL,
         ISOMP4Mux::static_type(),
     )?;
     gst::Element::register(
         Some(plugin),
         "onvifmp4mux",
-        gst::Rank::Marginal,
+        gst::Rank::MARGINAL,
         ONVIFMP4Mux::static_type(),
     )?;
 
     Ok(())
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum ImageOrientation {
+    Rotate0,
+    Rotate90,
+    Rotate180,
+    Rotate270,
+    // TODO:
+    // FlipRotate0,
+    // FlipRotate90,
+    // FlipRotate180,
+    // FlipRotate270,
+}
+
+type TransformMatrix = [[u8; 4]; 9];
+
+const IDENTITY_MATRIX: TransformMatrix = [
+    (1u32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    (1u32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    (1u32 << 30).to_be_bytes(),
+];
+
+const ROTATE_90_MATRIX: TransformMatrix = [
+    0u32.to_be_bytes(),
+    (1u32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    (-1i32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    (1u32 << 30).to_be_bytes(),
+];
+
+const ROTATE_180_MATRIX: TransformMatrix = [
+    (-1i32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    (-1i32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    (1u32 << 30).to_be_bytes(),
+];
+
+const ROTATE_270_MATRIX: TransformMatrix = [
+    0u32.to_be_bytes(),
+    (-1i32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    (1u32 << 16).to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    0u32.to_be_bytes(),
+    (1u32 << 30).to_be_bytes(),
+];
+
+impl ImageOrientation {
+    pub(crate) fn transform_matrix(&self) -> &'static TransformMatrix {
+        match self {
+            ImageOrientation::Rotate0 => &IDENTITY_MATRIX,
+            ImageOrientation::Rotate90 => &ROTATE_90_MATRIX,
+            ImageOrientation::Rotate180 => &ROTATE_180_MATRIX,
+            ImageOrientation::Rotate270 => &ROTATE_270_MATRIX,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -97,6 +172,12 @@ pub(crate) struct Chunk {
     samples: Vec<Sample>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ElstInfo {
+    start: i64,
+    duration: Option<u64>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Stream {
     /// Caps of this stream
@@ -106,15 +187,7 @@ pub(crate) struct Stream {
     delta_frames: DeltaFrames,
 
     /// Pre-defined trak timescale if not 0.
-    trak_timescale: u32,
-
-    /// Start DTS
-    ///
-    /// If this is negative then an edit list entry is needed to
-    /// make all sample times positive.
-    ///
-    /// This is `None` for streams that have no concept of DTS.
-    start_dts: Option<gst::Signed<gst::ClockTime>>,
+    timescale: u32,
 
     /// Earliest PTS
     ///
@@ -126,6 +199,15 @@ pub(crate) struct Stream {
 
     /// All the chunks stored for this stream
     chunks: Vec<Chunk>,
+
+    // More data to be included in the fragmented stream header
+    extra_header_data: Option<Vec<u8>>,
+
+    /// Orientation from tags
+    orientation: Option<ImageOrientation>,
+
+    /// Edit list clipping information
+    elst_infos: Vec<ElstInfo>,
 }
 
 #[derive(Debug)]
@@ -135,6 +217,7 @@ pub(crate) struct Header {
     /// Pre-defined movie timescale if not 0.
     movie_timescale: u32,
     streams: Vec<Stream>,
+    language_code: Option<[u8; 3]>,
 }
 
 #[allow(clippy::upper_case_acronyms)]

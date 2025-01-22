@@ -6,11 +6,14 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::fmp4mux::imp::CAT;
 use gst::prelude::*;
 
 use anyhow::{anyhow, bail, Context, Error};
+use std::convert::TryFrom;
 
 use super::Buffer;
+use super::IDENTITY_MATRIX;
 
 fn write_box<T, F: FnOnce(&mut Vec<u8>) -> Result<T, Error>>(
     vec: &mut Vec<u8>,
@@ -159,6 +162,13 @@ fn cmaf_brands_from_caps(caps: &gst::CapsRef, compatible_brands: &mut Vec<&'stat
         }
         "audio/mpeg" => {
             compatible_brands.push(b"caac");
+        }
+        "audio/x-opus" => {
+            compatible_brands.push(b"opus");
+        }
+        "video/x-av1" => {
+            compatible_brands.push(b"av01");
+            compatible_brands.push(b"cmf2");
         }
         "video/x-h265" => {
             let width = s.get::<i32>("width").ok();
@@ -513,21 +523,7 @@ fn write_mvhd(
     v.extend([0u8; 2 + 2 * 4]);
 
     // Matrix
-    v.extend(
-        [
-            (1u32 << 16).to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            (1u32 << 16).to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            (16384u32 << 16).to_be_bytes(),
-        ]
-        .into_iter()
-        .flatten(),
-    );
+    v.extend(IDENTITY_MATRIX.iter().flatten());
 
     // Pre defined
     v.extend([0u8; 6 * 4]);
@@ -547,6 +543,35 @@ struct TrackReference {
     track_ids: Vec<u32>,
 }
 
+fn write_edts(v: &mut Vec<u8>, stream: &super::HeaderStream) -> Result<(), Error> {
+    write_full_box(v, b"elst", FULL_BOX_VERSION_1, 0, |v| write_elst(v, stream))?;
+
+    Ok(())
+}
+
+fn write_elst(v: &mut Vec<u8>, stream: &super::HeaderStream) -> Result<(), Error> {
+    // Entry count
+    v.extend((stream.elst_infos.len() as u32).to_be_bytes());
+
+    for elst_info in &stream.elst_infos {
+        v.extend(
+            elst_info
+                .duration
+                .expect("Should have been set by `get_elst_infos`")
+                .to_be_bytes(),
+        );
+
+        // Media time
+        v.extend(elst_info.start.to_be_bytes());
+
+        // Media rate
+        v.extend(1u16.to_be_bytes());
+        v.extend(0u16.to_be_bytes());
+    }
+
+    Ok(())
+}
+
 fn write_trak(
     v: &mut Vec<u8>,
     cfg: &super::HeaderConfiguration,
@@ -560,13 +585,16 @@ fn write_trak(
         b"tkhd",
         FULL_BOX_VERSION_1,
         TKHD_FLAGS_TRACK_ENABLED | TKHD_FLAGS_TRACK_IN_MOVIE | TKHD_FLAGS_TRACK_IN_PREVIEW,
-        |v| write_tkhd(v, cfg, idx, stream, creation_time),
+        |v| write_tkhd(v, idx, stream, creation_time),
     )?;
 
-    // TODO: write edts if necessary: for audio tracks to remove initialization samples
     // TODO: write edts optionally for negative DTS instead of offsetting the DTS
-
     write_box(v, b"mdia", |v| write_mdia(v, cfg, stream, creation_time))?;
+    if !stream.elst_infos.is_empty() && cfg.write_edts {
+        if let Err(e) = write_edts(v, stream) {
+            gst::warning!(CAT, "Failed to write edts: {e}");
+        }
+    }
 
     if !references.is_empty() {
         write_box(v, b"tref", |v| write_tref(v, cfg, references))?;
@@ -577,7 +605,6 @@ fn write_trak(
 
 fn write_tkhd(
     v: &mut Vec<u8>,
-    _cfg: &super::HeaderConfiguration,
     idx: usize,
     stream: &super::HeaderStream,
     creation_time: u64,
@@ -604,31 +631,16 @@ fn write_tkhd(
     // Volume
     let s = stream.caps.structure(0).unwrap();
     match s.name().as_str() {
-        "audio/mpeg" | "audio/x-opus" | "audio/x-alaw" | "audio/x-mulaw" | "audio/x-adpcm" => {
-            v.extend((1u16 << 8).to_be_bytes())
-        }
+        "audio/mpeg" | "audio/x-opus" | "audio/x-flac" | "audio/x-alaw" | "audio/x-mulaw"
+        | "audio/x-adpcm" => v.extend((1u16 << 8).to_be_bytes()),
         _ => v.extend(0u16.to_be_bytes()),
     }
 
     // Reserved
     v.extend([0u8; 2]);
 
-    // Matrix
-    v.extend(
-        [
-            (1u32 << 16).to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            (1u32 << 16).to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            0u32.to_be_bytes(),
-            (16384u32 << 16).to_be_bytes(),
-        ]
-        .into_iter()
-        .flatten(),
-    );
+    // Per stream orientation matrix.
+    v.extend(stream.orientation.iter().flatten());
 
     // Width/height
     match s.name().as_str() {
@@ -666,7 +678,7 @@ fn write_mdia(
     creation_time: u64,
 ) -> Result<(), Error> {
     write_full_box(v, b"mdhd", FULL_BOX_VERSION_1, FULL_BOX_FLAGS_NONE, |v| {
-        write_mdhd(v, cfg, stream, creation_time)
+        write_mdhd(v, stream, creation_time)
     })?;
     write_full_box(v, b"hdlr", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
         write_hdlr(v, cfg, stream)
@@ -700,7 +712,6 @@ fn write_tref(
 fn language_code(lang: impl std::borrow::Borrow<[u8; 3]>) -> u16 {
     let lang = lang.borrow();
 
-    // TODO: Need to relax this once we get the language code from tags
     assert!(lang.iter().all(u8::is_ascii_lowercase));
 
     (((lang[0] as u16 - 0x60) & 0x1F) << 10)
@@ -710,7 +721,6 @@ fn language_code(lang: impl std::borrow::Borrow<[u8; 3]>) -> u16 {
 
 fn write_mdhd(
     v: &mut Vec<u8>,
-    _cfg: &super::HeaderConfiguration,
     stream: &super::HeaderStream,
     creation_time: u64,
 ) -> Result<(), Error> {
@@ -724,8 +734,11 @@ fn write_mdhd(
     v.extend(0u64.to_be_bytes());
 
     // Language as ISO-639-2/T
-    // TODO: get actual language from the tags
-    v.extend(language_code(b"und").to_be_bytes());
+    if let Some(lang) = stream.language_code {
+        v.extend(language_code(lang).to_be_bytes());
+    } else {
+        v.extend(language_code(b"und").to_be_bytes());
+    }
 
     // Pre-defined
     v.extend([0u8; 2]);
@@ -745,9 +758,8 @@ fn write_hdlr(
     let (handler_type, name) = match s.name().as_str() {
         "video/x-h264" | "video/x-h265" | "video/x-vp8" | "video/x-vp9" | "video/x-av1"
         | "image/jpeg" => (b"vide", b"VideoHandler\0".as_slice()),
-        "audio/mpeg" | "audio/x-opus" | "audio/x-alaw" | "audio/x-mulaw" | "audio/x-adpcm" => {
-            (b"soun", b"SoundHandler\0".as_slice())
-        }
+        "audio/mpeg" | "audio/x-opus" | "audio/x-flac" | "audio/x-alaw" | "audio/x-mulaw"
+        | "audio/x-adpcm" => (b"soun", b"SoundHandler\0".as_slice()),
         "application/x-onvif-metadata" => (b"meta", b"MetadataHandler\0".as_slice()),
         _ => unreachable!(),
     };
@@ -777,7 +789,8 @@ fn write_minf(
             // Flags are always 1 for unspecified reasons
             write_full_box(v, b"vmhd", FULL_BOX_VERSION_0, 1, |v| write_vmhd(v, cfg))?
         }
-        "audio/mpeg" | "audio/x-opus" | "audio/x-alaw" | "audio/x-mulaw" | "audio/x-adpcm" => {
+        "audio/mpeg" | "audio/x-opus" | "audio/x-flac" | "audio/x-alaw" | "audio/x-mulaw"
+        | "audio/x-adpcm" => {
             write_full_box(v, b"smhd", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
                 write_smhd(v, cfg)
             })?
@@ -886,9 +899,8 @@ fn write_stsd(
     match s.name().as_str() {
         "video/x-h264" | "video/x-h265" | "video/x-vp8" | "video/x-vp9" | "video/x-av1"
         | "image/jpeg" => write_visual_sample_entry(v, cfg, stream)?,
-        "audio/mpeg" | "audio/x-opus" | "audio/x-alaw" | "audio/x-mulaw" | "audio/x-adpcm" => {
-            write_audio_sample_entry(v, cfg, stream)?
-        }
+        "audio/mpeg" | "audio/x-opus" | "audio/x-flac" | "audio/x-alaw" | "audio/x-mulaw"
+        | "audio/x-adpcm" => write_audio_sample_entry(v, cfg, stream)?,
         "application/x-onvif-metadata" => write_xml_meta_data_sample_entry(v, cfg, stream)?,
         _ => unreachable!(),
     }
@@ -1098,9 +1110,9 @@ fn write_visual_sample_entry(
                             "professional" => 2,
                             _ => unreachable!(),
                         };
-
-                        let level = 1; // FIXME
-                        let tier = 0; // FIXME
+                        // TODO: Use `gst_codec_utils_av1_get_seq_level_idx` when exposed in bindings
+                        let level = av1_seq_level_idx(s.get::<&str>("level").ok());
+                        let tier = av1_tier(s.get::<&str>("tier").ok());
                         let (high_bitdepth, twelve_bit) =
                             match s.get::<u32>("bit-depth-luma").unwrap() {
                                 8 => (false, false),
@@ -1145,6 +1157,10 @@ fn write_visual_sample_entry(
                         v.extend_from_slice(&codec_data);
                     }
 
+                    if let Some(extra_data) = &stream.extra_header_data {
+                        // configOBUs
+                        v.extend_from_slice(extra_data.as_slice());
+                    }
                     Ok(())
                 })?;
             }
@@ -1253,6 +1269,44 @@ fn write_visual_sample_entry(
     Ok(())
 }
 
+fn av1_seq_level_idx(level: Option<&str>) -> u8 {
+    match level {
+        Some("2.0") => 0,
+        Some("2.1") => 1,
+        Some("2.2") => 2,
+        Some("2.3") => 3,
+        Some("3.0") => 4,
+        Some("3.1") => 5,
+        Some("3.2") => 6,
+        Some("3.3") => 7,
+        Some("4.0") => 8,
+        Some("4.1") => 9,
+        Some("4.2") => 10,
+        Some("4.3") => 11,
+        Some("5.0") => 12,
+        Some("5.1") => 13,
+        Some("5.2") => 14,
+        Some("5.3") => 15,
+        Some("6.0") => 16,
+        Some("6.1") => 17,
+        Some("6.2") => 18,
+        Some("6.3") => 19,
+        Some("7.0") => 20,
+        Some("7.1") => 21,
+        Some("7.2") => 22,
+        Some("7.3") => 23,
+        _ => 1,
+    }
+}
+
+fn av1_tier(tier: Option<&str>) -> u8 {
+    match tier {
+        Some("main") => 0,
+        Some("high") => 1,
+        _ => 0,
+    }
+}
+
 fn write_audio_sample_entry(
     v: &mut Vec<u8>,
     _cfg: &super::HeaderConfiguration,
@@ -1262,6 +1316,7 @@ fn write_audio_sample_entry(
     let fourcc = match s.name().as_str() {
         "audio/mpeg" => b"mp4a",
         "audio/x-opus" => b"Opus",
+        "audio/x-flac" => b"fLaC",
         "audio/x-alaw" => b"alaw",
         "audio/x-mulaw" => b"ulaw",
         "audio/x-adpcm" => {
@@ -1280,6 +1335,10 @@ fn write_audio_sample_entry(
             let bitrate = s.get::<i32>("bitrate").context("no ADPCM bitrate field")?;
             (bitrate / 8000) as u16
         }
+        "audio/x-flac" => with_flac_metadata(&stream.caps, |streaminfo, _| {
+            1 + (u16::from_be_bytes([streaminfo[16], streaminfo[17]]) >> 4 & 0b11111)
+        })
+        .context("FLAC metadata error")?,
         _ => 16u16,
     };
 
@@ -1321,6 +1380,9 @@ fn write_audio_sample_entry(
             }
             "audio/x-opus" => {
                 write_dops(v, &stream.caps)?;
+            }
+            "audio/x-flac" => {
+                write_dfla(v, &stream.caps)?;
             }
             "audio/x-alaw" | "audio/x-mulaw" | "audio/x-adpcm" => {
                 // Nothing to do here
@@ -1474,7 +1536,7 @@ fn write_dops(v: &mut Vec<u8>, caps: &gst::Caps) -> Result<(), Error> {
         .unwrap()
         .get::<gst::ArrayRef>("streamheader")
         .ok()
-        .and_then(|a| a.get(0).and_then(|v| v.get::<gst::Buffer>().ok()))
+        .and_then(|a| a.first().and_then(|v| v.get::<gst::Buffer>().ok()))
     {
         (
             rate,
@@ -1502,9 +1564,9 @@ fn write_dops(v: &mut Vec<u8>, caps: &gst::Caps) -> Result<(), Error> {
         // Version number
         v.push(0);
         v.push(channels);
-        v.extend(pre_skip.to_le_bytes());
-        v.extend(rate.to_le_bytes());
-        v.extend(output_gain.to_le_bytes());
+        v.extend(pre_skip.to_be_bytes());
+        v.extend(rate.to_be_bytes());
+        v.extend(output_gain.to_be_bytes());
         v.push(channel_mapping_family);
         if channel_mapping_family > 0 {
             v.push(stream_count);
@@ -1513,6 +1575,35 @@ fn write_dops(v: &mut Vec<u8>, caps: &gst::Caps) -> Result<(), Error> {
         }
 
         Ok(())
+    })
+}
+
+fn with_flac_metadata<R>(
+    caps: &gst::Caps,
+    cb: impl FnOnce(&[u8], &[gst::glib::SendValue]) -> R,
+) -> Result<R, Error> {
+    let caps = caps.structure(0).unwrap();
+    let header = caps.get::<gst::ArrayRef>("streamheader").unwrap();
+    let (streaminfo, remainder) = header.as_ref().split_first().unwrap();
+    let streaminfo = streaminfo.get::<&gst::BufferRef>().unwrap();
+    let streaminfo = streaminfo.map_readable().unwrap();
+    // 13 bytes for the Ogg/FLAC prefix and 38 for the streaminfo itself.
+    match <&[_; 13 + 38]>::try_from(streaminfo.as_slice()) {
+        Ok(i) if i.starts_with(b"\x7FFLAC\x01\x00") => Ok(cb(&i[13..], remainder)),
+        Ok(_) | Err(_) => bail!("Unknown streamheader format"),
+    }
+}
+
+fn write_dfla(v: &mut Vec<u8>, caps: &gst::Caps) -> Result<(), Error> {
+    write_full_box(v, b"dfLa", 0, 0, move |v| {
+        with_flac_metadata(caps, |streaminfo, remainder| {
+            v.extend(streaminfo);
+            for metadata in remainder {
+                let metadata = metadata.get::<&gst::BufferRef>().unwrap();
+                let metadata = metadata.map_readable().unwrap();
+                v.extend(&metadata[..]);
+            }
+        })
     })
 }
 

@@ -13,6 +13,7 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gst_base::prelude::*;
 use gst_base::subclass::prelude::*;
 
 use std::fs::File;
@@ -54,8 +55,8 @@ pub struct FileSink {
     state: Mutex<State>,
 }
 
-use once_cell::sync::Lazy;
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+use std::sync::LazyLock;
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rsfilesink",
         gst::DebugColorFlags::empty(),
@@ -80,20 +81,20 @@ impl FileSink {
                     Some(ref location_cur) => {
                         gst::info!(
                             CAT,
-                            imp: self,
+                            imp = self,
                             "Changing `location` from {:?} to {}",
                             location_cur,
                             location,
                         );
                     }
                     None => {
-                        gst::info!(CAT, imp: self, "Setting `location` to {}", location,);
+                        gst::info!(CAT, imp = self, "Setting `location` to {}", location,);
                     }
                 }
                 Some(location)
             }
             None => {
-                gst::info!(CAT, imp: self, "Resetting `location` to None",);
+                gst::info!(CAT, imp = self, "Resetting `location` to None",);
                 None
             }
         };
@@ -111,8 +112,14 @@ impl ObjectSubclass for FileSink {
 }
 
 impl ObjectImpl for FileSink {
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        self.obj().set_sync(false);
+    }
+
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecString::builder("location")
                 .nick("File Location")
                 .blurb("Location of the file to write")
@@ -133,7 +140,12 @@ impl ObjectImpl for FileSink {
                 };
 
                 if let Err(err) = res {
-                    gst::error!(CAT, imp: self, "Failed to set property `location`: {}", err);
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Failed to set property `location`: {}",
+                        err
+                    );
                 }
             }
             _ => unimplemented!(),
@@ -160,7 +172,7 @@ impl GstObjectImpl for FileSink {}
 
 impl ElementImpl for FileSink {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "File Sink",
                 "Sink/File",
@@ -173,7 +185,7 @@ impl ElementImpl for FileSink {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -215,10 +227,10 @@ impl BaseSinkImpl for FileSink {
                 ]
             )
         })?;
-        gst::debug!(CAT, imp: self, "Opened file {:?}", file);
+        gst::debug!(CAT, imp = self, "Opened file {:?}", file);
 
         *state = State::Started { file, position: 0 };
-        gst::info!(CAT, imp: self, "Started");
+        gst::info!(CAT, imp = self, "Started");
 
         Ok(())
     }
@@ -233,7 +245,7 @@ impl BaseSinkImpl for FileSink {
         }
 
         *state = State::Stopped;
-        gst::info!(CAT, imp: self, "Stopped");
+        gst::info!(CAT, imp = self, "Stopped");
 
         Ok(())
     }
@@ -253,7 +265,7 @@ impl BaseSinkImpl for FileSink {
             }
         };
 
-        gst::trace!(CAT, imp: self, "Rendering {:?}", buffer);
+        gst::trace!(CAT, imp = self, "Rendering {:?}", buffer);
         let map = buffer.map_readable().map_err(|_| {
             gst::element_imp_error!(self, gst::CoreError::Failed, ["Failed to map buffer"]);
             gst::FlowError::Error

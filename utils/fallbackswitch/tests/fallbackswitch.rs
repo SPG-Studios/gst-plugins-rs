@@ -10,11 +10,11 @@
 use gst::debug;
 use gst::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 const LATENCY: gst::ClockTime = gst::ClockTime::from_mseconds(10);
 
-static TEST_CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static TEST_CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "fallbackswitch-test",
         gst::DebugColorFlags::empty(),
@@ -279,12 +279,13 @@ fn test_long_drop_and_recover(live: bool) {
     let buffer = pull_buffer(&pipeline);
     assert_fallback_buffer!(buffer, Some(4.seconds()));
 
-    // Produce a sixth frame from the normal source
+    // Produce a sixth frame from the normal source, which
+    // will make it healthy again
     push_buffer(&pipeline, 5.seconds());
     set_time(&pipeline, 5.seconds() + 10.mseconds());
     let buffer = pull_buffer(&pipeline);
     assert_buffer!(buffer, Some(5.seconds()));
-    assert!(!mainsink.property::<bool>("is-healthy"));
+    assert!(mainsink.property::<bool>("is-healthy"));
     drop(mainsink);
     drop(switch);
 
@@ -491,15 +492,10 @@ fn setup_pipeline(
     let switch = gst::ElementFactory::make("fallbackswitch")
         .name("switch")
         .property("timeout", 3.seconds())
+        .property_if_some("immediate-fallback", immediate_fallback)
+        .property_if_some("auto-switch", auto_switch)
         .build()
         .unwrap();
-
-    if let Some(imm) = immediate_fallback {
-        switch.set_property("immediate-fallback", imm);
-    }
-    if let Some(auto_switch) = auto_switch {
-        switch.set_property("auto-switch", auto_switch);
-    }
 
     let sink = gst_app::AppSink::builder().name("sink").sync(false).build();
 
@@ -546,7 +542,7 @@ fn setup_pipeline(
         loop {
             while let Some(clock_id) = clock.peek_next_pending_id().and_then(|clock_id| {
                 // Process if the clock ID is in the past or now
-                if clock.time().map_or(false, |time| time >= clock_id.time()) {
+                if clock.time().is_some_and(|time| time >= clock_id.time()) {
                     Some(clock_id)
                 } else {
                     None

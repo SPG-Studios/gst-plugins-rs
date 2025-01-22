@@ -23,6 +23,7 @@ You will find the following plugins in this repository:
 
     - `aws`: Various elements for Amazon AWS services using the [AWS SDK](https://awslabs.github.io/aws-sdk-rust/) library
       - `s3src`/`s3sink`: A source and sink element to talk to the Amazon S3 object storage system.
+      - `s3putobjectsink`: A sink element to talk to Amazon S3. Uses `PutObject` instead of multi-part upload like `s3sink`.
       - `s3hlssink`: A sink element to store HLS streams on Amazon S3.
       - `awstranscriber`: an element wrapping the AWS Transcriber service.
       - `awstranscribeparse`: an element parsing the packets of the AWS Transcriber service.
@@ -32,6 +33,11 @@ You will find the following plugins in this repository:
     - `ndi`: An [NDI](https://www.newtek.com/ndi/) plugin containing a source, sink and device provider.
 
     - `onvif`: Various elements for parsing, RTP (de)payloading, overlaying of ONVIF timed metadata.
+
+    - `quinn`: Transfer data over the network using QUIC
+      - `quinnquicsink`/`quinnquicsrc`: Send and receive data using QUIC
+      - `quinnquicmux`/`quinnquicdemux`: Multiplex and de-multiplex streams and datagram using QUIC
+      - `quinnroqmux`/`quinnroqdemux`: Multiplex and de-multiplex RTP streams over QUIC
 
     - `raptorq`: Encoder/decoder element for RaptorQ RTP FEC mechanism.
 

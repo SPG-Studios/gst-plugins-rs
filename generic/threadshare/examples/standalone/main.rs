@@ -1,5 +1,5 @@
 use gst::glib;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 mod args;
 use args::*;
@@ -13,7 +13,7 @@ mod src;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-standalone-main",
         gst::DebugColorFlags::empty(),
@@ -106,47 +106,47 @@ fn main() {
 
     let bus = pipeline.bus().unwrap();
     let terminated_count = Arc::new(AtomicU32::new(0));
-    let pipeline_clone = pipeline.clone();
     let l_clone = l.clone();
-    bus.add_watch(move |_, msg| {
-        use gst::MessageView;
-        match msg.view() {
-            MessageView::Eos(_) => {
-                // Actually, we don't post EOS (see sinks impl).
-                gst::info!(CAT, "Received eos");
-                l_clone.quit();
+    let _bus_watch = bus
+        .add_watch(move |_, msg| {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Eos(_) => {
+                    // Actually, we don't post EOS (see sinks impl).
+                    gst::info!(CAT, "Received eos");
+                    l_clone.quit();
 
-                glib::Continue(false)
-            }
-            MessageView::Error(msg) => {
-                if let gst::MessageView::Error(msg) = msg.message().view() {
-                    if msg.error().matches(gst::LibraryError::Shutdown) {
-                        if terminated_count.fetch_add(1, Ordering::SeqCst) == args.streams - 1 {
-                            gst::info!(CAT, "Received all shutdown requests");
-                            l_clone.quit();
+                    glib::ControlFlow::Break
+                }
+                MessageView::Error(msg) => {
+                    if let gst::MessageView::Error(msg) = msg.message().view() {
+                        if msg.error().matches(gst::LibraryError::Shutdown) {
+                            if terminated_count.fetch_add(1, Ordering::SeqCst) == args.streams - 1 {
+                                gst::info!(CAT, "Received all shutdown requests");
+                                l_clone.quit();
 
-                            return glib::Continue(false);
-                        } else {
-                            return glib::Continue(true);
+                                return glib::ControlFlow::Break;
+                            } else {
+                                return glib::ControlFlow::Continue;
+                            }
                         }
                     }
+
+                    gst::error!(
+                        CAT,
+                        "Error from {:?}: {} ({:?})",
+                        msg.src().map(|s| s.path_string()),
+                        msg.error(),
+                        msg.debug()
+                    );
+                    l_clone.quit();
+
+                    glib::ControlFlow::Break
                 }
-
-                gst::error!(
-                    CAT,
-                    "Error from {:?}: {} ({:?})",
-                    msg.src().map(|s| s.path_string()),
-                    msg.error(),
-                    msg.debug()
-                );
-                l_clone.quit();
-
-                glib::Continue(false)
+                _ => glib::ControlFlow::Continue,
             }
-            _ => glib::Continue(true),
-        }
-    })
-    .expect("Failed to add bus watch");
+        })
+        .expect("Failed to add bus watch");
 
     gst::info!(CAT, "Switching to Ready");
     let start = Instant::now();
@@ -162,11 +162,11 @@ fn main() {
 
     gst::info!(CAT, "Switching to Ready");
     let stop = Instant::now();
-    pipeline_clone.set_state(gst::State::Ready).unwrap();
+    pipeline.set_state(gst::State::Ready).unwrap();
     gst::info!(CAT, "Switching to Ready took {:.2?}", stop.elapsed());
 
     gst::info!(CAT, "Shutting down");
     let stop = Instant::now();
-    pipeline_clone.set_state(gst::State::Null).unwrap();
+    pipeline.set_state(gst::State::Null).unwrap();
     gst::info!(CAT, "Shutting down took {:.2?}", stop.elapsed());
 }

@@ -13,10 +13,11 @@
  * Since: plugins-rs-0.9.0
  */
 use gst::glib;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 mod onvifmetadatacombiner;
 mod onvifmetadatadepay;
+mod onvifmetadataextractor;
 mod onvifmetadataoverlay;
 mod onvifmetadataparse;
 mod onvifmetadatapay;
@@ -28,10 +29,10 @@ pub(crate) const ONVIF_METADATA_SCHEMA: &str = "http://www.onvif.org/ver10/schem
 // midnight 01-01-1970 (UNIX epoch)
 pub(crate) const PRIME_EPOCH_OFFSET: gst::ClockTime = gst::ClockTime::from_seconds(2_208_988_800);
 
-pub(crate) static NTP_CAPS: Lazy<gst::Caps> =
-    Lazy::new(|| gst::Caps::builder("timestamp/x-ntp").build());
-pub(crate) static UNIX_CAPS: Lazy<gst::Caps> =
-    Lazy::new(|| gst::Caps::builder("timestamp/x-unix").build());
+pub(crate) static NTP_CAPS: LazyLock<gst::Caps> =
+    LazyLock::new(|| gst::Caps::builder("timestamp/x-ntp").build());
+pub(crate) static UNIX_CAPS: LazyLock<gst::Caps> =
+    LazyLock::new(|| gst::Caps::builder("timestamp/x-unix").build());
 
 pub(crate) fn lookup_reference_timestamp(buffer: &gst::Buffer) -> Option<gst::ClockTime> {
     for meta in buffer.iter_meta::<gst::ReferenceTimestampMeta>() {
@@ -119,8 +120,11 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     onvifmetadatacombiner::register(plugin)?;
     onvifmetadataoverlay::register(plugin)?;
     onvifmetadataparse::register(plugin)?;
+    onvifmetadataextractor::register(plugin)?;
 
-    gst::meta::CustomMeta::register("OnvifXMLFrameMeta", &[]);
+    if !gst::meta::CustomMeta::is_registered("OnvifXMLFrameMeta") {
+        gst::meta::CustomMeta::register("OnvifXMLFrameMeta", &[]);
+    }
 
     Ok(())
 }
@@ -130,7 +134,7 @@ gst::plugin_define!(
     env!("CARGO_PKG_DESCRIPTION"),
     plugin_init,
     concat!(env!("CARGO_PKG_VERSION"), "-", env!("COMMIT_ID")),
-    "MPL",
+    "MPL-2.0",
     env!("CARGO_PKG_NAME"),
     env!("CARGO_PKG_NAME"),
     env!("CARGO_PKG_REPOSITORY"),

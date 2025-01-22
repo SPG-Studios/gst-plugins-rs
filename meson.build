@@ -1,10 +1,11 @@
 project('gst-plugins-rs',
         'rust',
         'c',
-        version: '0.10.0-alpha.1',
-        meson_version : '>= 0.60')
+        version: '0.14.0-alpha.1',
+        meson_version : '>= 1.1')
 
 # dependencies.py needs a toml parsing module
+api_version = '1.0'
 python = import('python').find_installation(modules: ['tomllib'], required: false)
 if not python.found()
   python = import('python').find_installation(modules: ['tomli'])
@@ -20,14 +21,15 @@ endif
 
 cargo = find_program('cargo', version:'>=1.40')
 cargo_wrapper = find_program('cargo_wrapper.py')
-cargo_c = find_program('cargo-cbuild', version:'>=0.9.3', required: false)
-rustc = find_program('rustc', version:'>=1.52')
+cargo_c = find_program('cargo-cbuild', version:'>=0.9.21', required: false)
+
+rustc = meson.get_compiler('rust')
 
 if not cargo_c.found()
   error('cargo-c missing, install it with: \'cargo install cargo-c\'')
 endif
 
-system = build_machine.system()
+system = host_machine.system()
 exe_suffix = ''
 if system == 'windows'
   exe_suffix = '.exe'
@@ -61,21 +63,45 @@ deps = [
   ['gstreamer-app-1.0', 'gst-plugins-base', 'app_dep', 'gstapp'],
   ['gstreamer-audio-1.0', 'gst-plugins-base', 'audio_dep', 'gstaudio'],
   ['gstreamer-base-1.0', 'gstreamer', 'gst_base_dep', 'gst_base'],
-  ['gstreamer-check-1.0', 'gstreamer', 'gst_check_dep', 'gst_check'],
-  ['gstreamer-gl-1.0', 'gst-plugins-base', 'gst_gl_dep', 'gstgl'],
-  ['gstreamer-net-1.0', 'gstreamer', 'gst_net_dep', 'gst_net'],
-  ['gstreamer-rtp-1.0', 'gst-plugins-base', 'rtp_dep', 'gst_rtp'],
   ['gstreamer-video-1.0', 'gst-plugins-base', 'video_dep', 'gstvideo'],
-  ['gstreamer-sdp-1.0', 'gst-plugins-base', 'sdp_dep', 'gstsdp'],
-  ['gstreamer-webrtc-1.0', 'gst-plugins-bad', 'gstwebrtc_dep', 'gstwebrtc'],
 ]
+
+webrtc_option = get_option('webrtc')
+rtp_option = get_option('rtp').enable_if(webrtc_option.enabled(), error_message: 'webrtc option needs rtp')
+
+rtsp_option = get_option('rtsp')
+
+if get_option('threadshare').allowed() \
+  or get_option('onvif').allowed() \
+  or get_option('raptorq').allowed() \
+  or rtp_option.allowed() \
+  or webrtc_option.allowed()
+  deps += [['gstreamer-rtp-1.0', 'gst-plugins-base', 'rtp_dep', 'gst_rtp']]
+endif
+if get_option('webrtc').allowed() \
+  or get_option('webrtchttp').allowed()
+  deps += [['gstreamer-webrtc-1.0', 'gst-plugins-bad', 'gstwebrtc_dep', 'gstwebrtc']]
+  deps += [['gstreamer-sdp-1.0', 'gst-plugins-base', 'sdp_dep', 'gstsdp']]
+endif
+if get_option('tests').allowed()
+  deps += [['gstreamer-check-1.0', 'gstreamer', 'gst_check_dep', 'gst_check']]
+endif
+if get_option('gtk4').allowed()
+  deps += [['gstreamer-gl-1.0', 'gst-plugins-base', 'gstgl_dep', 'gstgl', get_option('gtk4')]]
+endif
+if get_option('threadshare').allowed() or get_option('rtsp').allowed()
+  deps += [['gstreamer-net-1.0', 'gstreamer', 'gst_net_dep', 'gst_net']]
+endif
+if get_option('relationmeta').allowed()
+  deps += [['gstreamer-analytics-1.0', 'gst-plugins-bad', 'gstanalytics_dep', 'gstanalytics']]
+endif
 
 glib_dep = dependency('glib-2.0', version: glib_req)
 deps_cache += {'glib-2.0': glib_dep}
 
 foreach d: deps
   dep = dependency(d[0], version: gst_req,
-    fallback : [d[1], d[2]])
+    fallback : [d[1], d[2]], required: d.get(4, true))
   set_variable(d[2], dep)
   deps_cache += {d[0]: dep}
   if dep.type_name() == 'internal'
@@ -96,6 +122,7 @@ plugins = {
   'spotify': {'library': 'libgstspotify'},
 
   'file': {'library': 'libgstrsfile'},
+  'originalbuffer': {'library': 'libgstoriginalbuffer'},
   # sodium can have an external dependency, see below
   'threadshare': {
     'library': 'libgstthreadshare',
@@ -106,6 +133,8 @@ plugins = {
       'ts-standalone',
     ],
   },
+  'inter': {'library': 'libgstrsinter'},
+  'streamgrouper': {'library': 'libgststreamgrouper'},
 
   'mp4': {'library': 'libgstmp4'},
   'fmp4': {
@@ -119,16 +148,19 @@ plugins = {
 
   'aws': {
     'library': 'libgstaws',
-    'extra-deps': {'openssl': '>=1.1'},
+    'extra-deps': {'openssl': ['>=1.1']},
   },
+  'mpegtslive': {'library': 'libgstmpegtslive'},
   'hlssink3': {'library': 'libgsthlssink3'},
   'ndi': {'library': 'libgstndi'},
   'onvif': {
     'library': 'libgstrsonvif',
-    'extra-deps': {'pangocairo': ''},
+    'extra-deps': {'pangocairo': []},
   },
   'raptorq': {'library': 'libgstraptorq'},
   'reqwest': {'library': 'libgstreqwest'},
+  'relationmeta': {'library': 'libgstrsrelationmeta'},
+  'rtsp': {'library': 'libgstrsrtsp'},
   'rtp': {'library': 'libgstrsrtp'},
   'webrtchttp': {'library': 'libgstwebrtchttp'},
   'webrtc': {
@@ -141,40 +173,26 @@ plugins = {
   'regex': {'library': 'libgstregex'},
   'textwrap': {'library': 'libgsttextwrap'},
 
-  'fallbackswitch': {
-    'library': 'libgstfallbackswitch',
-    'examples': ['gtk-fallbackswitch'],
-    'features': ['gtk', 'gio', 'gst-plugin-gtk4'],
-  },
-  'livesync': {
-    'library': 'libgstlivesync',
-    'examples': ['gtk-livesync'],
-    'features': ['gtk', 'gio', 'gst-plugin-gtk4'],
-  },
-  'togglerecord': {
-    'library': 'libgsttogglerecord',
-    'examples': ['gtk-recording'],
-    'features': ['gtk', 'gio', 'gst-plugin-gtk4'],
-  },
   'tracers': {'library': 'libgstrstracers'},
   'uriplaylistbin': {
     'library': 'libgsturiplaylistbin',
     'examples': ['playlist'],
     'features': ['clap'],
+    'gst-version': '>=1.23.90',
   },
 
   'cdg': {'library': 'libgstcdg'},
   'closedcaption': {
     'library': 'libgstrsclosedcaption',
     'extra-deps': {
-      'pango': '',
-      'pangocairo': '',
-      'cairo-gobject': '',
+      'pango': [],
+      'pangocairo': [],
+      'cairo-gobject': [],
     }
   },
   'dav1d': {
     'library': 'libgstdav1d',
-    'extra-deps': {'dav1d': '>=1.0'},
+    'extra-deps': {'dav1d': ['>=1.3']},
   },
   'ffv1': {'library': 'libgstffv1'},
   'flavors': {'library': 'libgstrsflv'},
@@ -191,8 +209,17 @@ plugins = {
   'rav1e': {'library': 'libgstrav1e'},
   'videofx': {
     'library': 'libgstrsvideofx',
-    'extra-deps': {'cairo-gobject': ''},
+    'extra-deps': {'cairo-gobject': []},
   },
+  'gopbuffer': {'library': 'libgstgopbuffer'},
+  'quinn': {
+    'library': 'libgstquinn',
+    'examples': [
+      'quic_mux',
+      'quic_roq',
+    ],
+  },
+  'speechmatics': {'library': 'libgstspeechmatics'},
 }
 
 # Won't build on platforms where it bundles the sources because of:
@@ -204,7 +231,7 @@ if host_system not in ['windows', 'darwin']
   # https://github.com/qnighy/libwebp-sys2-rs/issues/4
   plugins += {'webp': {
     'library': 'libgstrswebp',
-    'extra-deps': {'libwebpdemux': ''},
+    'extra-deps': {'libwebpdemux': []},
   }}
 endif
 
@@ -249,27 +276,81 @@ endif
 
 if get_option('gtk4').allowed()
   gtk4_features = []
-  gl_winsys = gst_gl_dep.get_variable('gl_winsys').split()
-  gl_platforms = gst_gl_dep.get_variable('gl_platforms').split()
-  if host_system == 'linux'
-    if 'wayland' in gl_winsys
-      gtk4_features += 'wayland'
+  gl_winsys = gstgl_dep.get_variable('gl_winsys').split()
+  gl_platforms = gstgl_dep.get_variable('gl_platforms').split()
+  if 'wayland' in gl_winsys
+    gtk4_features += 'wayland'
+  endif
+  if 'x11' in gl_winsys
+    if 'egl' in gl_platforms
+      gtk4_features += 'x11egl'
     endif
-    if 'x11' in gl_winsys
-      if 'egl' in gl_platforms
-        gtk4_features += 'x11egl'
-      endif
-      if 'glx' in gl_platforms
-        gtk4_features += 'x11glx'
-      endif
+    if 'glx' in gl_platforms
+      gtk4_features += 'x11glx'
+    endif
+  elif host_system == 'windows'
+    if 'egl' in gl_platforms
+      gtk4_features += 'winegl'
     endif
   endif
-  plugins += {'gtk4': {
-    'library': 'libgstgtk4',
-    'examples': ['gtksink'],
-    'extra-deps': {'gtk4': '>=4.6'},
-    'features': gtk4_features,
-  }}
+
+  gst_allocators_dep = dependency('gstreamer-allocators-1.0', version: '>=1.24', required: false)
+  gtk_dep = dependency('gtk4', version: '>=4.6', required: get_option('gtk4'))
+  if gtk_dep.found()
+    if host_system == 'linux' and gtk_dep.version().version_compare('>=4.14') and \
+        gst_allocators_dep.found() and 'wayland' in gtk4_features
+      gtk4_features += 'dmabuf'
+    endif
+
+    if gtk_dep.version().version_compare('>=4.16')
+      gtk4_features += 'gtk_v4_16'
+    elif gtk_dep.version().version_compare('>=4.14')
+      gtk4_features += 'gtk_v4_14'
+    elif gtk_dep.version().version_compare('>=4.12')
+      gtk4_features += 'gtk_v4_12'
+    elif gtk_dep.version().version_compare('>=4.10')
+      gtk4_features += 'gtk_v4_10'
+    endif
+
+    plugins += {
+      'gtk4': {
+        'library': 'libgstgtk4',
+        'examples': ['gtksink'],
+        'extra-deps': {'gtk4': ['>=4.6']},
+        'features': gtk4_features,
+      },
+    }
+  endif
+endif
+
+examples_opt = get_option('examples')
+if examples_opt.allowed() and 'gtk4' in plugins
+  plugins += {
+    'fallbackswitch': {
+      'library': 'libgstfallbackswitch',
+      'examples_features': {
+        'gtk-fallbackswitch': ['gtk', 'gio', 'gst-plugin-gtk4'],
+      },
+    },
+    'livesync': {
+      'library': 'libgstlivesync',
+      'examples_features': {
+        'gtk-livesync': ['gtk', 'gio', 'gst-plugin-gtk4'],
+      }
+    },
+    'togglerecord': {
+      'library': 'libgsttogglerecord',
+      'examples_features': {
+        'gtk-recording': ['gtk', 'gio', 'gst-plugin-gtk4'],
+      }
+    },
+  }
+else
+  plugins += {
+    'fallbackswitch': { 'library': 'libgstfallbackswitch'},
+    'livesync': { 'library': 'libgstlivesync'},
+    'togglerecord': { 'library': 'libgsttogglerecord'},
+  }
 endif
 
 # Process plugins list
@@ -315,73 +396,144 @@ if get_option('gtk4').allowed()
   endif
 endif
 
-if gst_dep.version().version_compare('>=1.21')
-  components = [
-    '', '-app', '-audio', '-base', '-check',
-    '-rtp', '-sdp', '-utils', '-video', '-webrtc',
-  ]
-  if get_option('tracers').allowed()
-    components += '-plugin-tracers'
-  endif
-  if get_option('threadshare').allowed()
-    components += '-net'
-  endif
-  if get_option('mp4').allowed() or get_option('fmp4').allowed()
-    components += '-pbutils'
-  endif
-  foreach c: components
-    features += f'gst@c@/v1_22'
-  endforeach
-  if get_option('webrtc').allowed()
-    features += 'gst-plugin-webrtc/gst1_22'
+if get_option('rav1e').allowed()
+  nasm = find_program('nasm', required: false)
+  if nasm.found()
+    features += 'gst-plugin-rav1e/asm'
+    extra_env += {'NASM': nasm.full_path()}
   endif
 endif
 
-if get_option('rav1e').allowed() and find_program('nasm', required: false).found()
-  features += 'gst-plugin-rav1e/asm'
+if get_option('default_library') == 'static'
+  extra_env += {
+    # Tell the pkg-config crate to think of all libraries as static
+    'PKG_CONFIG_ALL_STATIC': '1',
+    # Tell the system-deps crate to process linker flag for static deps
+    'SYSTEM_DEPS_LINK': 'static'
+  }
 endif
 
 foreach plugin_name, details: plugins
-  plugin_opt = get_option(plugin_name)
-  if plugin_opt.allowed()
-    plugin_deps_found = true
-    foreach dep_name, dep_ver: details.get('extra-deps', {})
-      if dep_ver != ''
-        dep = dependency(dep_name, version: dep_ver, required: plugin_opt)
+  plugin_opt = get_variable(f'@plugin_name@_option', get_option(plugin_name))
+  if not plugin_opt.allowed()
+    debug(f'@plugin_name@ is disabled')
+    continue
+  endif
+  plugin_deps_found = true
+
+  # Check whether we have all needed deps
+  foreach dep_name, dep_ver: details.get('extra-deps', {})
+    if dep_ver.length() != 0
+      dep = dependency(dep_name, version: dep_ver, required: plugin_opt)
+    else
+      dep = dependency(dep_name, required: plugin_opt)
+    endif
+    deps_cache += {dep_name: dep}
+    if not dep.found()
+      if dep_ver.length() != 0
+        dep_ver_msg = ' '.join(dep_ver)
+        debug(f'@plugin_name@ dependency @dep_name@ @dep_ver_msg@ not found, skipping')
       else
-        dep = dependency(dep_name, required: plugin_opt)
+        debug(f'@plugin_name@ dependency @dep_name@ not found, skipping')
       endif
-      deps_cache += {dep_name: dep}
-      if not dep.found()
-        plugin_deps_found = false
+      plugin_deps_found = false
+      break
+    endif
+  endforeach
+  if not plugin_deps_found
+    continue
+  endif
+
+  # Validate gst-plugin features
+  plugin_features = details.get('features', [])
+  foreach feature: plugin_features
+    if feature.startswith('gst-plugin') and not packages.contains(feature)
+      msg = f'@plugin_name@ required feature @feature@ not found'
+      if plugin_opt.enabled()
+        error(msg)
+      endif
+      message(msg + ', skipping')
+      plugin_deps_found = false
+      break
+    endif
+  endforeach
+  if not plugin_deps_found
+    continue
+  endif
+
+  # Check if we have the required GStreamer version
+  if details.has_key('gst-version') and not \
+      deps_cache['gstreamer-1.0'].version().version_compare(details['gst-version'])
+    msg = '@0@ requires gstreamer version @1@'.format(plugin_name, details['gst-version'])
+    if plugin_opt.enabled()
+      error(msg)
+    endif
+    message(msg + ', skipping')
+    continue
+  endif
+
+  # Parse and enable examples
+  plugin_examples = details.get('examples', [])
+  foreach example: plugin_examples
+    examples += example
+  endforeach
+
+  plugin_examples_features = details.get('examples_features', {})
+  foreach example, examples_features: plugin_examples_features
+    example_deps_found = true
+    foreach feature: examples_features
+      if feature.startswith('gst-plugin') and not packages.contains(feature)
+        msg = f'@plugin_name@ example @example@ required feature @feature@ not found'
+        if plugin_opt.enabled() and examples_opt.enabled()
+          error(msg)
+        endif
+        message(msg + ', skipping')
+        example_deps_found = false
+        break
       endif
     endforeach
-    if plugin_deps_found
-      packages += f'gst-plugin-@plugin_name@'
-      features += details.get('features', [])
-      examples += details.get('examples', [])
-      lib = details.get('library')
-      if default_library in ['shared', 'both']
-        output += [lib + '.' + ext_dynamic]
-      endif
-      if default_library in ['static', 'both']
-        output += [lib + '.' + ext_static]
-      endif
+    features += examples_features
+    if example_deps_found
+      examples += example
     endif
+  endforeach
+
+  packages += f'gst-plugin-@plugin_name@'
+  features += plugin_features
+  extra_features = run_command('dependencies.py', meson.current_source_dir(), plugin_name,
+    '--feature', '--gst-version', gst_dep.version(), capture: true, check: true).stdout().strip()
+  if extra_features != ''
+    features += extra_features.split(',')
+  endif
+
+  lib = details.get('library')
+  # No 'lib' suffix with MSVC
+  if cc.get_argument_syntax() == 'msvc'
+    lib = lib.substring(3)
+  endif
+  if default_library in ['shared', 'both']
+    output += [lib + '.' + ext_dynamic]
+  endif
+  if default_library in ['static', 'both']
+    output += [lib + '.' + ext_static]
   endif
 endforeach
 
+feature_args = []
+if features.length() > 0
+  feature_args += ['--features', features]
+endif
 
 plugins_install_dir = get_option('libdir') / 'gstreamer-1.0'
 pkgconfig_install_dir = get_option('libdir') / 'pkgconfig'
 
 extra_args = []
 if get_option('doc').disabled()
-  extra_args = ['--disable-doc']
+  extra_args += ['--disable-doc']
 endif
 
 # 'pkgconfig' is the entry in the machine file, if specified
-pkg_config = find_program('pkgconfig', required: false)
+pkg_config = find_program('pkgconfig', 'pkg-config')
 if pkg_config.found()
   extra_env += {'PKG_CONFIG': pkg_config.full_path()}
 endif
@@ -395,38 +547,55 @@ if pkg_config_path.length() > 0
   extra_env += {'PKG_CONFIG_PATH': pathsep.join(pkg_config_path)}
 endif
 
-rs_plugins = custom_target('gst-plugins-rs',
-  build_by_default: true,
-  output: output,
-  console: true,
-  install: true,
-  install_dir: plugins_install_dir,
-  depends: depends,
-  depfile: 'gst-plugins-rs.dep',
-  env: extra_env,
-  command: [cargo_wrapper,
-    'build',
-    meson.current_build_dir(),
-    meson.current_source_dir(),
-    meson.global_build_root(),
-    target,
-    get_option('prefix'),
-    get_option('libdir'),
-    '--packages', packages,
-    '--features', features,
-    '--depfile', '@DEPFILE@',
-    '--lib-suffixes', library_suffixes,
-  ] + extra_args)
+# get cmdline for rust
+extra_env += {'RUSTC': ' '.join(rustc.cmd_array())}
 
-plugins = rs_plugins.to_list()
+plugins = []
+if output.length() > 0
+  rs_plugins = custom_target('gst-plugins-rs',
+    build_by_default: true,
+    output: output,
+    console: true,
+    install: true,
+    install_dir: plugins_install_dir,
+    depends: depends,
+    depfile: 'gst-plugins-rs.dep',
+    env: extra_env,
+    command: [cargo_wrapper,
+      'build',
+      meson.current_build_dir(),
+      meson.current_source_dir(),
+      meson.global_build_root(),
+      target,
+      get_option('prefix'),
+      get_option('libdir'),
+      '--packages', packages,
+      '--depfile', '@DEPFILE@',
+      '--lib-suffixes', library_suffixes,
+    ] + feature_args + extra_args)
+  plugins = rs_plugins.to_list()
+endif
 
 # This is used by GStreamer to static link Rust plugins into gst-full
 gst_plugins = []
 pc_files = []
 plugin_names = []
 foreach plugin : plugins
-  # skip the 'lib' prefix and extension from plugin path
-  plugin_name = fs.stem(plugin.full_path()).substring(3)
+  plugin_name = fs.stem(plugin.full_path())
+  # skip the 'lib' prefix from plugin path when not building with MSVC
+  if cc.get_argument_syntax() != 'msvc'
+    plugin_name = plugin_name.substring(3)
+  endif
+
+  plugin_display_name = plugin_name
+  if plugin_name.startswith('gst')
+    plugin_display_name = plugin_name.substring(3)
+  endif
+  if plugin_display_name in plugin_names
+    # When default_library=both plugins are duplicated.
+    continue
+  endif
+  plugin_names += plugin_display_name
 
   option_name = plugin_name.substring(3)
   if option_name.startswith('rs')
@@ -472,13 +641,7 @@ foreach plugin : plugins
     warning('Static plugin @0@ is known to fail. It will not be included in libgstreamer-full.'.format(plugin_name))
   else
     gst_plugins += dep
-
     pc_files += [plugin_name + '.pc']
-    if plugin_name.startswith('gst')
-      plugin_names += [plugin_name.substring(3)]
-    else
-      plugin_names += [plugin_name]
-    endif
   endif
 endforeach
 
@@ -487,19 +650,21 @@ subdir('docs')
 # We don't need to pass a command as we depends on the target above
 # but it is currently mandatory ( https://github.com/mesonbuild/meson/issues/8059 )
 # so use python as it's guaranteed to be present on any setup
-custom_target('gst-plugins-rs-pc-files',
-  build_by_default: true,
-  output: pc_files,
-  console: true,
-  install: true,
-  install_dir: pkgconfig_install_dir,
-  depends: rs_plugins,
-  command: [python, '-c', '""'])
+if pc_files.length() > 0
+  custom_target('gst-plugins-rs-pc-files',
+    build_by_default: true,
+    output: pc_files,
+    console: true,
+    install: true,
+    install_dir: pkgconfig_install_dir,
+    depends: rs_plugins,
+    command: [python, '-c', '""'])
+endif
 
 if get_option('webrtc').allowed()
   custom_target('gst-webrtc-signalling-server',
     build_by_default: true,
-    output: 'gst-webrtc-signalling-server',
+    output: 'gst-webrtc-signalling-server' + exe_suffix,
     console: true,
     install: true,
     install_dir: get_option('bindir'),
@@ -520,9 +685,13 @@ if get_option('webrtc').allowed()
 endif
 
 if get_option('examples').allowed() and examples.length() > 0
+  outputs = []
+  foreach example: examples
+    outputs += [example + exe_suffix]
+  endforeach
   custom_target('gst-plugins-rs-examples',
     build_by_default: true,
-    output: examples,
+    output: outputs,
     console: true,
     install: false,
     depfile: 'gst-plugins-rs-examples.dep',
@@ -537,24 +706,25 @@ if get_option('examples').allowed() and examples.length() > 0
       get_option('libdir'),
       '--depfile', '@DEPFILE@',
       '--packages', packages,
-      '--features', features,
       '--examples', examples,
       '--exe-suffix', exe_suffix,
-    ])
+    ] + feature_args)
 endif
 
-test('tests',
-  cargo_wrapper,
-  env: extra_env,
-  args: ['test',
-    meson.current_build_dir(),
-    meson.current_source_dir(),
-    meson.global_build_root(),
-    target,
-    get_option('prefix'),
-    get_option('libdir'),
-    '--packages', packages],
-  timeout: 600)
+if get_option('tests').allowed()
+  test('tests',
+    cargo_wrapper,
+    env: extra_env,
+    args: ['test',
+      meson.current_build_dir(),
+      meson.current_source_dir(),
+      meson.global_build_root(),
+      target,
+      get_option('prefix'),
+      get_option('libdir'),
+      '--packages', packages],
+    timeout: 600)
+endif
 
 summary({
     'Plugins': plugin_names,

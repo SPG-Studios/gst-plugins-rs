@@ -1,4 +1,4 @@
-.templates_sha: &templates_sha 567700e483aabed992d0a4fea84994a0472deff6
+.templates_sha: &templates_sha 6a40df92957c8ce9ee741aaccc5daaaf70545b1e
 
 include:
   - project: 'freedesktop/ci-templates'
@@ -14,15 +14,16 @@ include:
     file: '/.gitlab-image-tags.yml'
 
 variables:
-  FDO_UPSTREAM_REPO: gstreamer/gst-plugins-rs
+  FDO_UPSTREAM_REPO: gstreamer/gstreamer-rs
 
   # We use GStreamer image to build the documentation as it is the simplest way
   # to ensure that we are testing against the same thing as GStreamer itself.
   # The tag name is included above from the main repo.
   GSTREAMER_DOC_IMAGE: "registry.freedesktop.org/gstreamer/gstreamer/amd64/fedora:$FEDORA_TAG-main"
+  # Use the gstreamer image to trigger the cerbero job, same as the monorepo
   WINDOWS_BASE: "registry.freedesktop.org/gstreamer/gstreamer-rs/windows"
-  WINDOWS_RUST_MINIMUM_IMAGE: "$WINDOWS_BASE:$GST_RS_IMG_TAG-main-$GST_RS_MSRV"
-  WINDOWS_RUST_STABLE_IMAGE: "$WINDOWS_BASE:$GST_RS_IMG_TAG-main-$GST_RS_STABLE"
+  WINDOWS_RUST_MINIMUM_IMAGE: "$WINDOWS_BASE:$GST_RS_IMG_WINDOWS_TAG-main-$GST_RS_MSRV"
+  WINDOWS_RUST_STABLE_IMAGE: "$WINDOWS_BASE:$GST_RS_IMG_WINDOWS_TAG-main-$GST_RS_STABLE"
 
 workflow:
   rules:
@@ -36,10 +37,17 @@ workflow:
 
 default:
   interruptible: true
+  # Auto-retry jobs in case of infra failures
+  retry:
+    max: 1
+    when:
+      - 'runner_system_failure'
+      - 'stuck_or_timeout_failure'
+      - 'scheduler_failure'
+      - 'api_failure'
 
 stages:
   - "trigger"
-  - "prep"
   - "lint"
   - "test"
   - "extras"
@@ -51,6 +59,7 @@ trigger:
   stage: 'trigger'
   variables:
     GIT_STRATEGY: none
+  tags: [ 'placeholder-job' ]
   script:
     - echo "Trigger job done, now running the pipeline."
   rules:
@@ -66,128 +75,32 @@ trigger:
       when: 'manual'
       allow_failure: false
 
-.debian:11:
-  variables:
-    FDO_DISTRIBUTION_VERSION: 'bullseye-slim'
-  before_script:
-    - source ./ci/env.sh
-    - mkdir .cargo && echo -e "[net]\ngit-fetch-with-cli = true" > .cargo/config
-    # If cargo exists assume we probably will want to update
-    # the lockfile
-    - |
-      if command -v cargo; then
-        cargo generate-lockfile
-        cargo update
-      fi
-
-.debian:11-stable:
-  extends: .debian:11
-  variables:
-    FDO_DISTRIBUTION_TAG: '$GST_RS_STABLE-${GST_RS_IMG_TAG}_2023-02-20.0'
-    FDO_BASE_IMAGE: "registry.freedesktop.org/gstreamer/gstreamer-rs/debian/bullseye-slim:$GST_RS_STABLE-$GST_RS_IMG_TAG"
-
-.debian:11-msrv:
-  extends: .debian:11
-  variables:
-    FDO_DISTRIBUTION_TAG: '$GST_RS_MSRV-${GST_RS_IMG_TAG}_2023-02-20.0'
-    FDO_BASE_IMAGE: "registry.freedesktop.org/gstreamer/gstreamer-rs/debian/bullseye-slim:$GST_RS_MSRV-$GST_RS_IMG_TAG"
-
-.debian:11-nightly:
-  extends: .debian:11
-  variables:
-    FDO_DISTRIBUTION_TAG: 'nightly-${GST_RS_IMG_TAG}_2023-02-20.0'
-    FDO_BASE_IMAGE: "registry.freedesktop.org/gstreamer/gstreamer-rs/debian/bullseye-slim:nightly-$GST_RS_IMG_TAG"
-
-.build-debian-container:
-  extends:
-  - .fdo.container-build@debian
-  stage: prep
-  variables:
-    FDO_DISTRIBUTION_PACKAGES: "libcsound64-dev llvm clang nasm libsodium-dev libwebp-dev python3-pip"
-    FDO_DISTRIBUTION_EXEC: >-
-      bash ci/install-dav1d.sh &&
-      apt clean &&
-      bash ./ci/install-rust-ext.sh &&
-      pip install tomli
-  needs:
-    - "trigger"
-  rules:
-    - if: '$UPDATE_IMG == null'
-
-build-stable:
-  extends:
-    - .build-debian-container
-    - .debian:11-stable
-
-build-msrv:
-  extends:
-    - .build-debian-container
-    - .debian:11-msrv
-
-build-nightly:
-  extends:
-    - .build-debian-container
-    - .debian:11-nightly
-
-# Those jobs are triggered by gstreamer-rs when updating its images
-update-stable:
-  extends: build-stable
-  rules:
-    - if: '$UPDATE_IMG == "stable"'
-  variables:
-      FDO_FORCE_REBUILD: 1
-
-update-msrv:
-  extends: build-msrv
-  rules:
-    - if: '$UPDATE_IMG == "msrv"'
-  variables:
-      FDO_FORCE_REBUILD: 1
-
-update-nightly:
-  extends: build-nightly
-  rules:
-    - if: '$UPDATE_IMG == "nightly"'
-  variables:
-      FDO_FORCE_REBUILD: 1
-
-.dist-debian-container:
-  extends:
-  - .fdo.distribution-image@debian
+.debian:12:
   variables:
     SODIUM_USE_PKG_CONFIG: "true"
   after_script:
     - rm -rf target
+  before_script:
+    - source ./ci/env.sh
+    - mkdir .cargo && echo -e "[net]\ngit-fetch-with-cli = true" > .cargo/config.toml
 
-.img-stable:
-  extends:
-    - .dist-debian-container
-    - .debian:11-stable
-  needs:
-    - job: 'build-stable'
-      optional: true
-    - job: 'update-stable'
-      optional: true
+.debian:12-stable:
+  extends: .debian:12
+  variables:
+    RUST_VERSION: '$GST_RS_STABLE'
+  image: "registry.freedesktop.org/gstreamer/gstreamer-rs/debian/bookworm-slim:$GST_RS_STABLE-$GST_RS_IMG_TAG"
 
-.img-msrv:
-  extends:
-    - .dist-debian-container
-    - .debian:11-msrv
-  needs:
-    - job: 'build-msrv'
-      optional: true
-    - job: 'update-msrv'
-      optional: true
+.debian:12-msrv:
+  extends: .debian:12
+  variables:
+    RUST_VERSION: '$GST_RS_MSRV'
+  image: "registry.freedesktop.org/gstreamer/gstreamer-rs/debian/bookworm-slim:$GST_RS_MSRV-$GST_RS_IMG_TAG"
 
-.img-nightly:
-  extends:
-    - .dist-debian-container
-    - .debian:11-nightly
-  needs:
-    - job: 'build-nightly'
-      optional: true
-    - job: 'update-nightly'
-      optional: true
+.debian:12-nightly:
+  extends: .debian:12
+  variables:
+    RUST_VERSION: 'nightly'
+  image: "registry.freedesktop.org/gstreamer/gstreamer-rs/debian/bookworm-slim:nightly-$GST_RS_IMG_TAG"
 
 .cargo test:
   stage: "test"
@@ -196,51 +109,43 @@ update-nightly:
     CSOUND_LIB_DIR: '/usr/lib/x86_64-linux-gnu/'
     RUST_BACKTRACE: 'full'
   script:
-    - rustc --version
-
-    - cargo build --locked --color=always --workspace --all-targets
-    - G_DEBUG=fatal_warnings cargo test --locked --color=always --workspace --all-targets
-    - cargo build --locked --color=always --workspace --all-targets --all-features
-    - G_DEBUG=fatal_warnings cargo test --locked --color=always --workspace --all-targets --all-features
-    - cargo build --locked --color=always --workspace --all-targets --no-default-features
-    - G_DEBUG=fatal_warnings cargo test --locked --color=always --workspace --all-targets --no-default-features
+    - ./ci/run-cargo-test.sh
+  artifacts:
+    reports:
+      junit: "junit_reports/*.xml"
 
 test msrv:
   extends:
     - '.cargo test'
-    - .img-msrv
-  rules:
-    - if: '$UPDATE_IMG == null || $UPDATE_IMG == "msrv"'
+    - '.debian:12-msrv'
+  needs: [ "trigger" ]
 
 test stable:
   extends:
     - '.cargo test'
-    - .img-stable
-  rules:
-    - if: '$UPDATE_IMG == null || $UPDATE_IMG == "stable"'
+    - '.debian:12-stable'
+  needs: [ "trigger" ]
 
 test nightly:
   allow_failure: true
   extends:
     - '.cargo test'
-    - .img-nightly
-  rules:
-    - if: '$UPDATE_IMG == null || $UPDATE_IMG == "nightly"'
+    - '.debian:12-nightly'
+  needs: [ "trigger" ]
 
 .meson:
-  extends: .img-stable
-  rules:
-    - if: '$UPDATE_IMG == null || $UPDATE_IMG == "stable"'
+  extends: .debian:12-stable
   variables:
     # csound-sys only looks at /usr/lib and /usr/local top levels
     CSOUND_LIB_DIR: '/usr/lib/x86_64-linux-gnu/'
 
 meson shared:
   extends: .meson
+  needs: [ "trigger" ]
   variables:
     CI_ARTIFACTS_URL: "${CI_PROJECT_URL}/-/jobs/${CI_JOB_ID}/artifacts/raw/"
   script:
-    - meson build --default-library=shared --prefix=$(pwd)/install
+    - meson build --default-library=shared --prefix=$(pwd)/install --fatal-meson-warnings
     - ninja -C build install
     - ./ci/check-installed.py install
     - ninja -C build docs/gst_plugins_cache.json
@@ -254,6 +159,7 @@ meson shared:
 
 meson static:
   extends: .meson
+  needs: [ "trigger" ]
   script:
     - meson build --default-library=static --prefix=$(pwd)/install -Dsodium-source=built-in
     - ninja -C build install
@@ -275,7 +181,6 @@ documentation:
   variables:
     MESON_ARGS: >
       -Ddoc=enabled
-      -Domx=disabled
       -Dpython=disabled
       -Dlibav=disabled
       -Dlibnice=disabled
@@ -368,6 +273,7 @@ documentation:
     - 'docker'
     - 'windows'
     - '2022'
+    - "gstreamer-windows"
   script:
     # Set the code page to UTF-8
     - chcp 65001
@@ -386,81 +292,159 @@ test windows msrv:
   extends: '.msvc2019 build'
   image: $WINDOWS_RUST_MINIMUM_IMAGE
   when: 'manual'
+  variables:
+    RUST_VERSION: !reference [variables, "GST_RS_MSRV"]
 
 test windows stable:
   extends: '.msvc2019 build'
   image: "$WINDOWS_RUST_STABLE_IMAGE"
+  variables:
+    RUST_VERSION: !reference [variables, "GST_RS_STABLE"]
 
 rustfmt:
-  extends: .img-stable
+  extends: '.debian:12-stable'
   stage: "lint"
-  rules:
-    - when: 'always'
+  tags: [ 'placeholder-job' ]
+  needs: []
   script:
     - cargo fmt --version
     - cargo fmt -- --color=always --check
 
-check commits:
-  extends: .img-stable
+typos:
+  extends: '.debian:12-stable'
   stage: "lint"
-  rules:
-    - when: 'always'
+  tags: [ 'placeholder-job' ]
+  needs: []
+  script:
+    - typos
+
+gstwebrtc-api lint:
+  image: node:lts
+  stage: "lint"
+  tags: [ 'placeholder-job' ]
+  needs: []
+  script:
+    - cd net/webrtc/gstwebrtc-api
+    - npm install
+    - npm run check
+
+check commits:
+  extends: '.debian:12-stable'
+  stage: "lint"
+  tags: [ 'placeholder-job' ]
+  needs: []
   script:
     - ci-fairy check-commits --textwidth 0 --no-signed-off-by
+    - ci/check-for-symlinks.sh
+    - ci/check-meson-version.sh
 
 clippy:
-  extends: .img-stable
+  extends: '.debian:12-stable'
+  needs:
+  - "trigger"
+  - "test stable"
   stage: 'extras'
   variables:
+    CLIPPY_LINTS: -D warnings -W unknown-lints
     # csound-sys only looks at /usr/lib and /usr/local top levels
     CSOUND_LIB_DIR: '/usr/lib/x86_64-linux-gnu/'
-  rules:
-    - when: 'always'
   script:
-    - cargo clippy --locked --color=always --all --all-features --all-targets -- -D warnings -A unknown-lints
+    - ./ci/run-clippy.sh
 
 deny:
-  extends: .img-stable
+  extends: .debian:12-stable
   stage: 'extras'
+  needs:
+  - "trigger"
+  - "test stable"
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
-    - cargo deny check
+    - cargo update --color=always
+    - cargo deny --color=always --workspace --all-features check all
 
 outdated:
-  extends: .img-stable
+  extends: '.debian:12-stable'
   allow_failure: true
+  needs:
+  - "trigger"
+  - "test stable"
   stage: 'extras'
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
-    - cargo outdated --root-deps-only --exit-code 1 -v
+    - cargo update --color=always
+    # etherparse 0.17 requires Rust 1.81 or newer
+    - cargo outdated --color=always --root-deps-only --ignore etherparse --exit-code 1 -v
 
 coverage:
   allow_failure: true
   extends:
-    - .img-stable
+    - '.debian:12-stable'
+  needs:
+  - "trigger"
+  - "test stable"
   stage: 'extras'
-  rules:
-    - when: 'always'
   variables:
     RUSTFLAGS: "-Cinstrument-coverage"
     LLVM_PROFILE_FILE: "gst-plugins-rs-%p-%m.profraw"
     # csound-sys only looks at /usr/lib and /usr/local top levels
     CSOUND_LIB_DIR: '/usr/lib/x86_64-linux-gnu/'
   script:
-    - cargo test --locked --color=always --all --all-features
+    - CARGO_FLAGS="-j${FDO_CI_CONCURRENT:-$(nproc)} --locked --color=always --all"
+
+    - cargo nextest run --profile=ci --no-tests=pass $CARGO_FLAGS --all-features --exclude gst-plugin-gtk4
+
+    - new_report_dir="$CI_PROJECT_DIR/junit_reports"
+    - mkdir -p "$new_report_dir"
+    - mv "$CI_PROJECT_DIR/target/nextest/ci/junit.xml" "$new_report_dir/coverage-junit.xml"
+
     # generate html report
-    - grcov . --binary-path ./target/debug/ -s . -t html --branch --ignore-not-existing --ignore "*target*" --ignore "*/build.rs" -o ./coverage/
-    # generate cobertura report for gitlab integration
-    - grcov . --binary-path ./target/debug/ -s . -t cobertura --branch --ignore-not-existing --ignore "*target*" --ignore "*/build.rs" -o coverage.xml
+    - mkdir -p coverage
+    - grcov . --binary-path ./target/debug/ -s . -t html,cobertura --branch --ignore-not-existing --ignore "*target*" --ignore "*/build.rs" -o ./coverage/
     # output coverage summary for gitlab parsing.
     # TODO: use grcov once https://github.com/mozilla/grcov/issues/556 is fixed
-    - grep "%" coverage/index.html | head -1 || true
+    - grep "%" coverage/html/index.html | head -1 || true
   artifacts:
     paths:
       - 'coverage'
     reports:
+      junit: "junit_reports/*.xml"
       coverage_report:
         coverage_format: cobertura
-        path: coverage.xml
+        path: "coverage/cobertura.xml"
+
+cerbero trigger:
+  image: python:alpine
+  needs: [ "trigger" ]
+  timeout: '4h'
+  tags:
+    - placeholder-job
+  variables:
+    # We will build this cerbero branch in the cerbero trigger CI
+    CERBERO_UPSTREAM_BRANCH: 'main'
+  script:
+    - pip install python-gitlab
+    - python ci/cerbero/trigger_cerbero_pipeline.py
+  rules:
+    # Never run post merge
+    - if: '$CI_PROJECT_NAMESPACE == "gstreamer"'
+      when: never
+    # Don't run if the only changes are files that cargo-c does not read
+    - if:
+      changes:
+      - "CHANGELOG.md"
+      - "README.md"
+      - "deny.toml"
+      - "rustfmt.toml"
+      - "typos.toml"
+      - "*.py"
+      - "*.sh"
+      - "Makefile"
+      - "meson.build"
+      - "meson_options.txt"
+      - "**/meson.build"
+      - "ci/*.sh"
+      - "ci/*.py"
+      when: never
+    - when: always

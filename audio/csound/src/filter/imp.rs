@@ -17,15 +17,14 @@ use gst_base::subclass::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use std::sync::Mutex;
-use std::{f64, i32};
 
 use byte_slice_cast::*;
 
 use csound::{Csound, MessageType};
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "csoundfilter",
         gst::DebugColorFlags::empty(),
@@ -127,9 +126,9 @@ impl CsoundFilter {
         let spout = csound.get_spout().unwrap();
 
         let in_chunks = idata.chunks_exact(spin.len());
-        let out_chuncks = odata.chunks_exact_mut(spout.len());
+        let out_chunks = odata.chunks_exact_mut(spout.len());
         let mut end_score = false;
-        for (ichunk, ochunk) in in_chunks.zip(out_chuncks) {
+        for (ichunk, ochunk) in in_chunks.zip(out_chunks) {
             spin.copy_from_slice(ichunk);
             end_score = csound.perform_ksmps();
             spout.copy_to_slice(ochunk);
@@ -192,7 +191,7 @@ impl CsoundFilter {
             (avail / state.in_info.channels() as usize) * state.out_info.channels() as usize;
 
         let mut buffer = gst::Buffer::with_size(out_bytes).map_err(|e| {
-            gst::error!(CAT, imp: self, "Failed to allocate buffer at EOS {:?}", e);
+            gst::error!(CAT, imp = self, "Failed to allocate buffer at EOS {:?}", e);
             gst::FlowError::Flushing
         })?;
 
@@ -247,14 +246,14 @@ impl CsoundFilter {
 
         gst::log!(
             CAT,
-            imp: self,
+            imp = self,
             "Generating output at: {} - duration: {}",
             pts.display(),
             duration.display(),
         );
 
         // Get the required amount of bytes to be read from
-        // the adapter to fill an ouput buffer of size output_size
+        // the adapter to fill an output buffer of size output_size
         let bytes_to_read = state.bytes_to_read(output_size);
 
         let indata = state
@@ -324,7 +323,7 @@ impl ObjectSubclass for CsoundFilter {
 
 impl ObjectImpl for CsoundFilter {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecBoolean::builder("loop")
                     .nick("Loop")
@@ -416,7 +415,7 @@ impl GstObjectImpl for CsoundFilter {}
 
 impl ElementImpl for CsoundFilter {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Audio filter",
                 "Filter/Effect/Audio",
@@ -429,7 +428,7 @@ impl ElementImpl for CsoundFilter {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_audio::AudioCapsBuilder::new_interleaved()
                 .format(gst_audio::AUDIO_FORMAT_F64)
                 .build();
@@ -482,7 +481,7 @@ impl BaseTransformImpl for CsoundFilter {
         csound.reset();
         let _ = self.state.lock().unwrap().take();
 
-        gst::info!(CAT, imp: self, "Stopped");
+        gst::info!(CAT, imp = self, "Stopped");
 
         Ok(())
     }
@@ -491,7 +490,7 @@ impl BaseTransformImpl for CsoundFilter {
         use gst::EventView;
 
         if let EventView::Eos(_) = event.view() {
-            gst::log!(CAT, imp: self, "Handling Eos");
+            gst::log!(CAT, imp = self, "Handling Eos");
             if self.drain().is_err() {
                 return false;
             }
@@ -536,7 +535,7 @@ impl BaseTransformImpl for CsoundFilter {
 
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "Transformed caps from {} to {} in direction {:?}",
             caps,
             other_caps,
@@ -554,7 +553,7 @@ impl BaseTransformImpl for CsoundFilter {
         // Flush previous state
         if self.state.lock().unwrap().is_some() {
             self.drain()
-                .map_err(|e| loggable_error!(CAT, "Error flusing previous state data {:?}", e))?;
+                .map_err(|e| loggable_error!(CAT, "Error flushing previous state data {:?}", e))?;
         }
 
         let in_info = gst_audio::AudioInfo::from_caps(incaps)

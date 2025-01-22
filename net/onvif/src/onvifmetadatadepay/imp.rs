@@ -2,7 +2,7 @@ use gst::glib;
 use gst::subclass::prelude::*;
 use gst_rtp::prelude::*;
 use gst_rtp::subclass::prelude::*;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -16,7 +16,7 @@ pub struct OnvifMetadataDepay {
     state: Mutex<State>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rtponvifmetadatadepay",
         gst::DebugColorFlags::empty(),
@@ -37,7 +37,7 @@ impl GstObjectImpl for OnvifMetadataDepay {}
 
 impl ElementImpl for OnvifMetadataDepay {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "ONVIF metadata RTP depayloader",
                 "Depayloader/Network/RTP",
@@ -50,7 +50,7 @@ impl ElementImpl for OnvifMetadataDepay {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst::Caps::builder("application/x-rtp")
                 .field("media", "application")
                 .field("payload", gst::IntRange::new(96, 127))
@@ -116,7 +116,7 @@ impl RTPBaseDepayloadImpl for OnvifMetadataDepay {
             .flags()
             .contains(gst::BufferFlags::DISCONT)
         {
-            gst::debug!(CAT, imp: self, "processing discont RTP buffer");
+            gst::debug!(CAT, imp = self, "processing discont RTP buffer");
             state.adapter.clear();
         }
 
@@ -148,7 +148,12 @@ impl RTPBaseDepayloadImpl for OnvifMetadataDepay {
         let utf8 = match std::str::from_utf8(map.as_ref()) {
             Ok(s) => s,
             Err(err) => {
-                gst::warning!(CAT, imp: self, "Failed to decode payload as UTF-8: {}", err);
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "Failed to decode payload as UTF-8: {}",
+                    err
+                );
 
                 return None;
             }
@@ -178,7 +183,7 @@ impl RTPBaseDepayloadImpl for OnvifMetadataDepay {
                         }
                     },
                     Err(err) => {
-                        gst::warning!(CAT, imp: self, "Invalid XML in payload: {}", err);
+                        gst::warning!(CAT, imp = self, "Invalid XML in payload: {}", err);
 
                         return None;
                     }
@@ -192,7 +197,7 @@ impl RTPBaseDepayloadImpl for OnvifMetadataDepay {
         if !forward {
             gst::warning!(
                 CAT,
-                imp: self,
+                imp = self,
                 "document must start with tt:MetadataStream element",
             );
 

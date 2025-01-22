@@ -25,12 +25,11 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::u32;
 
 use crate::runtime::prelude::*;
 use crate::runtime::{self, PadSink, PadSrc};
@@ -140,7 +139,7 @@ impl InputSelectorPadSinkHandler {
         }
 
         if is_active {
-            gst::log!(CAT, obj: pad, "Forwarding {:?}", buffer);
+            gst::log!(CAT, obj = pad, "Forwarding {:?}", buffer);
 
             if switched_pad && !buffer.flags().contains(gst::BufferFlags::DISCONT) {
                 let buffer = buffer.make_mut();
@@ -173,7 +172,7 @@ impl PadSinkHandler for InputSelectorPadSinkHandler {
         list: gst::BufferList,
     ) -> BoxFuture<'static, Result<gst::FlowSuccess, gst::FlowError>> {
         async move {
-            gst::log!(CAT, obj: pad, "Handling buffer list {:?}", list);
+            gst::log!(CAT, obj = pad, "Handling buffer list {:?}", list);
             // TODO: Ideally we would keep the list intact and forward it in one go
             for buffer in list.iter_owned() {
                 self.handle_item(&pad, &elem, buffer).await?;
@@ -230,14 +229,14 @@ impl PadSinkHandler for InputSelectorPadSinkHandler {
     }
 
     fn sink_query(self, pad: &gst::Pad, imp: &InputSelector, query: &mut gst::QueryRef) -> bool {
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
 
         if query.is_serialized() {
             // FIXME: How can we do this (drops ALLOCATION and DRAIN)?
-            gst::log!(CAT, obj: pad, "Dropping serialized query {:?}", query);
+            gst::log!(CAT, obj = pad, "Dropping serialized query {:?}", query);
             false
         } else {
-            gst::log!(CAT, obj: pad, "Forwarding query {:?}", query);
+            gst::log!(CAT, obj = pad, "Forwarding query {:?}", query);
             imp.src_pad.gst_pad().peer_query(query)
         }
     }
@@ -250,7 +249,7 @@ impl PadSrcHandler for InputSelectorPadSrcHandler {
     type ElementImpl = InputSelector;
 
     fn src_query(self, pad: &gst::Pad, imp: &InputSelector, query: &mut gst::QueryRef) -> bool {
-        gst::log!(CAT, obj: pad, "Handling {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling {:?}", query);
 
         use gst::QueryViewMut;
         match query.view_mut() {
@@ -329,7 +328,7 @@ pub struct InputSelector {
     pads: Mutex<Pads>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ts-input-selector",
         gst::DebugColorFlags::empty(),
@@ -340,9 +339,9 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 impl InputSelector {
     fn unprepare(&self) {
         let mut state = self.state.lock().unwrap();
-        gst::debug!(CAT, imp: self, "Unpreparing");
+        gst::debug!(CAT, imp = self, "Unpreparing");
         *state = State::default();
-        gst::debug!(CAT, imp: self, "Unprepared");
+        gst::debug!(CAT, imp = self, "Unprepared");
     }
 }
 
@@ -355,7 +354,7 @@ impl ObjectSubclass for InputSelector {
     fn with_class(klass: &Self::Class) -> Self {
         Self {
             src_pad: PadSrc::new(
-                gst::Pad::from_template(&klass.pad_template("src").unwrap(), Some("src")),
+                gst::Pad::from_template(&klass.pad_template("src").unwrap()),
                 InputSelectorPadSrcHandler,
             ),
             state: Mutex::new(State::default()),
@@ -367,7 +366,7 @@ impl ObjectSubclass for InputSelector {
 
 impl ObjectImpl for InputSelector {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecString::builder("context")
                     .nick("Context")
@@ -417,8 +416,8 @@ impl ObjectImpl for InputSelector {
                 let pads = self.pads.lock().unwrap();
                 let mut old_pad = None;
                 if let Some(ref pad) = pad {
-                    if pads.sink_pads.get(pad).is_some() {
-                        old_pad = state.active_sinkpad.clone();
+                    if pads.sink_pads.contains_key(pad) {
+                        old_pad.clone_from(&state.active_sinkpad);
                         state.active_sinkpad = Some(pad.clone());
                         state.switched_pad = true;
                     }
@@ -475,7 +474,7 @@ impl GstObjectImpl for InputSelector {}
 
 impl ElementImpl for InputSelector {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Thread-sharing input selector",
                 "Generic",
@@ -488,7 +487,7 @@ impl ElementImpl for InputSelector {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink_%u",
@@ -516,7 +515,7 @@ impl ElementImpl for InputSelector {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         if let gst::StateChange::ReadyToNull = transition {
             self.unprepare();
@@ -545,8 +544,9 @@ impl ElementImpl for InputSelector {
     ) -> Option<gst::Pad> {
         let mut state = self.state.lock().unwrap();
         let mut pads = self.pads.lock().unwrap();
-        let sink_pad =
-            gst::Pad::from_template(templ, Some(format!("sink_{}", pads.pad_serial).as_str()));
+        let sink_pad = gst::Pad::builder_from_template(templ)
+            .name(format!("sink_{}", pads.pad_serial).as_str())
+            .build();
         pads.pad_serial += 1;
         sink_pad.set_active(true).unwrap();
         self.obj().add_pad(&sink_pad).unwrap();

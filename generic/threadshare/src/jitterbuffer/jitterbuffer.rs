@@ -32,7 +32,7 @@ glib::wrapper! {
     pub struct RTPJitterBuffer(Object<ffi::RTPJitterBuffer>);
 
     match fn {
-        type_ => || ffi::rtp_jitter_buffer_get_type(),
+        type_ => || ffi::ts_rtp_jitter_buffer_get_type(),
     }
 }
 
@@ -91,7 +91,7 @@ impl RTPJitterBufferItem {
                     r#type: 0,
                     dts: dts.into().into_glib(),
                     pts: pts.into().into_glib(),
-                    seqnum: seqnum.map(|s| s as u32).unwrap_or(std::u32::MAX),
+                    seqnum: seqnum.map(|s| s as u32).unwrap_or(u32::MAX),
                     count: 1,
                     rtptime,
                 },
@@ -138,7 +138,7 @@ impl RTPJitterBufferItem {
     pub fn seqnum(&self) -> Option<u16> {
         unsafe {
             let item = self.0.as_ref().expect("Invalid wrapper");
-            if item.as_ref().seqnum == std::u32::MAX {
+            if item.as_ref().seqnum == u32::MAX {
                 None
             } else {
                 Some(item.as_ref().seqnum as u16)
@@ -180,25 +180,25 @@ impl RTPPacketRateCtx {
     pub fn new() -> RTPPacketRateCtx {
         unsafe {
             let mut ptr = std::mem::MaybeUninit::uninit();
-            ffi::gst_rtp_packet_rate_ctx_reset(ptr.as_mut_ptr(), -1);
+            ffi::ts_gst_rtp_packet_rate_ctx_reset(ptr.as_mut_ptr(), -1);
             RTPPacketRateCtx(Box::new(ptr.assume_init()))
         }
     }
 
     pub fn reset(&mut self, clock_rate: i32) {
-        unsafe { ffi::gst_rtp_packet_rate_ctx_reset(&mut *self.0, clock_rate) }
+        unsafe { ffi::ts_gst_rtp_packet_rate_ctx_reset(&mut *self.0, clock_rate) }
     }
 
     pub fn update(&mut self, seqnum: u16, ts: u32) -> u32 {
-        unsafe { ffi::gst_rtp_packet_rate_ctx_update(&mut *self.0, seqnum, ts) }
+        unsafe { ffi::ts_gst_rtp_packet_rate_ctx_update(&mut *self.0, seqnum, ts) }
     }
 
     pub fn max_dropout(&mut self, time_ms: i32) -> u32 {
-        unsafe { ffi::gst_rtp_packet_rate_ctx_get_max_dropout(&mut *self.0, time_ms) }
+        unsafe { ffi::ts_gst_rtp_packet_rate_ctx_get_max_dropout(&mut *self.0, time_ms) }
     }
 
     pub fn max_misorder(&mut self, time_ms: i32) -> u32 {
-        unsafe { ffi::gst_rtp_packet_rate_ctx_get_max_misorder(&mut *self.0, time_ms) }
+        unsafe { ffi::ts_gst_rtp_packet_rate_ctx_get_max_misorder(&mut *self.0, time_ms) }
     }
 }
 
@@ -219,38 +219,38 @@ pub enum RTPJitterBufferMode {
 
 impl RTPJitterBuffer {
     pub fn new() -> RTPJitterBuffer {
-        unsafe { from_glib_full(ffi::rtp_jitter_buffer_new()) }
+        unsafe { from_glib_full(ffi::ts_rtp_jitter_buffer_new()) }
     }
 
     #[allow(dead_code)]
     pub fn mode(&self) -> RTPJitterBufferMode {
-        unsafe { from_glib(ffi::rtp_jitter_buffer_get_mode(self.to_glib_none().0)) }
+        unsafe { from_glib(ffi::ts_rtp_jitter_buffer_get_mode(self.to_glib_none().0)) }
     }
 
     #[allow(dead_code)]
     pub fn set_mode(&self, mode: RTPJitterBufferMode) {
-        unsafe { ffi::rtp_jitter_buffer_set_mode(self.to_glib_none().0, mode.into_glib()) }
+        unsafe { ffi::ts_rtp_jitter_buffer_set_mode(self.to_glib_none().0, mode.into_glib()) }
     }
 
     #[allow(dead_code)]
     pub fn delay(&self) -> gst::ClockTime {
         unsafe {
-            try_from_glib(ffi::rtp_jitter_buffer_get_delay(self.to_glib_none().0))
+            try_from_glib(ffi::ts_rtp_jitter_buffer_get_delay(self.to_glib_none().0))
                 .expect("undefined delay")
         }
     }
 
     pub fn set_delay(&self, delay: gst::ClockTime) {
-        unsafe { ffi::rtp_jitter_buffer_set_delay(self.to_glib_none().0, delay.into_glib()) }
+        unsafe { ffi::ts_rtp_jitter_buffer_set_delay(self.to_glib_none().0, delay.into_glib()) }
     }
 
     pub fn set_clock_rate(&self, clock_rate: u32) {
-        unsafe { ffi::rtp_jitter_buffer_set_clock_rate(self.to_glib_none().0, clock_rate) }
+        unsafe { ffi::ts_rtp_jitter_buffer_set_clock_rate(self.to_glib_none().0, clock_rate) }
     }
 
     #[allow(dead_code)]
     pub fn clock_rate(&self) -> u32 {
-        unsafe { ffi::rtp_jitter_buffer_get_clock_rate(self.to_glib_none().0) }
+        unsafe { ffi::ts_rtp_jitter_buffer_get_clock_rate(self.to_glib_none().0) }
     }
 
     pub fn calculate_pts(
@@ -263,7 +263,7 @@ impl RTPJitterBuffer {
         is_rtx: bool,
     ) -> Option<gst::ClockTime> {
         unsafe {
-            from_glib(ffi::rtp_jitter_buffer_calculate_pts(
+            from_glib(ffi::ts_rtp_jitter_buffer_calculate_pts(
                 self.to_glib_none().0,
                 dts.into().into_glib(),
                 estimated_dts.into_glib(),
@@ -280,7 +280,7 @@ impl RTPJitterBuffer {
             let mut head = mem::MaybeUninit::uninit();
             let mut percent = mem::MaybeUninit::uninit();
             let ptr = item.0.take().expect("Invalid wrapper");
-            let ret: bool = from_glib(ffi::rtp_jitter_buffer_insert(
+            let ret: bool = from_glib(ffi::ts_rtp_jitter_buffer_insert(
                 self.to_glib_none().0,
                 ptr.as_ptr(),
                 head.as_mut_ptr(),
@@ -298,7 +298,7 @@ impl RTPJitterBuffer {
             let mut pts = mem::MaybeUninit::uninit();
             let mut seqnum = mem::MaybeUninit::uninit();
 
-            ffi::rtp_jitter_buffer_find_earliest(
+            ffi::ts_rtp_jitter_buffer_find_earliest(
                 self.to_glib_none().0,
                 pts.as_mut_ptr(),
                 seqnum.as_mut_ptr(),
@@ -306,7 +306,7 @@ impl RTPJitterBuffer {
             let pts = from_glib(pts.assume_init());
             let seqnum = seqnum.assume_init();
 
-            let seqnum = if seqnum == std::u32::MAX {
+            let seqnum = if seqnum == u32::MAX {
                 None
             } else {
                 Some(seqnum as u16)
@@ -319,7 +319,7 @@ impl RTPJitterBuffer {
     pub fn pop(&self) -> (Option<RTPJitterBufferItem>, i32) {
         unsafe {
             let mut percent = mem::MaybeUninit::uninit();
-            let item = ffi::rtp_jitter_buffer_pop(self.to_glib_none().0, percent.as_mut_ptr());
+            let item = ffi::ts_rtp_jitter_buffer_pop(self.to_glib_none().0, percent.as_mut_ptr());
 
             (
                 if item.is_null() {
@@ -334,12 +334,12 @@ impl RTPJitterBuffer {
 
     pub fn peek(&self) -> (Option<gst::ClockTime>, Option<u16>) {
         unsafe {
-            let item = ffi::rtp_jitter_buffer_peek(self.to_glib_none().0);
+            let item = ffi::ts_rtp_jitter_buffer_peek(self.to_glib_none().0);
             if item.is_null() {
                 (None, None)
             } else {
                 let seqnum = (*item).seqnum;
-                let seqnum = if seqnum == std::u32::MAX {
+                let seqnum = if seqnum == u32::MAX {
                     None
                 } else {
                     Some(seqnum as u16)
@@ -356,12 +356,12 @@ impl RTPJitterBuffer {
         }
 
         unsafe {
-            ffi::rtp_jitter_buffer_flush(self.to_glib_none().0, Some(free_item));
+            ffi::ts_rtp_jitter_buffer_flush(self.to_glib_none().0, Some(free_item));
         }
     }
 
     pub fn reset_skew(&self) {
-        unsafe { ffi::rtp_jitter_buffer_reset_skew(self.to_glib_none().0) }
+        unsafe { ffi::ts_rtp_jitter_buffer_reset_skew(self.to_glib_none().0) }
     }
 }
 

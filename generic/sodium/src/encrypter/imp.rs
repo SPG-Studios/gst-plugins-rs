@@ -32,8 +32,8 @@ type BufferVec = SmallVec<[gst::Buffer; 16]>;
 
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+use std::sync::LazyLock;
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "sodiumencrypter",
         gst::DebugColorFlags::empty(),
@@ -98,7 +98,7 @@ impl State {
             })?;
 
         // This env variable is only meant to bypass nonce regeneration during
-        // tests to get determinisic results. It should never be used outside
+        // tests to get deterministic results. It should never be used outside
         // of testing environments.
         let nonce = if let Ok(val) = std::env::var("GST_SODIUM_ENCRYPT_NONCE") {
             let bytes = hex::decode(val).expect("Failed to decode hex variable");
@@ -166,7 +166,7 @@ impl Encrypter {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         let mut buffers = BufferVec::new();
         let mut state_guard = self.state.lock().unwrap();
@@ -192,9 +192,8 @@ impl Encrypter {
         drop(state_guard);
 
         for buffer in buffers {
-            self.srcpad.push(buffer).map_err(|err| {
-                gst::error!(CAT, imp: self, "Failed to push buffer {:?}", err);
-                err
+            self.srcpad.push(buffer).inspect_err(|&err| {
+                gst::error!(CAT, imp = self, "Failed to push buffer {:?}", err);
             })?;
         }
 
@@ -204,7 +203,7 @@ impl Encrypter {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Caps(_) => {
@@ -216,7 +215,7 @@ impl Encrypter {
                 let mut state_mutex = self.state.lock().unwrap();
                 let mut buffers = BufferVec::new();
                 // This will only be run after READY state,
-                // and will be guaranted to be initialized
+                // and will be guaranteed to be initialized
                 let state = state_mutex.as_mut().unwrap();
 
                 // Now that all the full size blocks are pushed, drain the
@@ -236,7 +235,7 @@ impl Encrypter {
 
                 for buffer in buffers {
                     if let Err(err) = self.srcpad.push(buffer) {
-                        gst::error!(CAT, imp: self, "Failed to push buffer at EOS {:?}", err);
+                        gst::error!(CAT, imp = self, "Failed to push buffer at EOS {:?}", err);
                         return false;
                     }
                 }
@@ -250,7 +249,7 @@ impl Encrypter {
     fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Seek(_) => false,
@@ -261,7 +260,7 @@ impl Encrypter {
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
 
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
 
         match query.view_mut() {
             QueryViewMut::Seeking(q) => {
@@ -271,7 +270,7 @@ impl Encrypter {
                     gst::GenericFormattedValue::none_for_format(format),
                     gst::GenericFormattedValue::none_for_format(format),
                 );
-                gst::log!(CAT, obj: pad, "Returning {:?}", q.query_mut());
+                gst::log!(CAT, obj = pad, "Returning {:?}", q.query_mut());
                 true
             }
             QueryViewMut::Duration(q) => {
@@ -304,14 +303,14 @@ impl Encrypter {
                 };
 
                 // calculate the number of chunks that exist in the stream
-                let total_chunks = (size + state.block_size as u64 - 1) / state.block_size as u64;
+                let total_chunks = size.div_ceil(state.block_size as u64);
                 // add the MAC of each block
                 let size = size + total_chunks * box_::MACBYTES as u64;
 
                 // add static offsets
                 let size = size + crate::HEADERS_SIZE as u64;
 
-                gst::debug!(CAT, obj: pad, "Setting duration bytes: {}", size);
+                gst::debug!(CAT, obj = pad, "Setting duration bytes: {}", size);
                 q.set(size.bytes());
 
                 true
@@ -329,7 +328,7 @@ impl ObjectSubclass for Encrypter {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 Encrypter::catch_panic_pad_function(
                     parent,
@@ -347,7 +346,7 @@ impl ObjectSubclass for Encrypter {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .query_function(|pad, parent, query| {
                 Encrypter::catch_panic_pad_function(
                     parent,
@@ -378,7 +377,7 @@ impl ObjectSubclass for Encrypter {
 
 impl ObjectImpl for Encrypter {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecBoxed::builder::<glib::Bytes>("receiver-key")
                     .nick("Receiver Key")
@@ -451,7 +450,7 @@ impl GstObjectImpl for Encrypter {}
 
 impl ElementImpl for Encrypter {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Encrypter",
                 "Generic",
@@ -464,7 +463,7 @@ impl ElementImpl for Encrypter {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let src_caps = gst::Caps::builder("application/x-sodium-encrypted").build();
             let src_pad_template = gst::PadTemplate::new(
                 "src",
@@ -492,7 +491,7 @@ impl ElementImpl for Encrypter {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::debug!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::debug!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::NullToReady => {

@@ -13,7 +13,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use super::ProgressBinOutput;
 
@@ -21,7 +21,7 @@ use super::ProgressBinOutput;
 
 const DEFAULT_OUTPUT_TYPE: ProgressBinOutput = ProgressBinOutput::Println;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rsprogressbin",
         gst::DebugColorFlags::empty(),
@@ -58,9 +58,9 @@ impl ObjectSubclass for ProgressBin {
         //
         // We do that and adding the pads inside glib::Object::constructed() later.
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::GhostPad::from_template(&templ, Some("sink"));
+        let sinkpad = gst::GhostPad::from_template(&templ);
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::GhostPad::from_template(&templ, Some("src"));
+        let srcpad = gst::GhostPad::from_template(&templ);
 
         // Create the progressreport element.
         let progress = gst::ElementFactory::make("progressreport")
@@ -84,7 +84,7 @@ impl ObjectSubclass for ProgressBin {
 impl ObjectImpl for ProgressBin {
     // Metadata for the element's properties
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecEnum::builder_with_default("output", DEFAULT_OUTPUT_TYPE)
                     .nick("Output")
@@ -108,7 +108,7 @@ impl ObjectImpl for ProgressBin {
                     .expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing output from {:?} to {:?}",
                     output_type,
                     new_output_type
@@ -163,11 +163,11 @@ impl GstObjectImpl for ProgressBin {}
 // Implementation of gst::Element virtual methods
 impl ElementImpl for ProgressBin {
     // Set the element specific metadata. This information is what
-    // is visible from gst-inspect-1.0 and can also be programatically
+    // is visible from gst-inspect-1.0 and can also be programmatically
     // retrieved from the gst::Registry after initial registration
     // without having to load the plugin in memory.
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "ProgressBin",
                 "Generic",
@@ -186,7 +186,7 @@ impl ElementImpl for ProgressBin {
     // Actual instances can create pads based on those pad templates
     // with a subset of the caps given here.
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             // Our element can accept any possible caps on both pads
             let caps = gst::Caps::new_any();
             let src_pad_template = gst::PadTemplate::new(
@@ -235,7 +235,7 @@ impl BinImpl for ProgressBin {
                     match output_type {
                         ProgressBinOutput::Println => println!("progress: {percent:5.1}%"),
                         ProgressBinOutput::DebugCategory => {
-                            gst::info!(CAT, imp: self, "progress: {:5.1}%", percent);
+                            gst::info!(CAT, imp = self, "progress: {:5.1}%", percent);
                         }
                     };
                 }

@@ -11,11 +11,11 @@ use gst::subclass::prelude::*;
 use gst::{element_imp_error, error_msg};
 use serde_derive::Deserialize;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::sync::Mutex;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "awstranscribeparse",
         gst::DebugColorFlags::empty(),
@@ -83,7 +83,7 @@ impl TranscribeParse {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         let mut state = self.state.lock().unwrap();
 
@@ -218,7 +218,7 @@ impl TranscribeParse {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         match event.view() {
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
@@ -228,7 +228,7 @@ impl TranscribeParse {
             EventView::Eos(..) => match self.drain() {
                 Ok(()) => gst::Pad::event_default(pad, Some(&*self.obj()), event),
                 Err(err) => {
-                    gst::error!(CAT, imp: self, "failed to drain on EOS: {}", err);
+                    gst::error!(CAT, imp = self, "failed to drain on EOS: {}", err);
                     element_imp_error!(
                         self,
                         gst::StreamError::Failed,
@@ -252,7 +252,7 @@ impl ObjectSubclass for TranscribeParse {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 TranscribeParse::catch_panic_pad_function(
                     parent,
@@ -270,7 +270,7 @@ impl ObjectSubclass for TranscribeParse {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src")).build();
+        let srcpad = gst::Pad::from_template(&templ);
 
         Self {
             srcpad,
@@ -294,7 +294,7 @@ impl GstObjectImpl for TranscribeParse {}
 
 impl ElementImpl for TranscribeParse {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "AWS transcript parser",
                 "Text/Subtitle",
@@ -307,7 +307,7 @@ impl ElementImpl for TranscribeParse {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("application/x-json").build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -338,7 +338,7 @@ impl ElementImpl for TranscribeParse {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused | gst::StateChange::PausedToReady => {

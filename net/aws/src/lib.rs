@@ -14,11 +14,12 @@
  */
 use gst::glib;
 
+mod polly;
 mod s3hlssink;
 mod s3sink;
 mod s3src;
 mod s3url;
-mod s3utils;
+pub mod s3utils;
 mod transcribe_parse;
 mod transcriber;
 
@@ -30,6 +31,7 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     transcribe_parse::register(plugin)?;
     transcriber::register(plugin)?;
     s3hlssink::register(plugin)?;
+    polly::register(plugin)?;
 
     Ok(())
 }

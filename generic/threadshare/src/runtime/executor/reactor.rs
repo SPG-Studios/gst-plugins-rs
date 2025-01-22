@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // This is based on https://github.com/smol-rs/async-io
 // with adaptations by:
 //
@@ -7,7 +8,7 @@
 
 use concurrent_queue::ConcurrentQueue;
 use futures::ready;
-use polling::{Event, Poller};
+use polling::{Event, Events, Poller};
 use slab::Slab;
 
 use std::borrow::Borrow;
@@ -18,10 +19,6 @@ use std::future::Future;
 use std::io;
 use std::marker::PhantomData;
 use std::mem;
-#[cfg(unix)]
-use std::os::unix::io::RawFd;
-#[cfg(windows)]
-use std::os::windows::io::RawSocket;
 use std::panic;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,13 +26,38 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+// Choose the proper implementation of `Registration` based on the target platform.
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        mod windows;
+        pub use windows::Registration;
+    } else if #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly",
+    ))] {
+        mod kqueue;
+        pub use kqueue::Registration;
+    } else if #[cfg(unix)] {
+        mod unix;
+        pub use unix::Registration;
+    } else {
+        compile_error!("unsupported platform");
+    }
+}
+
 use crate::runtime::{Async, RUNTIME_CAT};
 
 const READ: usize = 0;
 const WRITE: usize = 1;
 
 thread_local! {
-    static CURRENT_REACTOR: RefCell<Option<Reactor>> = RefCell::new(None);
+    static CURRENT_REACTOR: RefCell<Option<Reactor>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug)]
@@ -71,7 +93,7 @@ pub(super) struct Reactor {
     /// Temporary storage for I/O events when polling the reactor.
     ///
     /// Holding a lock on this event list implies the exclusive right to poll I/O.
-    events: Vec<Event>,
+    events: Events,
 
     /// An ordered map of registered regular timers.
     ///
@@ -106,7 +128,7 @@ impl Reactor {
             half_max_throttling: max_throttling / 2,
             wakers: Vec::new(),
             sources: Slab::new(),
-            events: Vec::new(),
+            events: Events::new(),
             timers: BTreeMap::new(),
             after_timers: BTreeMap::new(),
             timer_ops: ConcurrentQueue::bounded(1000),
@@ -210,16 +232,12 @@ impl Reactor {
     }
 
     /// Registers an I/O source in the reactor.
-    pub fn insert_io(
-        &mut self,
-        #[cfg(unix)] raw: RawFd,
-        #[cfg(windows)] raw: RawSocket,
-    ) -> io::Result<Arc<Source>> {
+    pub fn insert_io(&mut self, raw: Registration) -> io::Result<Arc<Source>> {
         // Create an I/O source for this file descriptor.
         let source = {
             let key = self.sources.vacant_entry().key();
             let source = Arc::new(Source {
-                raw,
+                registration: raw,
                 key,
                 state: Default::default(),
             });
@@ -228,11 +246,11 @@ impl Reactor {
         };
 
         // Register the file descriptor.
-        if let Err(err) = self.poller.add(raw, Event::none(source.key)) {
+        if let Err(err) = source.registration.add(&self.poller, source.key) {
             gst::error!(
                 crate::runtime::RUNTIME_CAT,
-                "Failed to register fd {}: {}",
-                source.raw,
+                "Failed to register fd {:?}: {}",
+                source.registration,
                 err,
             );
             self.sources.remove(source.key);
@@ -245,7 +263,7 @@ impl Reactor {
     /// Deregisters an I/O source from the reactor.
     pub fn remove_io(&mut self, source: &Source) -> io::Result<()> {
         self.sources.remove(source.key);
-        self.poller.delete(source.raw)
+        source.registration.delete(&self.poller)
     }
 
     /// Registers a regular timer in the reactor.
@@ -414,14 +432,16 @@ impl Reactor {
                         // e.g. we were previously interested in both readability and writability,
                         // but only one of them was emitted.
                         if !state[READ].is_empty() || !state[WRITE].is_empty() {
-                            self.poller.modify(
-                                source.raw,
-                                Event {
-                                    key: source.key,
-                                    readable: !state[READ].is_empty(),
-                                    writable: !state[WRITE].is_empty(),
-                                },
-                            )?;
+                            // Create the event that we are interested in.
+                            let event = {
+                                let mut event = Event::none(source.key);
+                                event.readable = !state[READ].is_empty();
+                                event.writable = !state[WRITE].is_empty();
+                                event
+                            };
+
+                            // Register interest in this event.
+                            source.registration.modify(&self.poller, event)?;
                         }
                     }
                 }
@@ -493,13 +513,8 @@ enum TimerOp {
 /// A registered source of I/O events.
 #[derive(Debug)]
 pub(super) struct Source {
-    /// Raw file descriptor on Unix platforms.
-    #[cfg(unix)]
-    pub(super) raw: RawFd,
-
-    /// Raw socket handle on Windows.
-    #[cfg(windows)]
-    pub(super) raw: RawSocket,
+    /// This source's registration into the reactor.
+    pub(super) registration: Registration,
 
     /// The key of this source obtained during registration.
     key: usize,
@@ -590,14 +605,15 @@ impl Source {
 
             // Update interest in this I/O handle.
             if was_empty {
-                reactor.poller.modify(
-                    self.raw,
-                    Event {
-                        key: self.key,
-                        readable: !state[READ].is_empty(),
-                        writable: !state[WRITE].is_empty(),
-                    },
-                )?;
+                let event = {
+                    let mut event = Event::none(self.key);
+                    event.readable = !state[READ].is_empty();
+                    event.writable = !state[WRITE].is_empty();
+                    event
+                };
+
+                // Register interest in it.
+                self.registration.modify(&reactor.poller, event)?;
             }
 
             Poll::Pending
@@ -645,7 +661,11 @@ impl<T: Send + 'static> Future for Readable<'_, T> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         ready!(Pin::new(&mut self.0).poll(cx))?;
-        gst::trace!(RUNTIME_CAT, "readable: fd={}", self.0.handle.source.raw);
+        gst::trace!(
+            RUNTIME_CAT,
+            "readable: fd={:?}",
+            self.0.handle.source.registration
+        );
         Poll::Ready(Ok(()))
     }
 }
@@ -667,8 +687,8 @@ impl<T: Send + 'static> Future for ReadableOwned<T> {
         ready!(Pin::new(&mut self.0).poll(cx))?;
         gst::trace!(
             RUNTIME_CAT,
-            "readable_owned: fd={}",
-            self.0.handle.source.raw
+            "readable_owned: fd={:?}",
+            self.0.handle.source.registration
         );
         Poll::Ready(Ok(()))
     }
@@ -689,7 +709,11 @@ impl<T: Send + 'static> Future for Writable<'_, T> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         ready!(Pin::new(&mut self.0).poll(cx))?;
-        gst::trace!(RUNTIME_CAT, "writable: fd={}", self.0.handle.source.raw);
+        gst::trace!(
+            RUNTIME_CAT,
+            "writable: fd={:?}",
+            self.0.handle.source.registration
+        );
         Poll::Ready(Ok(()))
     }
 }
@@ -711,8 +735,8 @@ impl<T: Send + 'static> Future for WritableOwned<T> {
         ready!(Pin::new(&mut self.0).poll(cx))?;
         gst::trace!(
             RUNTIME_CAT,
-            "writable_owned: fd={}",
-            self.0.handle.source.raw
+            "writable_owned: fd={:?}",
+            self.0.handle.source.registration
         );
         Poll::Ready(Ok(()))
     }
@@ -780,14 +804,19 @@ impl<H: Borrow<Async<T>> + Clone, T: Send + 'static> Future for Ready<H, T> {
 
             // Update interest in this I/O handle.
             if was_empty {
-                reactor.poller.modify(
-                    handle.borrow().source.raw,
-                    Event {
-                        key: handle.borrow().source.key,
-                        readable: !state[READ].is_empty(),
-                        writable: !state[WRITE].is_empty(),
-                    },
-                )?;
+                // Create the event that we are interested in.
+                let event = {
+                    let mut event = Event::none(handle.borrow().source.key);
+                    event.readable = !state[READ].is_empty();
+                    event.writable = !state[WRITE].is_empty();
+                    event
+                };
+
+                handle
+                    .borrow()
+                    .source
+                    .registration
+                    .modify(&reactor.poller, event)?;
             }
 
             Poll::Pending

@@ -18,15 +18,14 @@ use gst::subclass::prelude::*;
 
 use std::mem;
 use std::sync::Mutex;
-use std::u64;
 
 use byte_slice_cast::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use atomic_refcell::AtomicRefCell;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "audioloudnorm",
         gst::DebugColorFlags::empty(),
@@ -264,7 +263,7 @@ impl State {
 
     // Drains everything
     fn drain(&mut self, imp: &AudioLoudNorm) -> Result<gst::Buffer, gst::FlowError> {
-        gst::debug!(CAT, imp: imp, "Draining");
+        gst::debug!(CAT, imp = imp, "Draining");
 
         let (pts, distance) = self.adapter.prev_pts();
         let distance_samples = distance / self.info.bpf() as u64;
@@ -299,7 +298,7 @@ impl State {
             self.frame_type = FrameType::Final;
         } else if src.is_empty() {
             // Nothing to drain at all
-            gst::debug!(CAT, imp: imp, "No data to drain");
+            gst::debug!(CAT, imp = imp, "No data to drain");
             return Err(gst::FlowError::Eos);
         }
 
@@ -342,15 +341,15 @@ impl State {
 
         gst::debug!(
             CAT,
-            imp: imp,
+            imp = imp,
             "Calculated global loudness for first frame {} with peak {}",
             global,
             true_peak
         );
 
-        // Difference between targetted and calculated LUFS loudness as a linear scalefactor.
+        // Difference between targeted and calculated LUFS loudness as a linear scalefactor.
         let offset = f64::powf(10., (self.target_i - global) / 20.);
-        // What the new peak would be after adjusting for the targetted loudness.
+        // What the new peak would be after adjusting for the targeted loudness.
         let offset_tp = true_peak * offset;
 
         // If the new peak would be more quiet than targeted one, take it. Otherwise only go as
@@ -396,7 +395,7 @@ impl State {
         self.prev_delta = self.delta[self.index];
         gst::debug!(
             CAT,
-            imp: imp,
+            imp = imp,
             "Initializing for first frame with gain adjustment of {}",
             self.prev_delta
         );
@@ -458,7 +457,7 @@ impl State {
 
         gst::debug!(
             CAT,
-            imp: imp,
+            imp = imp,
             "Applying gain adjustment {}-{}",
             gain,
             gain_next
@@ -532,7 +531,7 @@ impl State {
 
         gst::debug!(
             CAT,
-            imp: imp,
+            imp = imp,
             "Calculated global loudness {}, short term loudness {} and relative threshold {}",
             global,
             shortterm,
@@ -555,7 +554,7 @@ impl State {
                 self.above_threshold = true;
                 gst::debug!(
                     CAT,
-                    imp: imp,
+                    imp = imp,
                     "Above threshold now ({} >= {}, {} > -70)",
                     shortterm_out,
                     self.target_i,
@@ -583,7 +582,7 @@ impl State {
         self.prev_delta = self.delta[self.index];
         gst::debug!(
             CAT,
-            imp: imp,
+            imp = imp,
             "Calculated new gain adjustment {}",
             self.prev_delta
         );
@@ -705,7 +704,7 @@ impl State {
             self.process_fill_final_frame(imp, num_samples, FRAME_SIZE);
         }
 
-        // Now repeatadly run the limiter, output the output gain, update the gains, copy further
+        // Now repeatedly run the limiter, output the output gain, update the gains, copy further
         // data from the buf to limiter_buf until we have output everything.
         //
         // At this point we have to output 3s - (FRAME_SIZE - num_samples)
@@ -754,7 +753,7 @@ impl State {
                 // amount of samples the last frame is short to reach the correct read position.
                 if next_frame_size < FRAME_SIZE {
                     self.limiter_buf_index += FRAME_SIZE - next_frame_size;
-                    if self.limiter_buf_index > self.limiter_buf.len() {
+                    if self.limiter_buf_index >= self.limiter_buf.len() {
                         self.limiter_buf_index -= self.limiter_buf.len();
                     }
                 }
@@ -777,13 +776,13 @@ impl State {
 
         gst::debug!(
             CAT,
-            imp: imp,
+            imp = imp,
             "Applying linear gain adjustment of {}",
             self.offset
         );
 
-        let mut outbuf = gst::Buffer::with_size(src.len() * mem::size_of::<f64>())
-            .map_err(|_| gst::FlowError::Error)?;
+        let mut outbuf =
+            gst::Buffer::with_size(mem::size_of_val(src)).map_err(|_| gst::FlowError::Error)?;
         {
             let outbuf = outbuf.get_mut().unwrap();
             let mut dst = outbuf.map_writable().map_err(|_| gst::FlowError::Error)?;
@@ -855,15 +854,15 @@ impl State {
             smp_cnt += LIMITER_LOOKAHEAD + peak_delta - LIMITER_ATTACK_WINDOW;
 
             gst::debug!(
-                           CAT,
-                           imp: imp,
-                           "Found peak {} at sample {}, going to attack state at sample {} (gain reduction {}-{})",
-                           peak_value,
-                           smp_cnt + LIMITER_ATTACK_WINDOW,
-                           smp_cnt,
-                           self.gain_reduction[0],
-                           self.gain_reduction[1]
-                        );
+               CAT,
+               imp = imp,
+               "Found peak {} at sample {}, going to attack state at sample {} (gain reduction {}-{})",
+               peak_value,
+               smp_cnt + LIMITER_ATTACK_WINDOW,
+               smp_cnt,
+               self.gain_reduction[0],
+               self.gain_reduction[1]
+            );
         } else {
             // Process all samples, no peak found
             smp_cnt = nb_samples;
@@ -992,15 +991,15 @@ impl State {
                     self.sustain_cnt = None;
 
                     gst::debug!(
-                                    CAT,
-                                    imp: imp,
-                                    "Found new peak {} at sample {}, restarting attack state at sample {} (gain reduction {}-{})",
-                                    peak_value,
-                                    smp_cnt + LIMITER_ATTACK_WINDOW,
-                                    smp_cnt,
-                                    self.gain_reduction[0],
-                                    self.gain_reduction[1],
-                                );
+                        CAT,
+                        imp = imp,
+                        "Found new peak {} at sample {}, restarting attack state at sample {} (gain reduction {}-{})",
+                        peak_value,
+                        smp_cnt + LIMITER_ATTACK_WINDOW,
+                        smp_cnt,
+                        self.gain_reduction[0],
+                        self.gain_reduction[1],
+                    );
                 } else {
                     // If the slope is lower we can't simply reduce the slope as we would
                     // then have a lower gain reduction than needed at the previous peak.
@@ -1041,15 +1040,15 @@ impl State {
                     self.sustain_cnt = Some(self.env_cnt);
 
                     gst::debug!(
-                                    CAT,
-                                    imp: imp,
-                                    "Found new peak {} at sample {}, adjusting attack state at sample {} (gain reduction {}-{})",
-                                    peak_value,
-                                    smp_cnt + LIMITER_ATTACK_WINDOW,
-                                    smp_cnt,
-                                    self.gain_reduction[0],
-                                    self.gain_reduction[1],
-                                );
+                        CAT,
+                        imp = imp,
+                        "Found new peak {} at sample {}, adjusting attack state at sample {} (gain reduction {}-{})",
+                        peak_value,
+                        smp_cnt + LIMITER_ATTACK_WINDOW,
+                        smp_cnt,
+                        self.gain_reduction[0],
+                        self.gain_reduction[1],
+                    );
                 }
                 return smp_cnt;
             } else {
@@ -1057,7 +1056,7 @@ impl State {
                 // to ensure that we at least sustain it for that long afterwards.
                 gst::debug!(
                     CAT,
-                    imp: imp,
+                    imp = imp,
                     "Found new low peak {} at sample {} in attack state at sample {}",
                     peak_value,
                     smp_cnt + LIMITER_ATTACK_WINDOW,
@@ -1073,7 +1072,7 @@ impl State {
             // If we reached the target gain reduction, go into sustain state.
             gst::debug!(
                 CAT,
-                imp: imp,
+                imp = imp,
                 "Going to sustain state at sample {} (gain reduction {})",
                 smp_cnt,
                 self.gain_reduction[1]
@@ -1151,25 +1150,25 @@ impl State {
                     self.gain_reduction[1] = gain_reduction;
 
                     gst::debug!(
-                                    CAT,
-                                    imp: imp,
-                                    "Found new peak {} at sample {}, going back to attack state at sample {} (gain reduction {}-{})",
-                                    peak_value,
-                                    smp_cnt + LIMITER_ATTACK_WINDOW,
-                                    smp_cnt,
-                                    self.gain_reduction[0],
-                                    self.gain_reduction[1],
-                                );
+                        CAT,
+                        imp = imp,
+                        "Found new peak {} at sample {}, going back to attack state at sample {} (gain reduction {}-{})",
+                        peak_value,
+                        smp_cnt + LIMITER_ATTACK_WINDOW,
+                        smp_cnt,
+                        self.gain_reduction[0],
+                        self.gain_reduction[1],
+                    );
                 } else {
                     gst::debug!(
-                                    CAT,
-                                    imp: imp,
-                                    "Found new peak {} at sample {}, going sustain further at sample {} (gain reduction {})",
-                                    peak_value,
-                                    smp_cnt + LIMITER_ATTACK_WINDOW,
-                                    smp_cnt,
-                                    self.gain_reduction[1],
-                                );
+                        CAT,
+                        imp = imp,
+                        "Found new peak {} at sample {}, going sustain further at sample {} (gain reduction {})",
+                        peak_value,
+                        smp_cnt + LIMITER_ATTACK_WINDOW,
+                        smp_cnt,
+                        self.gain_reduction[1],
+                    );
                     // We need to sustain until the peak at least
                     self.sustain_cnt = Some(LIMITER_LOOKAHEAD);
                 }
@@ -1190,7 +1189,7 @@ impl State {
 
             gst::debug!(
                 CAT,
-                imp: imp,
+                imp = imp,
                 "Going to release state for sample {} at sample {} (gain reduction {}-1.0)",
                 smp_cnt + LIMITER_RELEASE_WINDOW,
                 smp_cnt,
@@ -1259,26 +1258,26 @@ impl State {
                 self.gain_reduction[1] = gain_reduction;
 
                 gst::debug!(
-                               CAT,
-                               imp: imp,
-                               "Found new peak {} at sample {}, going back to attack state at sample {} (gain reduction {}-{})",
-                               peak_value,
-                               smp_cnt + LIMITER_ATTACK_WINDOW,
-                               smp_cnt,
-                               self.gain_reduction[0],
-                               self.gain_reduction[1],
-                            );
+                   CAT,
+                   imp = imp,
+                   "Found new peak {} at sample {}, going back to attack state at sample {} (gain reduction {}-{})",
+                   peak_value,
+                   smp_cnt + LIMITER_ATTACK_WINDOW,
+                   smp_cnt,
+                   self.gain_reduction[0],
+                   self.gain_reduction[1],
+                );
             } else {
                 self.gain_reduction[1] = current_gain_reduction;
                 gst::debug!(
-                                CAT,
-                                imp: imp,
-                                "Going from release to sustain state at sample {} because of low peak {} at sample {} (gain reduction {})",
-                                smp_cnt,
-                                peak_value,
-                                smp_cnt + LIMITER_ATTACK_WINDOW,
-                                self.gain_reduction[1]
-                            );
+                    CAT,
+                    imp = imp,
+                    "Going from release to sustain state at sample {} because of low peak {} at sample {} (gain reduction {})",
+                    smp_cnt,
+                    peak_value,
+                    smp_cnt + LIMITER_ATTACK_WINDOW,
+                    self.gain_reduction[1]
+                );
                 self.limiter_state = LimiterState::Sustain;
             }
 
@@ -1313,7 +1312,7 @@ impl State {
             self.limiter_state = LimiterState::Out;
             gst::debug!(
                 CAT,
-                imp: imp,
+                imp = imp,
                 "Leaving release state and going to out state at sample {}",
                 smp_cnt,
             );
@@ -1351,7 +1350,7 @@ impl State {
             self.gain_reduction[1] = self.target_tp / max;
             gst::debug!(
                 CAT,
-                imp: imp,
+                imp = imp,
                 "Reducing gain for start of first frame by {} ({} > {}) and going to sustain state",
                 self.gain_reduction[1],
                 max,
@@ -1367,7 +1366,7 @@ impl State {
         let channels = self.info.channels() as usize;
         let nb_samples = dst.len() / channels;
 
-        gst::debug!(CAT, imp: imp, "Running limiter for {} samples", nb_samples);
+        gst::debug!(CAT, imp = imp, "Running limiter for {} samples", nb_samples);
 
         // For the first frame we can't adjust the gain before it smoothly anymore so instead
         // apply the gain reduction immediately if we get above the threshold and move to sustain
@@ -1536,12 +1535,12 @@ impl AudioLoudNorm {
         _pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, imp: self, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, imp = self, "Handling buffer {:?}", buffer);
 
         let mut state_guard = self.state.borrow_mut();
         let state = match *state_guard {
             None => {
-                gst::error!(CAT, imp: self, "Not negotiated yet");
+                gst::error!(CAT, imp = self, "Not negotiated yet");
                 return Err(gst::FlowError::NotNegotiated);
             }
             Some(ref mut state) => state,
@@ -1549,7 +1548,7 @@ impl AudioLoudNorm {
 
         let mut outbufs = vec![];
         if buffer.flags().contains(gst::BufferFlags::DISCONT) {
-            gst::debug!(CAT, imp: self, "Draining on discontinuity");
+            gst::debug!(CAT, imp = self, "Draining on discontinuity");
             match state.drain(self) {
                 Ok(outbuf) => {
                     outbufs.push(outbuf);
@@ -1567,7 +1566,7 @@ impl AudioLoudNorm {
         drop(state_guard);
 
         for buffer in outbufs {
-            gst::log!(CAT, imp: self, "Outputting buffer {:?}", buffer);
+            gst::log!(CAT, imp = self, "Outputting buffer {:?}", buffer);
             self.srcpad.push(buffer)?;
         }
 
@@ -1577,17 +1576,17 @@ impl AudioLoudNorm {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Caps(c) => {
                 let caps = c.caps();
-                gst::info!(CAT, obj: pad, "Got caps {:?}", caps);
+                gst::info!(CAT, obj = pad, "Got caps {:?}", caps);
 
                 let info = match gst_audio::AudioInfo::from_caps(caps) {
                     Ok(info) => info,
                     Err(_) => {
-                        gst::error!(CAT, obj: pad, "Failed to parse caps");
+                        gst::error!(CAT, obj = pad, "Failed to parse caps");
                         return false;
                     }
                 };
@@ -1605,9 +1604,9 @@ impl AudioLoudNorm {
                 drop(state);
 
                 if let Some(outbuf) = outbuf {
-                    gst::log!(CAT, imp: self, "Outputting buffer {:?}", outbuf);
+                    gst::log!(CAT, imp = self, "Outputting buffer {:?}", outbuf);
                     if let Err(err) = self.srcpad.push(outbuf) {
-                        gst::error!(CAT, imp: self, "Failed to push drained data: {}", err);
+                        gst::error!(CAT, imp = self, "Failed to push drained data: {}", err);
 
                         return false;
                     }
@@ -1627,11 +1626,11 @@ impl AudioLoudNorm {
                 drop(state);
 
                 if let Some(outbuf) = outbuf {
-                    gst::log!(CAT, imp: self, "Outputting buffer {:?}", outbuf);
+                    gst::log!(CAT, imp = self, "Outputting buffer {:?}", outbuf);
                     if let Err(err) = self.srcpad.push(outbuf) {
                         gst::error!(
                             CAT,
-                            imp: self,
+                            imp = self,
                             "Failed to push drained data on EOS: {}",
                             err
                         );
@@ -1661,7 +1660,7 @@ impl AudioLoudNorm {
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
 
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
         match query.view_mut() {
             QueryViewMut::Latency(q) => {
                 let mut peer_query = gst::query::Latency::new();
@@ -1690,7 +1689,7 @@ impl ObjectSubclass for AudioLoudNorm {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 Self::catch_panic_pad_function(
                     parent,
@@ -1705,7 +1704,7 @@ impl ObjectSubclass for AudioLoudNorm {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .query_function(|pad, parent, query| {
                 Self::catch_panic_pad_function(parent, || false, |this| this.src_query(pad, query))
             })
@@ -1723,7 +1722,7 @@ impl ObjectSubclass for AudioLoudNorm {
 
 impl ObjectImpl for AudioLoudNorm {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecDouble::builder("loudness-target")
                     .nick("Loudness Target")
@@ -1820,7 +1819,7 @@ impl GstObjectImpl for AudioLoudNorm {}
 
 impl ElementImpl for AudioLoudNorm {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Audio loudness normalizer",
                 "Filter/Effect/Audio",
@@ -1833,7 +1832,7 @@ impl ElementImpl for AudioLoudNorm {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_audio::AudioCapsBuilder::new_interleaved()
                 .format(gst_audio::AUDIO_FORMAT_F64)
                 .rate(192_000)

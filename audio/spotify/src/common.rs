@@ -11,15 +11,15 @@ use anyhow::bail;
 use gst::glib;
 use gst::prelude::*;
 
-use librespot::core::{
-    cache::Cache, config::SessionConfig, session::Session, spotify_id::SpotifyId,
+use futures::future::{AbortHandle, Aborted};
+use librespot_core::{
+    authentication::Credentials, cache::Cache, config::SessionConfig, session::Session,
+    spotify_id::SpotifyId,
 };
-use librespot::discovery::Credentials;
 
 #[derive(Default, Debug, Clone)]
 pub struct Settings {
-    username: String,
-    password: String,
+    access_token: String,
     cache_credentials: String,
     cache_files: String,
     cache_max_size: u64,
@@ -28,52 +28,46 @@ pub struct Settings {
 
 impl Settings {
     pub fn properties() -> Vec<glib::ParamSpec> {
-        vec![glib::ParamSpecString::builder("username")
-                    .nick("Username")
-                    .blurb("Spotify device username from https://www.spotify.com/us/account/set-device-password/")
-                    .default_value(Some(""))
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecString::builder("password")
-                    .nick("Password")
-                    .blurb("Spotify device password from https://www.spotify.com/us/account/set-device-password/")
-                    .default_value(Some(""))
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecString::builder("cache-credentials")
-                    .nick("Credentials cache")
-                    .blurb("Directory where to cache Spotify credentials")
-                    .default_value(Some(""))
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecString::builder("cache-files")
-                    .nick("Files cache")
-                    .blurb("Directory where to cache downloaded files from Spotify")
-                    .default_value(Some(""))
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecUInt64::builder("cache-max-size")
-                    .nick("Cache max size")
-                    .blurb("The max allowed size of the cache, in bytes, or 0 to disable the cache limit")
-                    .default_value(0)
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecString::builder("track")
-                    .nick("Spotify URI")
-                    .blurb("Spotify track URI, in the form 'spotify:track:$SPOTIFY_ID'")
-                    .default_value(Some(""))
-                    .mutable_ready()
-                    .build(),
-            ]
+        vec![
+            glib::ParamSpecString::builder("access-token")
+                .nick("Access token")
+                .blurb("Spotify access token, requires 'streaming' scope")
+                .default_value(Some(""))
+                .mutable_ready()
+                .build(),
+            glib::ParamSpecString::builder("cache-credentials")
+                .nick("Credentials cache")
+                .blurb("Directory where to cache Spotify credentials")
+                .default_value(Some(""))
+                .mutable_ready()
+                .build(),
+            glib::ParamSpecString::builder("cache-files")
+                .nick("Files cache")
+                .blurb("Directory where to cache downloaded files from Spotify")
+                .default_value(Some(""))
+                .mutable_ready()
+                .build(),
+            glib::ParamSpecUInt64::builder("cache-max-size")
+                .nick("Cache max size")
+                .blurb(
+                    "The max allowed size of the cache, in bytes, or 0 to disable the cache limit",
+                )
+                .default_value(0)
+                .mutable_ready()
+                .build(),
+            glib::ParamSpecString::builder("track")
+                .nick("Spotify URI")
+                .blurb("Spotify track URI, in the form 'spotify:track:$SPOTIFY_ID'")
+                .default_value(Some(""))
+                .mutable_ready()
+                .build(),
+        ]
     }
 
     pub fn set_property(&mut self, value: &glib::Value, pspec: &glib::ParamSpec) {
         match pspec.name() {
-            "username" => {
-                self.username = value.get().expect("type checked upstream");
-            }
-            "password" => {
-                self.password = value.get().expect("type checked upstream");
+            "access-token" => {
+                self.access_token = value.get().expect("type checked upstream");
             }
             "cache-credentials" => {
                 self.cache_credentials = value.get().expect("type checked upstream");
@@ -93,8 +87,7 @@ impl Settings {
 
     pub fn property(&self, pspec: &glib::ParamSpec) -> glib::Value {
         match pspec.name() {
-            "username" => self.username.to_value(),
-            "password" => self.password.to_value(),
+            "access-token" => self.access_token.to_value(),
             "cache-credentials" => self.cache_credentials.to_value(),
             "cache-files" => self.cache_files.to_value(),
             "cache-max-size" => self.cache_max_size.to_value(),
@@ -109,7 +102,7 @@ impl Settings {
         cat: &gst::DebugCategory,
     ) -> anyhow::Result<Session>
     where
-        T: glib::IsA<glib::Object>,
+        T: IsA<glib::Object>,
     {
         let credentials_cache = if self.cache_credentials.is_empty() {
             None
@@ -131,29 +124,37 @@ impl Settings {
 
         let cache = Cache::new(credentials_cache, None, files_cache, max_size)?;
 
-        let credentials = match cache.credentials() {
-            Some(cached_cred) => {
-                gst::debug!(cat, obj: &src, "reuse credentials from cache",);
-                cached_cred
-            }
-            None => {
-                gst::debug!(cat, obj: &src, "credentials not in cache",);
+        if let Some(cached_cred) = cache.credentials() {
+            let cached_username = cached_cred
+                .username
+                .as_ref()
+                .map_or("UNKNOWN", |s| s.as_str());
+            gst::debug!(
+                cat,
+                obj = &src,
+                "reuse cached credentials for user {}",
+                cached_username
+            );
 
-                if self.username.is_empty() {
-                    bail!("username is not set and credentials are not in cache");
-                }
-                if self.password.is_empty() {
-                    bail!("password is not set and credentials are not in cache");
-                }
+            let session = Session::new(SessionConfig::default(), Some(cache));
+            session.connect(cached_cred, true).await?;
+            return Ok(session);
+        }
 
-                let cred = Credentials::with_password(&self.username, &self.password);
-                cache.save_credentials(&cred);
-                cred
-            }
-        };
+        gst::debug!(
+            cat,
+            obj = &src,
+            "credentials not in cache or cached credentials invalid",
+        );
 
-        let (session, _credentials) =
-            Session::connect(SessionConfig::default(), credentials, Some(cache), false).await?;
+        if self.access_token.is_empty() {
+            bail!("access-token is not set and credentials are not in cache");
+        }
+
+        let cred = Credentials::with_access_token(&self.access_token);
+
+        let session = Session::new(SessionConfig::default(), Some(cache));
+        session.connect(cred, true).await?;
 
         Ok(session)
     }
@@ -162,10 +163,37 @@ impl Settings {
         if self.track.is_empty() {
             bail!("track is not set");
         }
-        let track = SpotifyId::from_uri(&self.track).map_err(|_| {
-            anyhow::anyhow!("failed to create Spotify URI from track {}", self.track)
-        })?;
+        let track = SpotifyId::from_uri(&self.track)?;
 
         Ok(track)
+    }
+}
+
+#[derive(Default)]
+pub enum SetupThread {
+    #[default]
+    None,
+    Pending {
+        thread_handle: Option<std::thread::JoinHandle<Result<anyhow::Result<()>, Aborted>>>,
+        abort_handle: AbortHandle,
+    },
+    Cancelled,
+    Done,
+}
+
+impl SetupThread {
+    pub fn abort(&mut self) {
+        // Cancel setup thread if it is pending and not done yet
+        if matches!(self, SetupThread::None | SetupThread::Done) {
+            return;
+        }
+
+        if let SetupThread::Pending {
+            ref abort_handle, ..
+        } = *self
+        {
+            abort_handle.abort();
+        }
+        *self = SetupThread::Cancelled;
     }
 }

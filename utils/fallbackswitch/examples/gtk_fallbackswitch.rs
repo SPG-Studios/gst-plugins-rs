@@ -6,13 +6,10 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-use gio::prelude::*;
-
 use gst::glib;
 use gst::prelude::*;
 
 use gtk::prelude::*;
-use gtk::Inhibit;
 
 use std::cell::RefCell;
 
@@ -25,10 +22,10 @@ const FALLBACK_PIPELINE: &str = "videotestsrc is-live=true pattern=snow";
 fn create_pipeline() -> (gst::Pipeline, gst::Pad, gst::Element) {
     let pipeline = gst::Pipeline::default();
 
-    let video_src = gst::parse_bin_from_description(MAIN_PIPELINE, true)
+    let video_src = gst::parse::bin_from_description(MAIN_PIPELINE, true)
         .unwrap()
         .upcast();
-    let fallback_video_src = gst::parse_bin_from_description(FALLBACK_PIPELINE, true)
+    let fallback_video_src = gst::parse::bin_from_description(FALLBACK_PIPELINE, true)
         .unwrap()
         .upcast();
 
@@ -108,9 +105,8 @@ fn create_ui(app: &gtk::Application) {
 
     let video_sink_weak = video_sink.downgrade();
     let timeout_id = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        let video_sink = match video_sink_weak.upgrade() {
-            Some(video_sink) => video_sink,
-            None => return glib::Continue(true),
+        let Some(video_sink) = video_sink_weak.upgrade() else {
+            return glib::ControlFlow::Break;
         };
 
         let position = video_sink
@@ -118,15 +114,14 @@ fn create_ui(app: &gtk::Application) {
             .unwrap_or(gst::ClockTime::ZERO);
         position_label.set_text(&format!("Position: {position:.1}"));
 
-        glib::Continue(true)
+        glib::ControlFlow::Continue
     });
 
     let video_src_pad_weak = video_src_pad.downgrade();
     let drop_id = RefCell::new(None);
     drop_button.connect_toggled(move |drop_button| {
-        let video_src_pad = match video_src_pad_weak.upgrade() {
-            Some(video_src_pad) => video_src_pad,
-            None => return,
+        let Some(video_src_pad) = video_src_pad_weak.upgrade() else {
+            return;
         };
 
         let drop = drop_button.is_active();
@@ -143,52 +138,51 @@ fn create_ui(app: &gtk::Application) {
 
     let app_weak = app.downgrade();
     window.connect_close_request(move |_| {
-        let app = match app_weak.upgrade() {
-            Some(app) => app,
-            None => return Inhibit(false),
+        let Some(app) = app_weak.upgrade() else {
+            return glib::Propagation::Stop;
         };
 
         app.quit();
-        Inhibit(false)
+        glib::Propagation::Stop
     });
 
     let bus = pipeline.bus().unwrap();
     let app_weak = app.downgrade();
-    bus.add_watch_local(move |_, msg| {
-        use gst::MessageView;
+    let bus_watch = bus
+        .add_watch_local(move |_, msg| {
+            use gst::MessageView;
 
-        let app = match app_weak.upgrade() {
-            Some(app) => app,
-            None => return glib::Continue(false),
-        };
+            let Some(app) = app_weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
 
-        match msg.view() {
-            MessageView::Eos(..) => app.quit(),
-            MessageView::Error(err) => {
-                println!(
-                    "Error from {:?}: {} ({:?})",
-                    msg.src().map(|s| s.path_string()),
-                    err.error(),
-                    err.debug()
-                );
-                app.quit();
-            }
-            _ => (),
-        };
+            match msg.view() {
+                MessageView::Eos(..) => app.quit(),
+                MessageView::Error(err) => {
+                    println!(
+                        "Error from {:?}: {} ({:?})",
+                        msg.src().map(|s| s.path_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                    app.quit();
+                }
+                _ => (),
+            };
 
-        glib::Continue(true)
-    })
-    .expect("Failed to add bus watch");
+            glib::ControlFlow::Continue
+        })
+        .expect("Failed to add bus watch");
 
     pipeline.set_state(gst::State::Playing).unwrap();
 
     // Pipeline reference is owned by the closure below, so will be
     // destroyed once the app is destroyed
     let timeout_id = RefCell::new(Some(timeout_id));
+    let bus_watch = RefCell::new(Some(bus_watch));
     app.connect_shutdown(move |_| {
+        drop(bus_watch.borrow_mut().take());
         pipeline.set_state(gst::State::Null).unwrap();
-
-        bus.remove_watch().unwrap();
 
         if let Some(timeout_id) = timeout_id.borrow_mut().take() {
             timeout_id.remove();

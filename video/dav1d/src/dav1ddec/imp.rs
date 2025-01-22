@@ -14,13 +14,44 @@ use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
-use std::i32;
 use std::sync::{Mutex, MutexGuard};
+
+#[glib::flags(name = "GstDav1dInloopFilterType")]
+pub(crate) enum InloopFilterType {
+    #[flags_value(name = "Enable deblocking filter", nick = "deblock")]
+    DEBLOCK = dav1d::InloopFilterType::DEBLOCK.bits(),
+    #[flags_value(
+        name = "Enable Constrained Directional Enhancement Filter",
+        nick = "cdef"
+    )]
+    CDEF = dav1d::InloopFilterType::CDEF.bits(),
+    #[flags_value(name = "Enable loop restoration filter", nick = "restoration")]
+    RESTORATION = dav1d::InloopFilterType::RESTORATION.bits(),
+}
+
+impl From<InloopFilterType> for dav1d::InloopFilterType {
+    fn from(inloop_filter_type: InloopFilterType) -> Self {
+        let mut dav1d_inloop_filter_type = dav1d::InloopFilterType::empty();
+        if inloop_filter_type.contains(InloopFilterType::DEBLOCK) {
+            dav1d_inloop_filter_type.set(dav1d::InloopFilterType::DEBLOCK, true);
+        }
+        if inloop_filter_type.contains(InloopFilterType::CDEF) {
+            dav1d_inloop_filter_type.set(dav1d::InloopFilterType::CDEF, true);
+        }
+        if inloop_filter_type.contains(InloopFilterType::RESTORATION) {
+            dav1d_inloop_filter_type.set(dav1d::InloopFilterType::RESTORATION, true);
+        }
+
+        dav1d_inloop_filter_type
+    }
+}
 
 const DEFAULT_N_THREADS: u32 = 0;
 const DEFAULT_MAX_FRAME_DELAY: i64 = -1;
+const DEFAULT_APPLY_GRAIN: bool = false;
+const DEFAULT_INLOOP_FILTERS: InloopFilterType = InloopFilterType::empty();
 
 struct State {
     decoder: dav1d::Decoder,
@@ -34,6 +65,8 @@ struct State {
 struct Settings {
     n_threads: u32,
     max_frame_delay: i64,
+    apply_grain: bool,
+    inloop_filters: InloopFilterType,
 }
 
 impl Default for Settings {
@@ -41,6 +74,8 @@ impl Default for Settings {
         Settings {
             n_threads: DEFAULT_N_THREADS,
             max_frame_delay: DEFAULT_MAX_FRAME_DELAY,
+            apply_grain: DEFAULT_APPLY_GRAIN,
+            inloop_filters: DEFAULT_INLOOP_FILTERS,
         }
     }
 }
@@ -51,7 +86,7 @@ pub struct Dav1dDec {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "dav1ddec",
         gst::DebugColorFlags::empty(),
@@ -87,7 +122,7 @@ impl Dav1dDec {
             (layout, bpc) => {
                 gst::warning!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Unsupported dav1d format {:?}/{:?}",
                     layout,
                     bpc
@@ -115,9 +150,112 @@ impl Dav1dDec {
             }
         };
         f.parse::<gst_video::VideoFormat>().unwrap_or_else(|_| {
-            gst::warning!(CAT, imp: self, "Unsupported dav1d format: {}", f);
+            gst::warning!(CAT, imp = self, "Unsupported dav1d format: {}", f);
             gst_video::VideoFormat::Unknown
         })
+    }
+
+    fn colorimetry_from_dav1d_picture(
+        &self,
+        pic: &dav1d::Picture,
+    ) -> Option<gst_video::VideoColorimetry> {
+        use dav1d::pixel;
+
+        let range = match pic.color_range() {
+            pixel::YUVRange::Limited => gst_video::VideoColorRange::Range16_235,
+            pixel::YUVRange::Full => gst_video::VideoColorRange::Range0_255,
+        };
+
+        let matrix = match pic.matrix_coefficients() {
+            pixel::MatrixCoefficients::Identity => gst_video::VideoColorMatrix::Rgb,
+            pixel::MatrixCoefficients::BT709 => gst_video::VideoColorMatrix::Bt709,
+            pixel::MatrixCoefficients::Unspecified => gst_video::VideoColorMatrix::Bt709,
+            pixel::MatrixCoefficients::BT470M => gst_video::VideoColorMatrix::Fcc,
+            pixel::MatrixCoefficients::BT470BG => gst_video::VideoColorMatrix::Bt601,
+            pixel::MatrixCoefficients::ST240M => gst_video::VideoColorMatrix::Smpte240m,
+            pixel::MatrixCoefficients::BT2020NonConstantLuminance => {
+                gst_video::VideoColorMatrix::Bt2020
+            }
+            _ => {
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "Unsupported dav1d colorimetry matrix coefficients"
+                );
+                return None;
+            }
+        };
+
+        let transfer = match pic.transfer_characteristic() {
+            pixel::TransferCharacteristic::BT1886 => gst_video::VideoTransferFunction::Bt709,
+            pixel::TransferCharacteristic::Unspecified => gst_video::VideoTransferFunction::Bt709,
+            pixel::TransferCharacteristic::BT470M => gst_video::VideoTransferFunction::Bt709,
+            pixel::TransferCharacteristic::BT470BG => gst_video::VideoTransferFunction::Gamma28,
+            pixel::TransferCharacteristic::ST170M => gst_video::VideoTransferFunction::Bt601,
+            pixel::TransferCharacteristic::ST240M => gst_video::VideoTransferFunction::Smpte240m,
+            pixel::TransferCharacteristic::Linear => gst_video::VideoTransferFunction::Gamma10,
+            pixel::TransferCharacteristic::Logarithmic100 => {
+                gst_video::VideoTransferFunction::Log100
+            }
+            pixel::TransferCharacteristic::Logarithmic316 => {
+                gst_video::VideoTransferFunction::Log316
+            }
+            pixel::TransferCharacteristic::SRGB => gst_video::VideoTransferFunction::Srgb,
+            pixel::TransferCharacteristic::BT2020Ten => gst_video::VideoTransferFunction::Bt202010,
+            pixel::TransferCharacteristic::BT2020Twelve => {
+                gst_video::VideoTransferFunction::Bt202012
+            }
+            pixel::TransferCharacteristic::PerceptualQuantizer => {
+                gst_video::VideoTransferFunction::Smpte2084
+            }
+            pixel::TransferCharacteristic::HybridLogGamma => {
+                gst_video::VideoTransferFunction::AribStdB67
+            }
+            _ => {
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "Unsupported dav1d colorimetry transfer function"
+                );
+                return None;
+            }
+        };
+
+        let primaries = match pic.color_primaries() {
+            pixel::ColorPrimaries::BT709 => gst_video::VideoColorPrimaries::Bt709,
+            pixel::ColorPrimaries::Unspecified => gst_video::VideoColorPrimaries::Bt709,
+            pixel::ColorPrimaries::BT470M => gst_video::VideoColorPrimaries::Bt470m,
+            pixel::ColorPrimaries::BT470BG => gst_video::VideoColorPrimaries::Bt470bg,
+            pixel::ColorPrimaries::ST240M => gst_video::VideoColorPrimaries::Smpte240m,
+            pixel::ColorPrimaries::Film => gst_video::VideoColorPrimaries::Film,
+            pixel::ColorPrimaries::BT2020 => gst_video::VideoColorPrimaries::Bt2020,
+            pixel::ColorPrimaries::ST428 => gst_video::VideoColorPrimaries::Smptest428,
+            pixel::ColorPrimaries::P3DCI => gst_video::VideoColorPrimaries::Smpterp431,
+            pixel::ColorPrimaries::P3Display => gst_video::VideoColorPrimaries::Smpteeg432,
+            pixel::ColorPrimaries::Tech3213 => gst_video::VideoColorPrimaries::Ebu3213,
+            _ => {
+                gst::warning!(CAT, imp = self, "Unsupported dav1d color primaries");
+                return None;
+            }
+        };
+        Some(gst_video::VideoColorimetry::new(
+            range, matrix, transfer, primaries,
+        ))
+    }
+
+    fn chroma_site_from_dav1d_picture(
+        &self,
+        pic: &dav1d::Picture,
+    ) -> Option<gst_video::VideoChromaSite> {
+        use dav1d::pixel;
+        match pic.pixel_layout() {
+            dav1d::PixelLayout::I420 | dav1d::PixelLayout::I422 => match pic.chroma_location() {
+                pixel::ChromaLocation::Center => Some(gst_video::VideoChromaSite::JPEG),
+                pixel::ChromaLocation::Left => Some(gst_video::VideoChromaSite::MPEG2),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn handle_resolution_change<'s>(
@@ -147,7 +285,7 @@ impl Dav1dDec {
 
         gst::info!(
             CAT,
-            imp: self,
+            imp = self,
             "Negotiating format {:?} picture dimensions {}x{}",
             format,
             pic.width(),
@@ -155,11 +293,48 @@ impl Dav1dDec {
         );
 
         let input_state = state.input_state.clone();
+        let input_info = input_state.info();
+        let input_caps = input_state.caps().ok_or(gst::FlowError::NotNegotiated)?;
+        let input_structure = input_caps
+            .structure(0)
+            .ok_or(gst::FlowError::NotNegotiated)?;
+        let input_colorimetry = input_info.colorimetry();
+
         drop(state_guard);
 
         let instance = self.obj();
-        let output_state =
+        let mut output_state =
             instance.set_output_state(format, pic.width(), pic.height(), Some(&input_state))?;
+        let mut info_builder = gst_video::VideoInfo::builder(format, pic.width(), pic.height());
+        let mut update_output_state = false;
+
+        let colorimetry = self.colorimetry_from_dav1d_picture(pic);
+        if !input_structure.has_field("colorimetry")
+            || input_colorimetry.range() == gst_video::VideoColorRange::Unknown
+            || input_colorimetry.matrix() == gst_video::VideoColorMatrix::Unknown
+            || input_colorimetry.transfer() == gst_video::VideoTransferFunction::Unknown
+            || input_colorimetry.primaries() == gst_video::VideoColorPrimaries::Unknown
+        {
+            if let Some(colorimetry) = colorimetry.as_ref() {
+                info_builder = info_builder.colorimetry(colorimetry);
+                update_output_state = true;
+            }
+        }
+
+        if !input_structure.has_field("chroma-site") {
+            if let Some(chroma_site) = self.chroma_site_from_dav1d_picture(pic) {
+                info_builder = info_builder.chroma_site(chroma_site);
+                update_output_state = true;
+            }
+        }
+
+        if update_output_state {
+            let info = info_builder
+                .build()
+                .map_err(|_| gst::FlowError::NotNegotiated)?;
+            output_state.set_info(info);
+        }
+
         instance.negotiate(output_state)?;
         let out_state = instance.output_state().unwrap();
 
@@ -171,7 +346,7 @@ impl Dav1dDec {
     }
 
     fn flush_decoder(&self, state: &mut State) {
-        gst::info!(CAT, imp: self, "Flushing decoder");
+        gst::info!(CAT, imp = self, "Flushing decoder");
 
         state.decoder.flush();
     }
@@ -184,7 +359,7 @@ impl Dav1dDec {
     ) -> Result<std::ops::ControlFlow<(), ()>, gst::FlowError> {
         gst::trace!(
             CAT,
-            imp: self,
+            imp = self,
             "Sending data to decoder for frame {}",
             frame.system_frame_number()
         );
@@ -205,15 +380,15 @@ impl Dav1dDec {
             .send_data(input_data, frame_number, timestamp, duration)
         {
             Ok(()) => {
-                gst::trace!(CAT, imp: self, "Decoder returned OK");
+                gst::trace!(CAT, imp = self, "Decoder returned OK");
                 Ok(std::ops::ControlFlow::Break(()))
             }
             Err(dav1d::Error::Again) => {
-                gst::trace!(CAT, imp: self, "Decoder returned EAGAIN");
+                gst::trace!(CAT, imp = self, "Decoder returned EAGAIN");
                 Ok(std::ops::ControlFlow::Continue(()))
             }
             Err(dav1d::Error::InvalidArgument) => {
-                gst::trace!(CAT, imp: self, "Decoder returned EINVAL");
+                gst::trace!(CAT, imp = self, "Decoder returned EINVAL");
                 gst_video::video_decoder_error!(
                     &*self.obj(),
                     1,
@@ -240,17 +415,17 @@ impl Dav1dDec {
         &self,
         state_guard: &mut MutexGuard<Option<State>>,
     ) -> Result<std::ops::ControlFlow<(), ()>, gst::FlowError> {
-        gst::trace!(CAT, imp: self, "Sending pending data to decoder");
+        gst::trace!(CAT, imp = self, "Sending pending data to decoder");
 
         let state = state_guard.as_mut().ok_or(gst::FlowError::Flushing)?;
 
         match state.decoder.send_pending_data() {
             Ok(()) => {
-                gst::trace!(CAT, imp: self, "Decoder returned OK");
+                gst::trace!(CAT, imp = self, "Decoder returned OK");
                 Ok(std::ops::ControlFlow::Break(()))
             }
             Err(err) if err.is_again() => {
-                gst::trace!(CAT, imp: self, "Decoder returned EAGAIN");
+                gst::trace!(CAT, imp = self, "Decoder returned EAGAIN");
                 Ok(std::ops::ControlFlow::Continue(()))
             }
             Err(err) => {
@@ -307,7 +482,7 @@ impl Dav1dDec {
             } else {
                 gst::trace!(
                     gst::CAT_PERFORMANCE,
-                    imp: self,
+                    imp = self,
                     "Copying decoded video frame component {:?}",
                     component
                 );
@@ -365,7 +540,7 @@ impl Dav1dDec {
         mut state_guard: MutexGuard<'s, Option<State>>,
         pic: &dav1d::Picture,
     ) -> Result<MutexGuard<'s, Option<State>>, gst::FlowError> {
-        gst::trace!(CAT, imp: self, "Handling picture {}", pic.offset());
+        gst::trace!(CAT, imp = self, "Handling picture {}", pic.offset());
 
         state_guard = self.handle_resolution_change(state_guard, pic)?;
 
@@ -384,7 +559,7 @@ impl Dav1dDec {
             instance.finish_frame(frame)?;
             Ok(self.state.lock().unwrap())
         } else {
-            gst::warning!(CAT, imp: self, "No frame found for offset {}", offset);
+            gst::warning!(CAT, imp = self, "No frame found for offset {}", offset);
             Ok(state_guard)
         }
     }
@@ -393,23 +568,23 @@ impl Dav1dDec {
         &self,
         state_guard: &mut MutexGuard<Option<State>>,
     ) -> Result<Option<dav1d::Picture>, gst::FlowError> {
-        gst::trace!(CAT, imp: self, "Retrieving pending picture");
+        gst::trace!(CAT, imp = self, "Retrieving pending picture");
 
         let state = state_guard.as_mut().ok_or(gst::FlowError::Flushing)?;
 
         match state.decoder.get_picture() {
             Ok(pic) => {
-                gst::trace!(CAT, imp: self, "Retrieved picture {}", pic.offset());
+                gst::trace!(CAT, imp = self, "Retrieved picture {}", pic.offset());
                 Ok(Some(pic))
             }
             Err(err) if err.is_again() => {
-                gst::trace!(CAT, imp: self, "Decoder needs more data");
+                gst::trace!(CAT, imp = self, "Decoder needs more data");
                 Ok(None)
             }
             Err(err) => {
                 gst::error!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Retrieving decoded picture failed (error code {})",
                     err
                 );
@@ -429,7 +604,7 @@ impl Dav1dDec {
         &'s self,
         mut state_guard: MutexGuard<'s, Option<State>>,
         drain: bool,
-    ) -> Result<MutexGuard<Option<State>>, gst::FlowError> {
+    ) -> Result<MutexGuard<'s, Option<State>>, gst::FlowError> {
         // dav1d wants to have get_picture() called a second time after it return EAGAIN to
         // actually drain all pending pictures.
         let mut call_twice = drain;
@@ -501,7 +676,7 @@ impl ObjectSubclass for Dav1dDec {
 
 impl ObjectImpl for Dav1dDec {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("n-threads")
                     .nick("Number of threads")
@@ -513,10 +688,23 @@ impl ObjectImpl for Dav1dDec {
                     .nick("Maximum frame delay")
                     .blurb("Maximum delay in frames for the decoder (set to 1 for low latency, 0 to be equal to the number of logical cores. -1 to choose between these two based on pipeline liveness)")
                     .minimum(-1)
-                    .maximum(std::u32::MAX.into())
+                    .maximum(u32::MAX.into())
                     .default_value(DEFAULT_MAX_FRAME_DELAY)
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecBoolean::builder("apply-grain")
+                    .nick("Enable film grain synthesis")
+                    .blurb("Enable out-of-loop normative film grain filter")
+                    .default_value(DEFAULT_APPLY_GRAIN)
+                    .mutable_ready()
+                    .build(),
+                glib::ParamSpecFlags::builder("inloop-filters")
+                    .nick("Inloop filters")
+                    .blurb("Flags to enable in-loop post processing filters")
+                    .default_value(DEFAULT_INLOOP_FILTERS)
+                    .mutable_ready()
+                    .build()
+
             ]
         });
 
@@ -533,6 +721,12 @@ impl ObjectImpl for Dav1dDec {
             "max-frame-delay" => {
                 settings.max_frame_delay = value.get().expect("type checked upstream");
             }
+            "apply-grain" => {
+                settings.apply_grain = value.get().expect("type checked upstream");
+            }
+            "inloop-filters" => {
+                settings.inloop_filters = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -543,6 +737,8 @@ impl ObjectImpl for Dav1dDec {
         match pspec.name() {
             "n-threads" => settings.n_threads.to_value(),
             "max-frame-delay" => settings.max_frame_delay.to_value(),
+            "apply-grain" => settings.apply_grain.to_value(),
+            "inloop-filters" => settings.inloop_filters.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -552,7 +748,7 @@ impl GstObjectImpl for Dav1dDec {}
 
 impl ElementImpl for Dav1dDec {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Dav1d AV1 Decoder",
                 "Codec/Decoder/Video",
@@ -565,7 +761,7 @@ impl ElementImpl for Dav1dDec {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = if gst::version() >= (1, 19, 0, 0) {
                 gst::Caps::builder("video/x-av1")
                     .field("stream-format", "obu-stream")
@@ -636,7 +832,7 @@ impl VideoDecoderImpl for Dav1dDec {
                                 let latency = frame_latency * (info.fps().denom() as u64).seconds()
                                     / (fps_n as u64);
 
-                                gst::debug!(CAT, imp: self, "Reporting latency of {}", latency);
+                                gst::debug!(CAT, imp = self, "Reporting latency of {}", latency);
 
                                 min += latency;
                                 max = max.opt_add(latency);
@@ -678,7 +874,7 @@ impl VideoDecoderImpl for Dav1dDec {
         let max_frame_delay: u32;
         let n_cpus = num_cpus::get();
 
-        gst::info!(CAT, imp: self, "Detected {} logical CPUs", n_cpus);
+        gst::info!(CAT, imp = self, "Detected {} logical CPUs", n_cpus);
 
         if settings.max_frame_delay == -1 {
             let mut latency_query = gst::query::Latency::new();
@@ -695,13 +891,15 @@ impl VideoDecoderImpl for Dav1dDec {
 
         gst::info!(
             CAT,
-            imp: self,
+            imp = self,
             "Creating decoder with n-threads={} and max-frame-delay={}",
             settings.n_threads,
             max_frame_delay
         );
         decoder_settings.set_n_threads(settings.n_threads);
         decoder_settings.set_max_frame_delay(max_frame_delay);
+        decoder_settings.set_apply_grain(settings.apply_grain);
+        decoder_settings.set_inloop_filters(dav1d::InloopFilterType::from(settings.inloop_filters));
 
         let decoder = dav1d::Decoder::with_settings(&decoder_settings).map_err(|err| {
             gst::loggable_error!(CAT, "Failed to create decoder instance: {}", err)
@@ -746,7 +944,7 @@ impl VideoDecoderImpl for Dav1dDec {
     }
 
     fn flush(&self) -> bool {
-        gst::info!(CAT, imp: self, "Flushing");
+        gst::info!(CAT, imp = self, "Flushing");
 
         {
             let mut state_guard = self.state.lock().unwrap();
@@ -759,7 +957,7 @@ impl VideoDecoderImpl for Dav1dDec {
     }
 
     fn drain(&self) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::info!(CAT, imp: self, "Draining");
+        gst::info!(CAT, imp = self, "Draining");
 
         {
             let state_guard = self.state.lock().unwrap();
@@ -772,7 +970,7 @@ impl VideoDecoderImpl for Dav1dDec {
     }
 
     fn finish(&self) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::info!(CAT, imp: self, "Finishing");
+        gst::info!(CAT, imp = self, "Finishing");
 
         {
             let state_guard = self.state.lock().unwrap();

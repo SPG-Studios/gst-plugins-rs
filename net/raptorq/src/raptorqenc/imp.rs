@@ -12,7 +12,7 @@ use gst::subclass::prelude::*;
 use gst_rtp::rtp_buffer::*;
 use gst_rtp::RTPBuffer;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::collections::HashSet;
 use std::sync::{mpsc, Mutex};
@@ -24,7 +24,7 @@ use raptorq::{
 
 use crate::fecscheme::{self, DataUnitHeader, RepairPayloadId};
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "raptorqenc",
         gst::DebugColorFlags::empty(),
@@ -132,7 +132,13 @@ impl RaptorqEnc {
             // placed in each repair packet.
             let si = state.symbols_per_packet;
 
-            gst::trace!(CAT, imp: self, "Source Block add ADU: si {}, li {}", si, li);
+            gst::trace!(
+                CAT,
+                imp = self,
+                "Source Block add ADU: si {}, li {}",
+                si,
+                li
+            );
 
             let mut data = vec![0; si * state.symbol_size];
 
@@ -161,7 +167,7 @@ impl RaptorqEnc {
 
         let sbl = state.symbols_per_block;
 
-        // Initial sequnce number in Repair Payload ID is a sequence number of
+        // Initial sequence number in Repair Payload ID is a sequence number of
         // the first packet in the Source Block.
         let seq = state.seqnums.first().cloned().unwrap();
 
@@ -397,21 +403,21 @@ impl RaptorqEnc {
         let state = state_guard.as_mut().ok_or(gst::FlowError::NotNegotiated)?;
 
         if buffer.size() > state.mtu {
-            gst::error!(CAT, imp: self, "Packet length exceeds configured MTU");
+            gst::error!(CAT, imp = self, "Packet length exceeds configured MTU");
             return Err(gst::FlowError::NotSupported);
         }
 
         let (curr_seq, now_rtpts) = match RTPBuffer::from_buffer_readable(&buffer) {
             Ok(rtpbuf) => (rtpbuf.seq(), rtpbuf.timestamp()),
             Err(_) => {
-                gst::error!(CAT, imp: self, "Mapping to RTP packet failed");
+                gst::error!(CAT, imp = self, "Mapping to RTP packet failed");
                 return Err(gst::FlowError::NotSupported);
             }
         };
 
         if let Some(last_seq) = state.seqnums.last() {
             if last_seq.overflowing_add(1).0 != curr_seq {
-                gst::error!(CAT, imp: self, "Got out of sequence packets");
+                gst::error!(CAT, imp = self, "Got out of sequence packets");
                 return Err(gst::FlowError::NotSupported);
             }
         }
@@ -464,7 +470,7 @@ impl RaptorqEnc {
             }
             EventView::Caps(ev) => {
                 let caps = ev.caps();
-                gst::info!(CAT, obj: pad, "Got caps {:?}", caps);
+                gst::info!(CAT, obj = pad, "Got caps {:?}", caps);
 
                 let mut state_guard = self.state.lock().unwrap();
 
@@ -568,9 +574,9 @@ impl RaptorqEnc {
 
         // this is the number of repair symbols placed in each repair packet,
         // it SHALL be the same for all repair packets in a block. This include
-        // 1 byte of flow indication and 2 bytes of lenght indication as defined
+        // 1 byte of flow indication and 2 bytes of length indication as defined
         // in RFC6881, section 8.2.4.
-        let symbols_per_packet = (mtu + 3 + symbol_size - 1) / symbol_size;
+        let symbols_per_packet = (mtu + 3).div_ceil(symbol_size);
         let symbols_per_block = symbols_per_packet * protected_packets_num;
 
         if symbol_size.rem_euclid(SYMBOL_ALIGNMENT) != 0 {
@@ -605,7 +611,7 @@ impl RaptorqEnc {
 
         gst::info!(
             CAT,
-            imp: self,
+            imp = self,
             "Starting RaptorQ Encoder, Symbols per Block: {}, Symbol Size: {}",
             symbols_per_block,
             symbol_size
@@ -659,7 +665,7 @@ impl ObjectSubclass for RaptorqEnc {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 Self::catch_panic_pad_function(
                     parent,
@@ -681,7 +687,7 @@ impl ObjectSubclass for RaptorqEnc {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .iterate_internal_links_function(|pad, parent| {
                 Self::catch_panic_pad_function(
                     parent,
@@ -693,7 +699,7 @@ impl ObjectSubclass for RaptorqEnc {
             .build();
 
         let templ = klass.pad_template("fec_0").unwrap();
-        let srcpad_fec = gst::Pad::builder_with_template(&templ, Some("fec_0"))
+        let srcpad_fec = gst::Pad::builder_from_template(&templ)
             .activatemode_function(move |pad, parent, mode, active| {
                 Self::catch_panic_pad_function(
                     parent,
@@ -723,7 +729,7 @@ impl ObjectSubclass for RaptorqEnc {
 
 impl ObjectImpl for RaptorqEnc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("protected-packets")
                     .nick("Protected Packets")
@@ -857,7 +863,7 @@ impl GstObjectImpl for RaptorqEnc {}
 
 impl ElementImpl for RaptorqEnc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "RTP RaptorQ FEC Encoder",
                 "RTP RaptorQ FEC Encoding",
@@ -870,9 +876,9 @@ impl ElementImpl for RaptorqEnc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("application/x-rtp")
-                .field("clock-rate", gst::IntRange::new(0, std::i32::MAX))
+                .field("clock-rate", gst::IntRange::new(0, i32::MAX))
                 .build();
 
             let srcpad_template = gst::PadTemplate::new(
@@ -909,7 +915,7 @@ impl ElementImpl for RaptorqEnc {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused => {

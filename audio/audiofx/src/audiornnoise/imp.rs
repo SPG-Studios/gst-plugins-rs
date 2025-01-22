@@ -21,11 +21,11 @@ use nnnoiseless::DenoiseState;
 
 use byte_slice_cast::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use atomic_refcell::AtomicRefCell;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "audiornnoise",
         gst::DebugColorFlags::empty(),
@@ -113,7 +113,7 @@ impl AudioRNNoise {
 
         let settings = *self.settings.lock().unwrap();
         let mut buffer = gst::Buffer::with_size(available).map_err(|e| {
-            gst::error!(CAT, imp: self, "Failed to allocate buffer at EOS {:?}", e);
+            gst::error!(CAT, imp = self, "Failed to allocate buffer at EOS {:?}", e);
             gst::FlowError::Flushing
         })?;
 
@@ -129,10 +129,13 @@ impl AudioRNNoise {
             buffer.set_duration(duration);
             buffer.set_pts(pts);
 
-            let mut out_map = buffer.map_writable().map_err(|_| gst::FlowError::Error)?;
-            let out_data = out_map.as_mut_slice_of::<f32>().unwrap();
+            let (level, has_voice) = {
+                let mut out_map = buffer.map_writable().map_err(|_| gst::FlowError::Error)?;
+                let out_data = out_map.as_mut_slice_of::<f32>().unwrap();
+                self.process(state, &settings, in_data, out_data)
+            };
 
-            self.process(state, &settings, in_data, out_data);
+            gst_audio::AudioLevelMeta::add(buffer, level, has_voice);
         }
 
         self.obj().src_pad().push(buffer)
@@ -160,10 +163,13 @@ impl AudioRNNoise {
             buffer.set_duration(duration);
             buffer.set_pts(pts);
 
-            let mut out_map = buffer.map_writable().map_err(|_| gst::FlowError::Error)?;
-            let out_data = out_map.as_mut_slice_of::<f32>().unwrap();
+            let (level, has_voice) = {
+                let mut out_map = buffer.map_writable().map_err(|_| gst::FlowError::Error)?;
+                let out_data = out_map.as_mut_slice_of::<f32>().unwrap();
+                self.process(state, &settings, in_data, out_data)
+            };
 
-            self.process(state, &settings, in_data, out_data);
+            gst_audio::AudioLevelMeta::add(buffer, level, has_voice);
         }
 
         Ok(GenerateOutputSuccess::Buffer(buffer))
@@ -175,9 +181,10 @@ impl AudioRNNoise {
         settings: &Settings,
         input_plane: &[f32],
         output_plane: &mut [f32],
-    ) {
+    ) -> (u8, bool) {
         let channels = state.in_info.channels() as usize;
         let size = FRAME_SIZE * channels;
+        let mut has_voice = false;
 
         for (out_frame, in_frame) in output_plane.chunks_mut(size).zip(input_plane.chunks(size)) {
             for (index, item) in in_frame.iter().enumerate() {
@@ -207,11 +214,15 @@ impl AudioRNNoise {
                 );
             }
 
-            gst::debug!(CAT, imp: self, "Voice activity: {}", vad);
-
+            gst::trace!(CAT, imp = self, "Voice activity: {}", vad);
             if vad < settings.vad_threshold {
                 out_frame.fill(0.0);
             } else {
+                // Upon voice activity nnoiseless never really reports a 1.0
+                // VAD, so we use a hardcoded value close to 1.0 here.
+                if vad >= 0.98 {
+                    has_voice = true;
+                }
                 for (index, item) in out_frame.iter_mut().enumerate() {
                     let channel_index = index % channels;
                     let channel_denoiser = &state.denoisers[channel_index];
@@ -220,6 +231,20 @@ impl AudioRNNoise {
                 }
             }
         }
+
+        let rms = output_plane.iter().copied().map(|x| x * x).sum::<f32>();
+        let level = (20.0 * f32::log10(rms + f32::EPSILON)) as u8;
+
+        gst::trace!(
+            CAT,
+            imp = self,
+            "rms: {}, level: {}, has_voice : {} ",
+            rms,
+            level,
+            has_voice
+        );
+
+        (level, has_voice)
     }
 }
 
@@ -232,7 +257,7 @@ impl ObjectSubclass for AudioRNNoise {
 
 impl ObjectImpl for AudioRNNoise {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![glib::ParamSpecFloat::builder("voice-activity-threshold")
                 .nick("Voice activity threshold")
                 .blurb("Threshold of the voice activity detector below which to mute the output")
@@ -271,7 +296,7 @@ impl GstObjectImpl for AudioRNNoise {}
 
 impl ElementImpl for AudioRNNoise {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Audio denoise",
                 "Filter/Effect/Audio",
@@ -321,7 +346,7 @@ impl BaseTransformImpl for AudioRNNoise {
         use gst::EventView;
 
         if let EventView::Eos(_) = event.view() {
-            gst::debug!(CAT, imp: self, "Handling EOS");
+            gst::debug!(CAT, imp = self, "Handling EOS");
             if self.drain().is_err() {
                 return false;
             }
@@ -337,7 +362,7 @@ impl BaseTransformImpl for AudioRNNoise {
                     let (live, mut min, mut max) = upstream_query.result();
                     gst::debug!(
                         CAT,
-                        imp: self,
+                        imp = self,
                         "Peer latency: live {} min {} max {}",
                         live,
                         min,
@@ -364,7 +389,7 @@ impl BaseTransformImpl for AudioRNNoise {
 
 impl AudioFilterImpl for AudioRNNoise {
     fn allowed_caps() -> &'static gst::Caps {
-        static CAPS: Lazy<gst::Caps> = Lazy::new(|| {
+        static CAPS: LazyLock<gst::Caps> = LazyLock::new(|| {
             gst_audio::AudioCapsBuilder::new_interleaved()
                 .format(gst_audio::AUDIO_FORMAT_F32)
                 .rate(48000)
@@ -382,7 +407,7 @@ impl AudioFilterImpl for AudioRNNoise {
             })?;
         }
 
-        gst::debug!(CAT, imp: self, "Set caps to {:?}", info);
+        gst::debug!(CAT, imp = self, "Set caps to {:?}", info);
 
         let mut denoisers = vec![];
         for _i in 0..info.channels() {

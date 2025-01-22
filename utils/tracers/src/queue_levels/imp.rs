@@ -44,7 +44,7 @@
  *
  * By default this is not set.
  */
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -52,10 +52,10 @@ use std::sync::{Arc, Mutex};
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "queue-levels",
         gst::DebugColorFlags::empty(),
@@ -63,7 +63,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     )
 });
 
-static QUEUE_TYPE: Lazy<glib::Type> = Lazy::new(|| {
+static QUEUE_TYPE: LazyLock<glib::Type> = LazyLock::new(|| {
     if let Some(queue) = gst::ElementFactory::find("queue").and_then(|f| f.load().ok()) {
         queue.element_type()
     } else {
@@ -72,7 +72,7 @@ static QUEUE_TYPE: Lazy<glib::Type> = Lazy::new(|| {
     }
 });
 
-static QUEUE2_TYPE: Lazy<glib::Type> = Lazy::new(|| {
+static QUEUE2_TYPE: LazyLock<glib::Type> = LazyLock::new(|| {
     if let Some(queue) = gst::ElementFactory::find("queue2").and_then(|f| f.load().ok()) {
         queue.element_type()
     } else {
@@ -81,7 +81,7 @@ static QUEUE2_TYPE: Lazy<glib::Type> = Lazy::new(|| {
     }
 });
 
-static MULTIQUEUE_TYPE: Lazy<glib::Type> = Lazy::new(|| {
+static MULTIQUEUE_TYPE: LazyLock<glib::Type> = LazyLock::new(|| {
     if let Some(queue) = gst::ElementFactory::find("multiqueue").and_then(|f| f.load().ok()) {
         queue.element_type()
     } else {
@@ -90,7 +90,7 @@ static MULTIQUEUE_TYPE: Lazy<glib::Type> = Lazy::new(|| {
     }
 });
 
-static APPSRC_TYPE: Lazy<glib::Type> = Lazy::new(|| {
+static APPSRC_TYPE: LazyLock<glib::Type> = LazyLock::new(|| {
     if let Some(queue) = gst::ElementFactory::find("appsrc").and_then(|f| f.load().ok()) {
         queue.element_type()
     } else {
@@ -128,24 +128,24 @@ impl Settings {
         let s = match gst::Structure::from_str(&format!("queue-levels,{params}")) {
             Ok(s) => s,
             Err(err) => {
-                gst::warning!(CAT, imp: imp, "failed to parse tracer parameters: {}", err);
+                gst::warning!(CAT, imp = imp, "failed to parse tracer parameters: {}", err);
                 return;
             }
         };
 
         if let Ok(file) = s.get::<&str>("file") {
-            gst::log!(CAT, imp: imp, "file= {}", file);
+            gst::log!(CAT, imp = imp, "file= {}", file);
             self.file = PathBuf::from(file);
         }
 
         if let Ok(filter) = s.get::<&str>("include-filter") {
-            gst::log!(CAT, imp: imp, "include filter= {}", filter);
+            gst::log!(CAT, imp = imp, "include filter= {}", filter);
             let filter = match Regex::new(filter) {
                 Ok(filter) => Some(filter),
                 Err(err) => {
                     gst::error!(
                         CAT,
-                        imp: imp,
+                        imp = imp,
                         "Failed to compile include-filter regex: {}",
                         err
                     );
@@ -156,13 +156,13 @@ impl Settings {
         }
 
         if let Ok(filter) = s.get::<&str>("exclude-filter") {
-            gst::log!(CAT, imp: imp, "exclude filter= {}", filter);
+            gst::log!(CAT, imp = imp, "exclude filter= {}", filter);
             let filter = match Regex::new(filter) {
                 Ok(filter) => Some(filter),
                 Err(err) => {
                     gst::error!(
                         CAT,
-                        imp: imp,
+                        imp = imp,
                         "Failed to compile exclude-filter regex: {}",
                         err
                     );
@@ -179,6 +179,7 @@ struct State {
     queues: HashMap<usize, Arc<glib::GString>>,
     log: Vec<LogLine>,
     settings: Settings,
+    logs_written: HashSet<PathBuf>,
 }
 
 struct LogLine {
@@ -215,9 +216,9 @@ impl ObjectImpl for QueueLevels {
             state.settings.update_from_params(self, params);
         }
 
-        Lazy::force(&QUEUE_TYPE);
-        Lazy::force(&QUEUE2_TYPE);
-        Lazy::force(&MULTIQUEUE_TYPE);
+        LazyLock::force(&QUEUE_TYPE);
+        LazyLock::force(&QUEUE2_TYPE);
+        LazyLock::force(&MULTIQUEUE_TYPE);
 
         self.register_hook(TracerHook::ElementNew);
         self.register_hook(TracerHook::ObjectDestroyed);
@@ -239,49 +240,26 @@ impl ObjectImpl for QueueLevels {
         self.register_hook(TracerHook::PadPushEventPre);
     }
 
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
+            vec![glib::subclass::Signal::builder("write-log")
+                .action()
+                .param_types([Option::<String>::static_type()])
+                .class_handler(|args| {
+                    let obj = args[0].get::<super::QueueLevels>().unwrap();
+
+                    obj.imp().write_log(args[1].get::<Option<&str>>().unwrap());
+
+                    None
+                })
+                .build()]
+        });
+
+        SIGNALS.as_ref()
+    }
+
     fn dispose(&self) {
-        use std::io::prelude::*;
-
-        let state = self.state.lock().unwrap();
-
-        let mut file = match std::fs::File::create(&state.settings.file) {
-            Ok(file) => file,
-            Err(err) => {
-                gst::error!(CAT, imp: self, "Failed to create file: {err}");
-                return;
-            }
-        };
-
-        gst::debug!(
-            CAT,
-            imp: self,
-            "Writing file {}",
-            state.settings.file.display()
-        );
-
-        for LogLine {
-            timestamp,
-            name,
-            idx,
-            ptr,
-            cur_level_bytes,
-            cur_level_time,
-            cur_level_buffers,
-            max_size_bytes,
-            max_size_time,
-            max_size_buffers,
-        } in &state.log
-        {
-            let res = if let Some(idx) = idx {
-                writeln!(&mut file, "{timestamp},{name}:{idx},0x{ptr:08x},{cur_level_bytes},{cur_level_time},{cur_level_buffers},{max_size_bytes},{max_size_time},{max_size_buffers}")
-            } else {
-                writeln!(&mut file, "{timestamp},{name},0x{ptr:08x},{cur_level_bytes},{cur_level_time},{cur_level_buffers},{max_size_bytes},{max_size_time},{max_size_buffers}")
-            };
-            if let Err(err) = res {
-                gst::error!(CAT, imp: self, "Failed to write to file: {err}");
-                return;
-            }
-        }
+        self.write_log(None);
     }
 }
 
@@ -296,7 +274,7 @@ impl TracerImpl for QueueLevels {
         let ptr = element.as_ptr() as usize;
         gst::debug!(
             CAT,
-            imp: self,
+            imp = self,
             "new queue: {} 0x{:08x}",
             element.name(),
             ptr
@@ -543,6 +521,56 @@ impl QueueLevels {
                 max_size_time,
                 max_size_buffers,
             });
+        }
+    }
+
+    fn write_log(&self, file_path: Option<&str>) {
+        use std::io::prelude::*;
+
+        let mut state = self.state.lock().unwrap();
+        let path = file_path.map_or_else(|| state.settings.file.clone(), PathBuf::from);
+        let first_write = state.logs_written.contains(&path);
+
+        let mut file = match std::fs::OpenOptions::new()
+            .append(!first_write)
+            .create(true)
+            .open(path.clone())
+        {
+            Ok(file) => file,
+            Err(err) => {
+                gst::error!(CAT, imp = self, "Failed to create file: {err}");
+                return;
+            }
+        };
+
+        let log = std::mem::take(&mut state.log);
+        state.logs_written.insert(path);
+        drop(state);
+
+        gst::debug!(CAT, imp = self, "Writing file {:?}", file);
+
+        for LogLine {
+            timestamp,
+            name,
+            idx,
+            ptr,
+            cur_level_bytes,
+            cur_level_time,
+            cur_level_buffers,
+            max_size_bytes,
+            max_size_time,
+            max_size_buffers,
+        } in &log
+        {
+            let res = if let Some(idx) = idx {
+                writeln!(&mut file, "{timestamp},{name}:{idx},0x{ptr:08x},{cur_level_bytes},{cur_level_time},{cur_level_buffers},{max_size_bytes},{max_size_time},{max_size_buffers}")
+            } else {
+                writeln!(&mut file, "{timestamp},{name},0x{ptr:08x},{cur_level_bytes},{cur_level_time},{cur_level_buffers},{max_size_bytes},{max_size_time},{max_size_buffers}")
+            };
+            if let Err(err) = res {
+                gst::error!(CAT, imp = self, "Failed to write to file: {err}");
+                return;
+            }
         }
     }
 }

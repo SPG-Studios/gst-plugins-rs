@@ -12,11 +12,11 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 // This module contains the private implementation details of our element
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "rsidentity",
         gst::DebugColorFlags::empty(),
@@ -42,7 +42,7 @@ impl Identity {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
         self.srcpad.push(buffer)
     }
 
@@ -54,7 +54,7 @@ impl Identity {
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         self.srcpad.push_event(event)
     }
 
@@ -68,7 +68,7 @@ impl Identity {
     // See the documentation of gst::Query and gst::QueryRef to see what can be done with
     // queries, and especially the gst::QueryView type for inspecting and modifying queries.
     fn sink_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
         self.srcpad.peer_query(query)
     }
 
@@ -81,7 +81,7 @@ impl Identity {
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
     fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         self.sinkpad.push_event(event)
     }
 
@@ -95,7 +95,7 @@ impl Identity {
     // See the documentation of gst::Query and gst::QueryRef to see what can be done with
     // queries, and especially the gst::QueryView type for inspecting and modifying queries.
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
         self.sinkpad.peer_query(query)
     }
 }
@@ -123,7 +123,7 @@ impl ObjectSubclass for Identity {
         //
         // Details about what each function is good for is next to each function definition
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 Identity::catch_panic_pad_function(
                     parent,
@@ -148,7 +148,7 @@ impl ObjectSubclass for Identity {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .event_function(|pad, parent, event| {
                 Identity::catch_panic_pad_function(
                     parent,
@@ -196,7 +196,7 @@ impl ElementImpl for Identity {
     // retrieved from the gst::Registry after initial registration
     // without having to load the plugin in memory.
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Identity",
                 "Generic",
@@ -215,7 +215,7 @@ impl ElementImpl for Identity {
     //
     // Actual instances can create pads based on those pad templates
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             // Our element can accept any possible caps on both pads
             let caps = gst::Caps::new_any();
             let src_pad_template = gst::PadTemplate::new(
@@ -247,7 +247,7 @@ impl ElementImpl for Identity {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         // Call the parent class' implementation of ::change_state()
         self.parent_change_state(transition)

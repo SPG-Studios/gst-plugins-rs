@@ -10,7 +10,7 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::sync::Mutex;
 
@@ -29,7 +29,7 @@ enum Line<'a> {
     },
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "jsongstenc",
         gst::DebugColorFlags::empty(),
@@ -151,7 +151,7 @@ impl JsonGstEnc {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Caps(e) => {
@@ -159,10 +159,7 @@ impl JsonGstEnc {
                     let mut state = self.state.lock().unwrap();
                     let caps = e.caps();
                     let s = caps.structure(0).unwrap();
-                    state.format = match s.get::<Option<String>>("format") {
-                        Err(_) => None,
-                        Ok(format) => format,
-                    };
+                    state.format = s.get::<Option<String>>("format").unwrap_or_default();
                 }
 
                 // We send our own caps downstream
@@ -183,7 +180,7 @@ impl ObjectSubclass for JsonGstEnc {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 JsonGstEnc::catch_panic_pad_function(
                     parent,
@@ -201,7 +198,7 @@ impl ObjectSubclass for JsonGstEnc {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src")).build();
+        let srcpad = gst::Pad::from_template(&templ);
 
         Self {
             srcpad,
@@ -225,7 +222,7 @@ impl GstObjectImpl for JsonGstEnc {}
 
 impl ElementImpl for JsonGstEnc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "GStreamer buffers to JSON",
                 "Encoder/JSON",
@@ -239,7 +236,7 @@ impl ElementImpl for JsonGstEnc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::builder("application/x-json").build();
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -268,7 +265,7 @@ impl ElementImpl for JsonGstEnc {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused | gst::StateChange::PausedToReady => {

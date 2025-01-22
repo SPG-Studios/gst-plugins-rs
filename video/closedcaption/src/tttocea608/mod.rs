@@ -10,6 +10,7 @@ use gst::glib;
 use gst::prelude::*;
 
 mod imp;
+pub mod translate;
 
 glib::wrapper! {
     pub struct TtToCea608(ObjectSubclass<imp::TtToCea608>) @extends gst::Element, gst::Object;
@@ -19,7 +20,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "tttocea608",
-        gst::Rank::None,
+        gst::Rank::NONE,
         TtToCea608::static_type(),
     )
 }

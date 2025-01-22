@@ -12,11 +12,12 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::subclass::prelude::*;
+use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
 use std::sync::Mutex;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use super::super::hsvutils;
 
@@ -55,7 +56,7 @@ pub struct HsvFilter {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "hsvfilter",
         gst::DebugColorFlags::empty(),
@@ -121,7 +122,7 @@ impl HsvFilter {
 
 impl ObjectImpl for HsvFilter {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecFloat::builder("hue-shift")
                     .nick("Hue shift")
@@ -166,7 +167,7 @@ impl ObjectImpl for HsvFilter {
                 let hue_shift = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing hue-shift from {} to {}",
                     settings.hue_shift,
                     hue_shift
@@ -178,7 +179,7 @@ impl ObjectImpl for HsvFilter {
                 let saturation_mul = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing saturation-mul from {} to {}",
                     settings.saturation_mul,
                     saturation_mul
@@ -190,7 +191,7 @@ impl ObjectImpl for HsvFilter {
                 let saturation_off = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing saturation-off from {} to {}",
                     settings.saturation_off,
                     saturation_off
@@ -202,7 +203,7 @@ impl ObjectImpl for HsvFilter {
                 let value_mul = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing value-mul from {} to {}",
                     settings.value_mul,
                     value_mul
@@ -214,7 +215,7 @@ impl ObjectImpl for HsvFilter {
                 let value_off = value.get().expect("type checked upstream");
                 gst::info!(
                     CAT,
-                    imp: self,
+                    imp = self,
                     "Changing value-off from {} to {}",
                     settings.value_off,
                     value_off
@@ -258,11 +259,11 @@ impl GstObjectImpl for HsvFilter {}
 
 impl ElementImpl for HsvFilter {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "HSV filter",
                 "Filter/Effect/Converter/Video",
-                "Works within the HSV colorspace to apply tranformations to incoming frames",
+                "Works within the HSV colorspace to apply transformations to incoming frames",
                 "Julien Bardagi <julien.bardagi@gmail.com>",
             )
         });
@@ -271,7 +272,7 @@ impl ElementImpl for HsvFilter {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             // src pad capabilities
             let caps = gst_video::VideoCapsBuilder::new()
                 .format_list([

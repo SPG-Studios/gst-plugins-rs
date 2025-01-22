@@ -49,7 +49,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "videocompare",
-        gst::Rank::None,
+        gst::Rank::NONE,
         VideoCompare::static_type(),
     )
 }
@@ -198,14 +198,16 @@ mod test {
 
         let running_time = gst::ClockTime::from_seconds(2);
 
-        let mut messsage = VideoCompareMessage::default();
-        messsage.pad_distances.push(PadDistance {
-            pad: gst::Pad::new(Some("sink_0"), gst::PadDirection::Sink),
+        let mut message = VideoCompareMessage::default();
+        message.pad_distances.push(PadDistance {
+            pad: gst::Pad::builder(gst::PadDirection::Sink)
+                .name("sink_0")
+                .build(),
             distance: 42_f64,
         });
-        messsage.running_time = Some(running_time);
+        message.running_time = Some(running_time);
 
-        let structure: gst::Structure = messsage.into();
+        let structure: gst::Structure = message.into();
 
         let pad_distances = structure.get::<gst::Array>("pad-distances").unwrap();
         let first = pad_distances
@@ -236,7 +238,9 @@ mod test {
                 gst::Array::from_iter([gst::Structure::builder("pad-distance")
                     .field(
                         "pad",
-                        gst::Pad::new(Some("sink_0"), gst::PadDirection::Sink),
+                        gst::Pad::builder(gst::PadDirection::Sink)
+                            .name("sink_0")
+                            .build(),
                     )
                     .field("distance", 42f64)
                     .build()
@@ -248,7 +252,7 @@ mod test {
         let message: VideoCompareMessage = structure.try_into().unwrap();
         assert_eq!(message.running_time, Some(running_time));
 
-        let pad_distance = message.pad_distances.get(0).unwrap();
+        let pad_distance = message.pad_distances.first().unwrap();
         assert_eq!(pad_distance.pad.name().as_str(), "sink_0");
         assert_eq!(pad_distance.distance, 42f64);
     }

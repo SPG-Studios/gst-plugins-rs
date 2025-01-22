@@ -3,18 +3,29 @@
 
 /**
  * plugin-rswebrtc:
+ * @title: Rust WebRTC elements
+ * @short_description: A collection of high level WebRTC elements wrapping webrtcbin
+ *
+ * {{ net/webrtc/README.md[2:233] }}
  *
  * Since: plugins-rs-0.9
  */
 use gst::glib;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tokio::runtime;
 
+#[cfg(feature = "aws")]
 mod aws_kvs_signaller;
-mod signaller;
+#[cfg(feature = "janus")]
+mod janusvr_signaller;
+#[cfg(feature = "livekit")]
+mod livekit_signaller;
+pub mod signaller;
 pub mod utils;
 pub mod webrtcsink;
 pub mod webrtcsrc;
+#[cfg(feature = "whip")]
+mod whip_signaller;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     webrtcsink::register(plugin)?;
@@ -35,7 +46,7 @@ gst::plugin_define!(
     env!("BUILD_REL_DATE")
 );
 
-pub static RUNTIME: Lazy<runtime::Runtime> = Lazy::new(|| {
+pub static RUNTIME: LazyLock<runtime::Runtime> = LazyLock::new(|| {
     runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(1)

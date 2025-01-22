@@ -8,21 +8,23 @@
     clippy::missing_safety_doc
 )]
 
+use std::sync::{LazyLock, OnceLock};
+
 #[cfg(unix)]
 use libloading::os::unix::{Library, Symbol};
 #[cfg(windows)]
 use libloading::os::windows::{Library, Symbol};
 
 #[cfg(all(target_arch = "x86_64", target_os = "windows"))]
-const LIBRARY_NAME: &str = "Processing.NDI.Lib.x64.dll";
+const LIBRARY_NAMES: &[&str] = &["Processing.NDI.Lib.x64.dll"];
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
-const LIBRARY_NAME: &str = "Processing.NDI.Lib.x86.dll";
+const LIBRARY_NAMES: &[&str] = &["Processing.NDI.Lib.x86.dll"];
 #[cfg(target_os = "linux")]
-const LIBRARY_NAME: &str = "libndi.so.5";
+const LIBRARY_NAMES: &[&str] = &["libndi.so.6", "libndi.so.5"];
 #[cfg(target_os = "macos")]
-const LIBRARY_NAME: &str = "libndi.dylib";
+const LIBRARY_NAMES: &[&str] = &["libndi.dylib"];
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-const LIBRARY_NAME: &str = "libndi.so";
+const LIBRARY_NAMES: &[&str] = &["libndi.so"];
 
 #[allow(clippy::type_complexity)]
 struct FFI {
@@ -71,6 +73,8 @@ struct FFI {
     send_send_audio_v3: Symbol<
         fn(p_instance: NDIlib_send_instance_t, p_audio_data: *const NDIlib_audio_frame_v3_t),
     >,
+    send_send_metadata:
+        Symbol<fn(p_instance: NDIlib_send_instance_t, p_metadata: *const NDIlib_metadata_frame_t)>,
 }
 
 pub type NDIlib_find_instance_t = *mut ::std::os::raw::c_void;
@@ -222,8 +226,8 @@ pub enum NDIlib_frame_format_type_e {
     NDIlib_frame_format_type_field_1 = 3,
 }
 
-pub const NDIlib_send_timecode_synthesize: i64 = ::std::i64::MAX;
-pub const NDIlib_recv_timestamp_undefined: i64 = ::std::i64::MAX;
+pub const NDIlib_send_timecode_synthesize: i64 = i64::MAX;
+pub const NDIlib_recv_timestamp_undefined: i64 = i64::MAX;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -322,27 +326,60 @@ pub const NDIlib_compressed_packet_flags_keyframe: u32 = 1;
 #[cfg(feature = "advanced-sdk")]
 pub const NDIlib_compressed_packet_version_0: u32 = 44;
 
-static FFI: once_cell::sync::OnceCell<FFI> = once_cell::sync::OnceCell::new();
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new("ndi", gst::DebugColorFlags::empty(), Some("NewTek NDI"))
+});
+
+static FFI: OnceLock<FFI> = OnceLock::new();
 
 pub fn load() -> Result<(), glib::BoolError> {
-    static ERR: once_cell::sync::OnceCell<Result<(), glib::BoolError>> =
-        once_cell::sync::OnceCell::new();
+    static ERR: OnceLock<Result<(), glib::BoolError>> = OnceLock::new();
 
     ERR.get_or_init(|| unsafe {
         use std::env;
         use std::path;
 
-        let library_directory = env::var_os("NDI_RUNTIME_DIR_V5");
-        let library_path = if let Some(library_directory) = library_directory {
-            let mut path = path::PathBuf::from(library_directory);
-            path.push(LIBRARY_NAME);
-            path
-        } else {
-            path::PathBuf::from(LIBRARY_NAME)
-        };
+        const ENV_VARS: &[&str] = &["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5", ""];
 
-        let library = Library::new(library_path)
-            .map_err(|err| glib::bool_error!("Failed to load NDI SDK: {}", err))?;
+        let mut library = None;
+        'outer_loop: for env_var in ENV_VARS {
+            let library_directory = if !env_var.is_empty() {
+                let Some(library_directory) = env::var_os(env_var) else {
+                    continue;
+                };
+                Some(library_directory)
+            } else {
+                None
+            };
+
+            for library_name in LIBRARY_NAMES {
+                let library_path = if let Some(ref library_directory) = library_directory {
+                    let mut path = path::PathBuf::from(library_directory);
+                    path.push(library_name);
+                    path
+                } else {
+                    path::PathBuf::from(library_name)
+                };
+
+                match Library::new(&library_path) {
+                    Ok(lib) => {
+                        gst::log!(CAT, "Loaded NDI SDK from {}", library_path.display());
+                        library = Some(lib);
+                        break 'outer_loop;
+                    }
+                    Err(err) => {
+                        gst::log!(
+                            CAT,
+                            "Failed loading NDI SDK from {}: {err}",
+                            library_path.display()
+                        );
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let library = library.ok_or_else(|| glib::bool_error!("Failed loading NDI SDK"))?;
 
         macro_rules! load_symbol {
             ($name:ident) => {{
@@ -397,6 +434,7 @@ pub fn load() -> Result<(), glib::BoolError> {
             send_destroy: load_symbol!(NDIlib_send_destroy),
             send_send_video_v2: load_symbol!(NDIlib_send_send_video_v2),
             send_send_audio_v3: load_symbol!(NDIlib_send_send_audio_v3),
+            send_send_metadata: load_symbol!(NDIlib_send_send_metadata),
             _library: library,
         };
 
@@ -410,58 +448,58 @@ pub fn load() -> Result<(), glib::BoolError> {
 }
 
 pub unsafe fn NDIlib_initialize() -> bool {
-    (FFI.get_unchecked().initialize)()
+    (FFI.get().unwrap_unchecked().initialize)()
 }
 
 pub unsafe fn NDIlib_destroy() {
-    (FFI.get_unchecked().destroy)()
+    (FFI.get().unwrap_unchecked().destroy)()
 }
 
 pub unsafe fn NDIlib_find_create_v2(
     p_create_settings: *const NDIlib_find_create_t,
 ) -> NDIlib_find_instance_t {
-    (FFI.get_unchecked().find_create_v2)(p_create_settings)
+    (FFI.get().unwrap_unchecked().find_create_v2)(p_create_settings)
 }
 pub unsafe fn NDIlib_find_destroy(p_instance: NDIlib_find_instance_t) {
-    (FFI.get_unchecked().find_destroy)(p_instance)
+    (FFI.get().unwrap_unchecked().find_destroy)(p_instance)
 }
 
 pub unsafe fn NDIlib_find_wait_for_sources(
     p_instance: NDIlib_find_instance_t,
     timeout_in_ms: u32,
 ) -> bool {
-    (FFI.get_unchecked().find_wait_for_sources)(p_instance, timeout_in_ms)
+    (FFI.get().unwrap_unchecked().find_wait_for_sources)(p_instance, timeout_in_ms)
 }
 
 pub unsafe fn NDIlib_find_get_current_sources(
     p_instance: NDIlib_find_instance_t,
     p_no_sources: *mut u32,
 ) -> *const NDIlib_source_t {
-    (FFI.get_unchecked().find_get_current_sources)(p_instance, p_no_sources)
+    (FFI.get().unwrap_unchecked().find_get_current_sources)(p_instance, p_no_sources)
 }
 
 pub unsafe fn NDIlib_recv_create_v3(
     p_create_settings: *const NDIlib_recv_create_v3_t,
 ) -> NDIlib_recv_instance_t {
-    (FFI.get_unchecked().recv_create_v3)(p_create_settings)
+    (FFI.get().unwrap_unchecked().recv_create_v3)(p_create_settings)
 }
 
 pub unsafe fn NDIlib_recv_destroy(p_instance: NDIlib_recv_instance_t) {
-    (FFI.get_unchecked().recv_destroy)(p_instance)
+    (FFI.get().unwrap_unchecked().recv_destroy)(p_instance)
 }
 
 pub unsafe fn NDIlib_recv_set_tally(
     p_instance: NDIlib_recv_instance_t,
     p_tally: *const NDIlib_tally_t,
 ) -> bool {
-    (FFI.get_unchecked().recv_set_tally)(p_instance, p_tally)
+    (FFI.get().unwrap_unchecked().recv_set_tally)(p_instance, p_tally)
 }
 
 pub unsafe fn NDIlib_recv_send_metadata(
     p_instance: NDIlib_recv_instance_t,
     p_metadata: *const NDIlib_metadata_frame_t,
 ) -> bool {
-    (FFI.get_unchecked().recv_send_metadata)(p_instance, p_metadata)
+    (FFI.get().unwrap_unchecked().recv_send_metadata)(p_instance, p_metadata)
 }
 
 pub unsafe fn NDIlib_recv_capture_v3(
@@ -471,7 +509,7 @@ pub unsafe fn NDIlib_recv_capture_v3(
     p_metadata: *mut NDIlib_metadata_frame_t,
     timeout_in_ms: u32,
 ) -> NDIlib_frame_type_e {
-    (FFI.get_unchecked().recv_capture_v3)(
+    (FFI.get().unwrap_unchecked().recv_capture_v3)(
         p_instance,
         p_video_data,
         p_audio_data,
@@ -484,50 +522,57 @@ pub unsafe fn NDIlib_recv_free_video_v2(
     p_instance: NDIlib_recv_instance_t,
     p_video_data: *mut NDIlib_video_frame_v2_t,
 ) {
-    (FFI.get_unchecked().recv_free_video_v2)(p_instance, p_video_data)
+    (FFI.get().unwrap_unchecked().recv_free_video_v2)(p_instance, p_video_data)
 }
 
 pub unsafe fn NDIlib_recv_free_audio_v3(
     p_instance: NDIlib_recv_instance_t,
     p_audio_data: *mut NDIlib_audio_frame_v3_t,
 ) {
-    (FFI.get_unchecked().recv_free_audio_v3)(p_instance, p_audio_data)
+    (FFI.get().unwrap_unchecked().recv_free_audio_v3)(p_instance, p_audio_data)
 }
 
 pub unsafe fn NDIlib_recv_free_metadata(
     p_instance: NDIlib_recv_instance_t,
     p_metadata: *mut NDIlib_metadata_frame_t,
 ) {
-    (FFI.get_unchecked().recv_free_metadata)(p_instance, p_metadata)
+    (FFI.get().unwrap_unchecked().recv_free_metadata)(p_instance, p_metadata)
 }
 
 pub unsafe fn NDIlib_recv_get_queue(
     p_instance: NDIlib_recv_instance_t,
     p_total: *mut NDIlib_recv_queue_t,
 ) {
-    (FFI.get_unchecked().recv_get_queue)(p_instance, p_total)
+    (FFI.get().unwrap_unchecked().recv_get_queue)(p_instance, p_total)
 }
 
 pub unsafe fn NDIlib_send_create(
     p_create_settings: *const NDIlib_send_create_t,
 ) -> NDIlib_send_instance_t {
-    (FFI.get_unchecked().send_create)(p_create_settings)
+    (FFI.get().unwrap_unchecked().send_create)(p_create_settings)
 }
 
 pub unsafe fn NDIlib_send_destroy(p_instance: NDIlib_send_instance_t) {
-    (FFI.get_unchecked().send_destroy)(p_instance)
+    (FFI.get().unwrap_unchecked().send_destroy)(p_instance)
 }
 
 pub unsafe fn NDIlib_send_send_video_v2(
     p_instance: NDIlib_send_instance_t,
     p_video_data: *const NDIlib_video_frame_v2_t,
 ) {
-    (FFI.get_unchecked().send_send_video_v2)(p_instance, p_video_data)
+    (FFI.get().unwrap_unchecked().send_send_video_v2)(p_instance, p_video_data)
 }
 
 pub unsafe fn NDIlib_send_send_audio_v3(
     p_instance: NDIlib_send_instance_t,
     p_audio_data: *const NDIlib_audio_frame_v3_t,
 ) {
-    (FFI.get_unchecked().send_send_audio_v3)(p_instance, p_audio_data)
+    (FFI.get().unwrap_unchecked().send_send_audio_v3)(p_instance, p_audio_data)
+}
+
+pub unsafe fn NDIlib_send_send_metadata(
+    p_instance: NDIlib_send_instance_t,
+    p_metadata: *const NDIlib_metadata_frame_t,
+) {
+    (FFI.get().unwrap_unchecked().send_send_metadata)(p_instance, p_metadata)
 }

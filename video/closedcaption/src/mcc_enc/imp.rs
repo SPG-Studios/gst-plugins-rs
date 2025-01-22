@@ -14,7 +14,7 @@ use gst::subclass::prelude::*;
 use chrono::prelude::*;
 use uuid::Uuid;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -55,7 +55,7 @@ pub struct MccEnc {
     settings: Mutex<Settings>,
 }
 
-static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "mccenc",
         gst::DebugColorFlags::empty(),
@@ -113,7 +113,7 @@ impl MccEnc {
                         .latest()
                     })
                     .ok_or_else(|| {
-                        gst::error!(CAT, imp: self, "Invalid creation datetime");
+                        gst::error!(CAT, imp = self, "Invalid creation datetime");
                         gst::FlowError::Error
                     })?;
 
@@ -318,7 +318,7 @@ impl MccEnc {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj: pad, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         let mut state = self.state.lock().unwrap();
 
@@ -332,7 +332,7 @@ impl MccEnc {
 
         let mut buf = gst::Buffer::from_mut_slice(outbuf);
         buffer
-            .copy_into(buf.get_mut().unwrap(), gst::BUFFER_COPY_METADATA, 0, None)
+            .copy_into(buf.get_mut().unwrap(), gst::BUFFER_COPY_METADATA, ..)
             .expect("Failed to copy buffer metadata");
 
         drop(state);
@@ -342,7 +342,7 @@ impl MccEnc {
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
         match event.view() {
             EventView::Caps(ev) => {
@@ -351,7 +351,7 @@ impl MccEnc {
                 let framerate = match s.get::<gst::Fraction>("framerate") {
                     Ok(framerate) => framerate,
                     Err(structure::GetError::FieldNotFound { .. }) => {
-                        gst::error!(CAT, obj: pad, "Caps without framerate");
+                        gst::error!(CAT, obj = pad, "Caps without framerate");
                         return false;
                     }
                     err => panic!("MccEnc::sink_event caps: {err:?}"),
@@ -385,10 +385,10 @@ impl MccEnc {
     fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
-        gst::log!(CAT, obj: pad, "Handling event {:?}", event);
+        gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         match event.view() {
             EventView::Seek(_) => {
-                gst::log!(CAT, obj: pad, "Dropping seek event");
+                gst::log!(CAT, obj = pad, "Dropping seek event");
                 false
             }
             _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
@@ -398,7 +398,7 @@ impl MccEnc {
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
 
-        gst::log!(CAT, obj: pad, "Handling query {:?}", query);
+        gst::log!(CAT, obj = pad, "Handling query {:?}", query);
 
         match query.view_mut() {
             QueryViewMut::Seeking(q) => {
@@ -424,7 +424,7 @@ impl ObjectSubclass for MccEnc {
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("sink").unwrap();
-        let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
+        let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
                 MccEnc::catch_panic_pad_function(
                     parent,
@@ -438,7 +438,7 @@ impl ObjectSubclass for MccEnc {
             .build();
 
         let templ = klass.pad_template("src").unwrap();
-        let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
+        let srcpad = gst::Pad::builder_from_template(&templ)
             .event_function(|pad, parent, event| {
                 MccEnc::catch_panic_pad_function(parent, || false, |enc| enc.src_event(pad, event))
             })
@@ -458,7 +458,7 @@ impl ObjectSubclass for MccEnc {
 
 impl ObjectImpl for MccEnc {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecString::builder("uuid")
                     .nick("UUID")
@@ -517,7 +517,7 @@ impl GstObjectImpl for MccEnc {}
 
 impl ElementImpl for MccEnc {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Mcc Encoder",
                 "Encoder/ClosedCaption",
@@ -530,7 +530,7 @@ impl ElementImpl for MccEnc {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let mut caps = gst::Caps::new_empty();
             {
                 let caps = caps.get_mut().unwrap();
@@ -584,7 +584,7 @@ impl ElementImpl for MccEnc {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {:?}", transition);
+        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
             gst::StateChange::ReadyToPaused | gst::StateChange::PausedToReady => {

@@ -15,7 +15,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst::EventView;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 
 use gstthreadshare::runtime::prelude::*;
 use gstthreadshare::runtime::{Context, PadSink, Task};
@@ -68,7 +68,7 @@ impl PadSinkHandler for TaskPadSinkHandler {
                 }
                 EventView::Eos(_) => {
                     let is_main_elem = elem.imp().settings.lock().unwrap().is_main_elem;
-                    debug_or_trace!(CAT, is_main_elem, obj: elem, "EOS");
+                    debug_or_trace!(CAT, is_main_elem, obj = elem, "EOS");
 
                     // When each element sends its own EOS message,
                     // it takes ages for the pipeline to process all of them.
@@ -137,13 +137,13 @@ impl TaskImpl for TaskSinkTask {
     type Item = StreamItem;
 
     fn prepare(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
-        log_or_trace!(CAT, self.is_main_elem, obj: self.elem, "Preparing Task");
+        log_or_trace!(CAT, self.is_main_elem, obj = self.elem, "Preparing Task");
         future::ok(()).boxed()
     }
 
     fn start(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
         async {
-            log_or_trace!(CAT, self.is_main_elem, obj: self.elem, "Starting Task");
+            log_or_trace!(CAT, self.is_main_elem, obj = self.elem, "Starting Task");
             self.last_dts = None;
             if let Some(stats) = self.stats.as_mut() {
                 stats.start();
@@ -156,7 +156,7 @@ impl TaskImpl for TaskSinkTask {
 
     fn stop(&mut self) -> BoxFuture<'_, Result<(), gst::ErrorMessage>> {
         async {
-            log_or_trace!(CAT, self.is_main_elem, obj: self.elem, "Stopping Task");
+            log_or_trace!(CAT, self.is_main_elem, obj = self.elem, "Stopping Task");
             self.flush();
             Ok(())
         }
@@ -172,7 +172,7 @@ impl TaskImpl for TaskSinkTask {
 
     fn handle_item(&mut self, item: StreamItem) -> BoxFuture<'_, Result<(), gst::FlowError>> {
         async move {
-            debug_or_trace!(CAT, self.is_main_elem, obj: self.elem, "Received {item:?}");
+            debug_or_trace!(CAT, self.is_main_elem, obj = self.elem, "Received {item:?}");
 
             match item {
                 StreamItem::Buffer(buffer) => {
@@ -194,20 +194,20 @@ impl TaskImpl for TaskSinkTask {
                         debug_or_trace!(
                             CAT,
                             self.is_main_elem,
-                            obj: self.elem,
+                            obj = self.elem,
                             "o latency {latency:.2?}",
                         );
                         debug_or_trace!(
                             CAT,
                             self.is_main_elem,
-                            obj: self.elem,
+                            obj = self.elem,
                             "o interval {interval:.2?}",
                         );
                     }
 
                     self.last_dts = Some(dts);
 
-                    log_or_trace!(CAT, self.is_main_elem, obj: self.elem, "Buffer processed");
+                    log_or_trace!(CAT, self.is_main_elem, obj = self.elem, "Buffer processed");
                 }
                 StreamItem::Event(evt) => {
                     if let EventView::Segment(evt) = evt.view() {
@@ -249,7 +249,7 @@ impl TaskSink {
             None
         };
 
-        debug_or_trace!(CAT, settings.is_main_elem, imp: self, "Preparing");
+        debug_or_trace!(CAT, settings.is_main_elem, imp = self, "Preparing");
 
         let ts_ctx = Context::acquire(&settings.context, settings.context_wait).map_err(|err| {
             error_msg!(
@@ -265,32 +265,32 @@ impl TaskSink {
 
         *self.item_sender.lock().unwrap() = Some(item_sender);
 
-        debug_or_trace!(CAT, settings.is_main_elem, imp: self, "Prepared");
+        debug_or_trace!(CAT, settings.is_main_elem, imp = self, "Prepared");
 
         Ok(())
     }
 
     fn unprepare(&self) {
         let is_main_elem = self.settings.lock().unwrap().is_main_elem;
-        debug_or_trace!(CAT, is_main_elem, imp: self, "Unpreparing");
+        debug_or_trace!(CAT, is_main_elem, imp = self, "Unpreparing");
         self.task.unprepare().block_on().unwrap();
-        debug_or_trace!(CAT, is_main_elem, imp: self, "Unprepared");
+        debug_or_trace!(CAT, is_main_elem, imp = self, "Unprepared");
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
         let is_main_elem = self.settings.lock().unwrap().is_main_elem;
-        debug_or_trace!(CAT, is_main_elem, imp: self, "Stopping");
+        debug_or_trace!(CAT, is_main_elem, imp = self, "Stopping");
         self.task.stop().block_on()?;
-        debug_or_trace!(CAT, is_main_elem, imp: self, "Stopped");
+        debug_or_trace!(CAT, is_main_elem, imp = self, "Stopped");
 
         Ok(())
     }
 
     fn start(&self) -> Result<(), gst::ErrorMessage> {
         let is_main_elem = self.settings.lock().unwrap().is_main_elem;
-        debug_or_trace!(CAT, is_main_elem, imp: self, "Starting");
+        debug_or_trace!(CAT, is_main_elem, imp = self, "Starting");
         self.task.start().block_on()?;
-        debug_or_trace!(CAT, is_main_elem, imp: self, "Started");
+        debug_or_trace!(CAT, is_main_elem, imp = self, "Started");
 
         Ok(())
     }
@@ -305,7 +305,7 @@ impl ObjectSubclass for TaskSink {
     fn with_class(klass: &Self::Class) -> Self {
         Self {
             sink_pad: PadSink::new(
-                gst::Pad::from_template(&klass.pad_template("sink").unwrap(), Some("sink")),
+                gst::Pad::from_template(&klass.pad_template("sink").unwrap()),
                 TaskPadSinkHandler,
             ),
             task: Task::default(),
@@ -317,7 +317,7 @@ impl ObjectSubclass for TaskSink {
 
 impl ObjectImpl for TaskSink {
     fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(Settings::properties);
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(Settings::properties);
         PROPERTIES.as_ref()
     }
 
@@ -342,7 +342,7 @@ impl GstObjectImpl for TaskSink {}
 
 impl ElementImpl for TaskSink {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
-        static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
                 "Thread-sharing standalone test task sink",
                 "Sink/Test",
@@ -355,7 +355,7 @@ impl ElementImpl for TaskSink {
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
-        static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst::Caps::new_any();
 
             let sink_pad_template = gst::PadTemplate::new(
@@ -376,7 +376,7 @@ impl ElementImpl for TaskSink {
         &self,
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp: self, "Changing state {transition:?}");
+        gst::trace!(CAT, imp = self, "Changing state {transition:?}");
 
         match transition {
             gst::StateChange::NullToReady => {
