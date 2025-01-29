@@ -14,8 +14,8 @@ gst = { package = "gstreamer", git = "https://gitlab.freedesktop.org/gstreamer/g
 gst-base = { package = "gstreamer-base", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 gst-video = { package = "gstreamer-video", git = "https://gitlab.freedesktop.org/gstreamer/gstreamer-rs" }
 once_cell = "1.0"
-rosrust = "0.9"
-rosrust_msg = "0.1"
+rosrust = {path = "/home/build/rosrust/rosrust"}
+#rosrust_msg = {path = "/home/build/rosrust/rosrust_msg"}
 
 [lib]
 name = "rosimagebridge"

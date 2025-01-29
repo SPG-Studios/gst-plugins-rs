@@ -3,8 +3,7 @@ use gst::prelude::*;
 use gst_base::subclass::prelude::*;
 
 use once_cell::sync::Lazy;
-
-use rosrust_msg::sensor_msgs::Image;
+use crate::sensor_msgs::Image as RosImageMsg;
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
@@ -21,7 +20,7 @@ struct Dimensions {
 
 #[derive(Default)]
 pub struct RosImageSink {
-    publisher: once_cell::sync::OnceCell<rosrust::Publisher<Image>>,
+    publisher: once_cell::sync::OnceCell<rosrust::Publisher<RosImageMsg>>,
     topic: once_cell::sync::OnceCell<String>,
     dimensions: once_cell::sync::OnceCell<Dimensions>,
 }
@@ -129,7 +128,7 @@ impl BaseSinkImpl for RosImageSink {
             return Ok(gst::FlowSuccess::Ok);
         }
 
-        let mut msg = Image::default();
+        let mut msg = RosImageMsg::default();
         msg.data = vec![0; buffer.size()];
         msg.encoding = "rgb8".to_owned();
 

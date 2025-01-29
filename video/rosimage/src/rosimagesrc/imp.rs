@@ -3,12 +3,12 @@ use gst::prelude::*;
 use gst::ClockTime;
 use gst_base::subclass::base_src::CreateSuccess;
 use gst_base::subclass::{base_src, prelude::*};
-use gst_base::traits::BaseSrcExt;
+use gst_base::prelude::BaseSrcExt;
 use gst_base::PushSrc;
 
 use once_cell::sync::Lazy;
 
-use rosrust_msg::sensor_msgs::Image;
+use crate::sensor_msgs::Image as RosImageMsg;
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
@@ -20,7 +20,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 
 #[derive(Default)]
 pub struct RosImageSrc {
-    receiver: once_cell::sync::OnceCell<crossbeam_channel::Receiver<Image>>,
+    receiver: once_cell::sync::OnceCell<crossbeam_channel::Receiver<RosImageMsg>>,
     subscriber: once_cell::sync::OnceCell<rosrust::Subscriber>,
     topic: once_cell::sync::OnceCell<String>,
     create_called: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -52,7 +52,7 @@ impl RosImageSrc {
         let create_called1 = self.create_called.clone();
 
         self.subscriber.set(
-            rosrust::subscribe(topic, 2, move |v: rosrust_msg::sensor_msgs::Image| {
+            rosrust::subscribe(topic, 2, move |v: RosImageMsg| {
                 gst::info!(CAT, "Received image on topic '{}' in frame '{}'", topic2, v.header.frame_id);
                 if encoding_to_gst(&v.encoding).is_none() {
                     gst::error!(CAT, "Unknown ROS image format '{}' on topic '{}'. Not forwarding frame to GStreamer pipeline.", v.encoding, topic2);

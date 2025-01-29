@@ -12,7 +12,7 @@ If you have not already, install ROS on your system, according to the [official 
 
 ## Hello world
 
-Open four terminals, and run `source /opt/ros/noetic/setup.bash` in each. Then:
+Open four terminals, and run `source /opt/ros/one/setup.bash` in each. Then:
 - In the first one, start `roscore`
 - In the second one, start a gstreamer → ROS pipeline: `GST_PLUGIN_PATH="target/x86_64-unknown-linux-gnu/debug:$GST_PLUGIN_PATH" gst-launch-1.0 videotestsrc ! rosimagesink topic=/helloworld`
 - In the third one, start `rqt_image_view` and select the `/helloworld` topic from the dropdown menu. You should now be seeing the gstreamer test video, but from the ROS side of things.

@@ -20,3 +20,5 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     rosimagesink::register(plugin)?;
     Ok(())
 }
+
+rosrust::rosmsg_include!(sensor_msgs / Image);
