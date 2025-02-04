@@ -1,6 +1,6 @@
 [package]
 name = "gst-plugin-rosimage"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
 description = "Acts as a ROS1 node subscribing to an image topic and outputs a video/x-raw stream, or vice versa"
 rust-version = "1.66"

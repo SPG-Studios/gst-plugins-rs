@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "gst-plugin-rosimage"
-version = "0.2.0"
+version = "0.14.0-alpha.1"
 dependencies = [
  "crossbeam-channel",
  "gst-plugin-version-helper",

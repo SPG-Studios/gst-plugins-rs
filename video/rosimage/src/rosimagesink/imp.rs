@@ -1,3 +1,5 @@
+use std::sync::atomic::AtomicU64;
+
 use gst::glib;
 use gst::prelude::*;
 use gst_base::subclass::prelude::*;
@@ -13,47 +15,29 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     )
 });
 
-struct Dimensions {
-    width: i32,
-    height: i32,
+struct PublisherInfo {
+    publisher : rosrust::Publisher<RosImageMsg>,
+    topic : String
 }
 
 #[derive(Default)]
 pub struct RosImageSink {
-    publisher: once_cell::sync::OnceCell<rosrust::Publisher<RosImageMsg>>,
-    topic: once_cell::sync::OnceCell<String>,
-    dimensions: once_cell::sync::OnceCell<Dimensions>,
+    publisher_info : std::sync::Arc<std::sync::Mutex<Option<PublisherInfo>>>
 }
 
+static ROS_IMAGE_SINK_ID : AtomicU64 = AtomicU64::new(0);
+
 impl RosImageSink {
-    fn ensure_publisher(&self) -> Result<(), gst::ErrorMessage> {
-        if self.publisher.get().is_some() {
-            return Ok(());
+    fn ensure_init(&self) -> () {
+        if !rosrust::is_initialized() {
+            rosrust::init(&format!("gst_to_ros__{}", ROS_IMAGE_SINK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         }
-
-        let topic = self.topic.get().ok_or_else(|| {
-            gst::error_msg!(
-                gst::CoreError::Negotiation,
-                ["ROS topic has not been specified"]
-            )
-        })?;
-
-        rosrust::init(&format!("gst_to_ros__{}", topic.replace('/', "_")));
-        self.publisher
-            .set(
-                rosrust::publish(topic, 1)
-                    .map_err(|e| gst::error_msg!(gst::CoreError::Failed, ["{:?}", e]))?,
-            )
-            .map_err(|_e| ())
-            .expect("tried to set publisher when it already existed, this is a bug");
-
-        return Ok(());
     }
 }
 
 #[glib::object_subclass]
 impl ObjectSubclass for RosImageSink {
-    const NAME: &'static str = "rosimagesink";
+    const NAME: &'static str = "GstROSImageSink";
     type Type = super::RosImageSink;
     type ParentType = gst_base::BaseSink;
 }
@@ -61,13 +45,13 @@ impl ObjectSubclass for RosImageSink {
 impl ObjectImpl for RosImageSink {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
-            vec![{
-                let mut b = glib::ParamSpecString::builder("topic");
-                b.set_nick(Some("ROS Topic"));
-                b.set_blurb(Some("The Image topic on which to publish ROS messages (e.g. /video_stream/image_raw)"));
-                b.set_flags(glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY);
-                b.build()
-            }]
+            vec![
+                glib::ParamSpecString::builder("topic")
+                .nick("ROS Topic")
+                .blurb("The Image topic on which to publish ROS messages (e.g. /video_stream/image_raw)")
+                .mutable_ready()
+                .build()
+            ]
         });
 
         PROPERTIES.as_ref()
@@ -76,32 +60,46 @@ impl ObjectImpl for RosImageSink {
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
         match pspec.name() {
             "topic" => {
-                let value: String = value.get().expect("type checked upstream");
-                self.topic
-                    .set(value)
-                    .expect("could not save topic to self.topic");
+                let value = value.get::<Option<String>>().expect("type checked upstream");
+                let mut publisher_info = self.publisher_info.lock().unwrap();
+                match value {
+                    None => {
+                        // topic removed, delete publisher
+                        let _ = publisher_info.take();
+                    },
+                    Some(topic) => {
+                        if publisher_info.iter().any(|p| p.topic == topic) {
+                            // topic set to same value, do nothing
+                        } else {
+                            let _ = publisher_info.take();
+                            self.ensure_init();
+                            *publisher_info = Some(PublisherInfo { publisher: rosrust::publish(&topic, 1).unwrap(), topic });
+                        }
+                    }
+                }
+                
             }
             _ => unimplemented!(),
         }
     }
 
-    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
-        match pspec.name() {
-            "topic" => self
-                .topic
-                .get()
-                .unwrap_or(&String::from("(uninitialized)"))
-                .to_value(),
-            _ => unimplemented!(),
-        }
-    }
+    // fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+    //     match pspec.name() {
+    //         "topic" => self
+    //             .topic
+    //             .get()
+    //             .unwrap_or(&String::from("(uninitialized)"))
+    //             .to_value(),
+    //         _ => unimplemented!(),
+    //     }
+    // }
 }
 
 impl GstObjectImpl for RosImageSink {}
 
 impl BaseSinkImpl for RosImageSink {
     fn start(&self) -> Result<(), gst::ErrorMessage> {
-        self.ensure_publisher()?;
+        self.ensure_init();
         Ok(())
     }
 
@@ -111,19 +109,20 @@ impl BaseSinkImpl for RosImageSink {
     }
 
     fn render(&self, buffer: &gst::Buffer) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::info!(
-            CAT,
-            "Received image for publishing on topic '{}'",
-            self.topic.get().map(String::as_str).unwrap_or("(unknown)")
-        );
-
-        self.ensure_publisher().unwrap();
-        let publisher = self.publisher.get().unwrap();
-        if publisher.subscriber_count() == 0 {
+        self.ensure_init();
+        let publisher_info = self.publisher_info.lock().unwrap();
+        let publisher_info = match *publisher_info {
+            Some(ref p) => p,
+            None => {
+                gst::warning!(CAT, "no topic set, cannot publish to ROS.");
+                return Ok(gst::FlowSuccess::Ok)
+            }
+        };
+        if publisher_info.publisher.subscriber_count() == 0 {
             gst::info!(
                 CAT,
                 "no subscribers on topic '{}', dropping frame",
-                self.topic.get().map(String::as_str).unwrap_or("(unknown)")
+                &publisher_info.topic
             );
             return Ok(gst::FlowSuccess::Ok);
         }
@@ -132,32 +131,21 @@ impl BaseSinkImpl for RosImageSink {
         msg.data = vec![0; buffer.size()];
         msg.encoding = "rgb8".to_owned();
 
-        let dims = self.dimensions.get_or_init(|| {
-            let caps = self.obj().pads()[0].current_caps().unwrap();
+        let caps = self.obj().pads()[0].current_caps().unwrap();
 
-            gst::info!(
-                CAT,
-                "Initializing caps for topic '{}': {:?}",
-                self.topic.get().map(String::as_str).unwrap_or("(unknown)"),
-                &caps
-            );
+        let width: i32 = caps.iter().next().unwrap().get("width").unwrap();
+        let height: i32 = caps.iter().next().unwrap().get("height").unwrap();
 
-            let width: i32 = caps.iter().next().unwrap().get("width").unwrap();
-            let height: i32 = caps.iter().next().unwrap().get("height").unwrap();
+        assert!(width > 0);
+        assert!(height > 0);
 
-            assert!(width > 0);
-            assert!(height > 0);
-
-            Dimensions { width, height }
-        });
-
-        msg.width = dims.width as u32;
-        msg.height = dims.height as u32;
-        msg.step = 3 * (dims.width as u32);
+        msg.width = width as u32;
+        msg.height = height as u32;
+        msg.step = 3 * (width as u32);
 
         buffer.copy_to_slice(0, &mut msg.data).unwrap();
 
-        publisher.send(msg).unwrap();
+        publisher_info.publisher.send(msg).unwrap();
         Ok(gst::FlowSuccess::Ok)
     }
 
