@@ -49,6 +49,8 @@ mod vp9;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod gdp;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gcc::register(plugin)?;
