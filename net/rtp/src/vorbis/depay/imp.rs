@@ -617,6 +617,12 @@ impl RtpVorbisDepay {
                     gst::trace!(CAT, imp = self, "Finishing buffer {outbuf:?}");
 
                     self.obj().queue_buffer(
+                        PacketToBufferRelation::Seqnums(seqnums.clone()),
+                        outbuf,
+                    )?;
+
+/*
+                    self.obj().queue_buffer(
                         PacketToBufferRelation::SeqnumsWithOffset {
                             seqnums: seqnums.clone(),
                             timestamp_offset: TimestampOffset::Pts(
@@ -625,7 +631,7 @@ impl RtpVorbisDepay {
                         },
                         outbuf,
                     )?;
-
+*/
                     data = &data[packet_len..];
 
                     // Read next packet's length, if any data is left
