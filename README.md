@@ -104,6 +104,10 @@ You will find the following plugins in this repository:
 
     - `rav1e`: AV1 encoder based on the [rav1e](https://github.com/xiph/rav1e) library.
 
+    - `rosimage`: Bindings to ROS1 (Robot Operating System) `sensor_msgs/Image` topics
+      - `rosimagesink`: Publishes gstreamer video streams as ROS image topics
+      - `rosimagesrc`: Ingest ROS image topics into a gstreamer pipeline
+
     - `videofx`: Plugin with various video filters.
       - `roundedcorners`: Element to make the corners of a video rounded via the alpha channel.
       - `colordetect`: A pass-through filter able to detect the dominant color(s) on incoming frames, using [color-thief](https://github.com/RazrFalcon/color-thief-rs).
