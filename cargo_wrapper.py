@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 
-import hashlib
-import re
 import glob
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
 import shlex
+import tempfile
 from argparse import ArgumentParser
 from pathlib import Path as P
 
 PARSER = ArgumentParser()
-PARSER.add_argument('command', choices=['build', 'test'])
+PARSER.add_argument('command', choices=['build', 'test', 'libs'])
 PARSER.add_argument('build_dir', type=P)
 PARSER.add_argument('src_dir', type=P)
 PARSER.add_argument('root_dir', type=P)
@@ -37,6 +37,9 @@ def shlex_join(args):
 
 
 def generate_depfile_for(fpath):
+    # Get rid of the `.dll.lib` double suffixes first
+    while fpath.suffixes:
+        fpath = fpath.with_suffix('')
     file_stem = fpath.parent / fpath.stem
     depfile_content = ""
     with open(f"{file_stem}.d", 'r') as depfile:
@@ -70,6 +73,61 @@ def generate_depfile_for(fpath):
                 depfile_content += f"{output}: {' '.join(all_deps)}\n"
 
     return depfile_content
+
+
+def replace(line: str, rustlibs):
+    if line.startswith('Libs.private:'):
+        if rustlibs[0] not in line:
+            line = line.strip() + ' ' + ' '.join(rustlibs) + '\n'
+    return line
+
+
+def patch_msvc_lib_file(src, dest_folder, sysroot, objcopy):
+    src = pathlib.Path(src)
+    pc_file = src.with_suffix('.pc')
+    pc_file_uninstalled = src.with_stem(f'{src.stem}-uninstalled').with_suffix('.pc')
+    dest = pathlib.Path(dest_folder) / src.name
+    # if dest.exists():
+    #     return  # assume patched
+    # Parse output
+    output = subprocess.check_output([
+        'lib.exe', '/LIST', '/NOLOGO', src
+    ]).decode().splitlines()
+    # Which are definitely rustlibs
+    stem = src.name.split('.')[0]
+    rustlibs = set([i.split('.')[0] for i in output if (
+        i.endswith('.rcgu.o') and not i.startswith(stem))])
+    # Which are definitely the lib itself
+    lib_itself = set(
+        [i for i in output if i.startswith(stem) or i.endswith('.dll')]
+    )
+    # Repack the library
+    with tempfile.TemporaryDirectory():
+        for i in lib_itself:
+            subprocess.check_call(['lib.exe', f'/EXTRACT:{i}', f'/OUT:{i}', '/NOLOGO',
+                                   src])
+            # Patch out rust_eh_personality -- aaaaaaaaaaaaaaaaaa
+            subprocess.check_call(
+                [objcopy, '--redefine-sym', f'rust_eh_personality={stem}_rust_eh_personality', i, i])
+        subprocess.check_call(
+            ['lib.exe', f'/OUT:{dest}', '/NOLOGO', *lib_itself])
+    # Match up rustlibs (use MSVC syntax since they have a non-standard suffix)
+    libs = [f'-L{sysroot.as_posix()}'] + [f'{i}.rlib' for i in rustlibs]
+
+    if pc_file.exists():
+        contents = pc_file.open('r', encoding='utf-8').readlines()
+        contents = [replace(i, libs) for i in contents]
+        pc_file.open('w', encoding='utf-8').writelines(contents)
+    else:
+        raise RuntimeError(f"File {pc_file.as_posix()} not found")
+
+    # Also patch the meson-uninstalled file
+    if pc_file_uninstalled.exists():
+        contents = pc_file_uninstalled.open('r', encoding='utf-8').readlines()
+        contents = [replace(i, libs) for i in contents]
+        pc_file_uninstalled.open('w', encoding='utf-8').writelines(contents)
+    else:
+        raise RuntimeError(f"File {pc_file_uninstalled.as_posix()} not found")
 
 
 if __name__ == "__main__":
@@ -118,6 +176,31 @@ if __name__ == "__main__":
     elif opts.command == 'test':
         # cargo test
         cargo_cmd = ['cargo', 'ctest', '--no-fail-fast', '--color=always']
+    elif opts.command == 'libs':
+        # Abort early -- get just the linker line as follows
+        libroot = pathlib.Path(subprocess.check_output(['rustc',
+                                                            '--print=target-libdir'],
+                                                           env=env, cwd=opts.src_dir, encoding='utf-8').strip())
+        if shutil.which('cl'):  # assume lld-link etc.
+            linker_line = [f'/LIBPATH:{libroot.as_posix()}']
+            for file in libroot.glob('*.rlib'):
+                if file.name.startswith('libstd'):
+                    # Link against it normally
+                    linker_line.append(file.name)
+                elif file.name.startswith('libcompiler_builtins'):
+                    # This one is wholearchived
+                    linker_line.append(f'/WHOLEARCHIVE:{file.name}')
+        elif sys.platform == 'win32':
+            linker_line = [f'-L{libroot.as_posix()}']
+            for file in libroot.glob('*.rlib'):
+                if file.name.startswith('libstd'):
+                    # Link against it normally
+                    linker_line.append('-l{file}')
+                elif file.name.startswith('libcompiler_builtins'):
+                    # This one is wholearchived
+                    linker_line.append(f'-Wl,--whole-archive,{file.as_posix()}')
+        print(';'.join(linker_line))
+        sys.exit(0)
     else:
         print("Unknown command:", opts.command, file=logfile)
         sys.exit(1)
@@ -138,6 +221,10 @@ if __name__ == "__main__":
             cargo_cmd.extend(['-p', p])
         for e in opts.examples:
             cargo_cmd.extend(['--example', e])
+        if opts.lib_suffixes == ['lib']:
+            cargo_cmd.extend(['--library-type', 'staticlib'])
+        elif opts.lib_suffixes == ['dll']:
+            cargo_cmd.extend(['--library-type', 'cdylib'])
 
     def run(cargo_cmd, env):
         print(cargo_cmd, env, file=logfile)
@@ -157,6 +244,24 @@ if __name__ == "__main__":
         else:
             # Copy so files to build dir
             depfile_content = ""
+            libroot = pathlib.Path(subprocess.check_output(['rustc',
+                                                            '--print=target-libdir'],
+                                                           env=env, cwd=opts.src_dir, encoding='utf-8').strip()
+                                   )
+            sysroot = pathlib.Path(
+                subprocess.check_output(['rustc',
+                                         '--print=sysroot'],
+                                        env=env, cwd=opts.src_dir, encoding='utf-8').strip()
+            )
+            llvm_objcopy = shutil.which('ar')
+            if not llvm_objcopy:
+                llvm_objcopy = list(sysroot.glob('**/llvm-objcopy.exe'))
+                if len(llvm_objcopy) == 0 or not llvm_objcopy[0].exists():
+                    raise RuntimeError(
+                        'Please install the llvm-tools component')
+                else:
+                    llvm_objcopy = llvm_objcopy[0]
+
             for suffix in opts.lib_suffixes:
                 for f in glob.glob(str(target_dir / f'*.{suffix}'), recursive=True):
                     libfile = P(f)
@@ -172,7 +277,11 @@ if __name__ == "__main__":
                         pass
 
                     print(f"Copying {copied_file}", file=logfile)
-                    shutil.copy2(f, opts.build_dir)
+                    if suffix == 'lib':
+                        patch_msvc_lib_file(
+                            f, opts.build_dir, sysroot=libroot, objcopy=llvm_objcopy)
+                    else:
+                        shutil.copy2(f, opts.build_dir)
             # Copy examples to builddir
             for example in opts.examples:
                 example_glob = str(target_dir / 'examples' / example) + opts.exe_suffix
