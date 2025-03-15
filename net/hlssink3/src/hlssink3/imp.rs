@@ -261,7 +261,17 @@ impl ObjectImpl for HlsSink3 {
                             .expect("segment not available")
                             .downcast_ref::<gst::ClockTime>()
                             .expect("no time segment");
-                        segment.to_running_time(buffer.pts().unwrap())
+                        if let Some(pts) = buffer.pts() {
+                            segment.to_running_time(pts)
+                        } else {
+                            gst::warning!(
+                                CAT,
+                                imp = imp,
+                                "buffer has no pts for fragment-id: {}",
+                                fragment_id
+                            );
+                            None
+                        }
                     } else {
                         gst::warning!(
                             CAT,

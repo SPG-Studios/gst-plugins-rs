@@ -434,7 +434,7 @@ impl HlsBaseSink {
         self.write_playlist(context).inspect(|_res| {
             let s = gst::Structure::builder("hls-segment-added")
                 .field("location", location)
-                .field("running-time", running_time.unwrap())
+                .field("running-time", running_time.unwrap_or_default())
                 .field("duration", duration)
                 .build();
             self.post_message(gst::message::Element::builder(s).src(&*self.obj()).build());
