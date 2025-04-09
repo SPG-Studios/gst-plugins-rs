@@ -40,6 +40,7 @@ members = [
     "net/webrtc/protocol",
     "net/webrtc/signalling",
     "net/quinn",
+    "net/webvtt/webvttaggregator",
 
     "text/ahead",
     "text/json",
@@ -98,6 +99,7 @@ default-members = [
     "net/webrtc/signalling",
     "net/ndi",
     "net/quinn",
+    "net/webvtt/webvttaggregator",
 
     "text/ahead",
     "text/json",
