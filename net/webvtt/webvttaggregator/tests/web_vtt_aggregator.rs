@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use gst::prelude::{ObjectExt, ToValue};
-    use gst::ClockTime;
+    use gst::EventType::Eos;
+use gst::prelude::{ObjectExt, ToValue};
+    use gst::{ClockTime, Event};
     use gst_check::Harness;
     use std::time::Duration;
 
@@ -78,7 +79,7 @@ Test {}",
             .build()
             .unwrap();
 
-        element.set_property_from_value("target-duration", &2u32.to_value());
+        element.set_property("target-duration", ClockTime::from_seconds(2).to_value());
 
         let mut harness = gst_check::Harness::with_element(&element, Some("sink"), Some("src"));
         harness.set_src_caps_str("application/x-subtitle-vtt");
@@ -165,7 +166,7 @@ Test 00:03.500"
             .build()
             .unwrap();
 
-        element.set_property_from_value("target-duration", &2u32.to_value());
+        element.set_property("target-duration", ClockTime::from_seconds(2).to_value());
 
         let mut harness = gst_check::Harness::with_element(&element, Some("sink"), Some("src"));
         harness.set_src_caps_str("application/x-subtitle-vtt");
@@ -248,7 +249,7 @@ Test 00:03.750"
             .build()
             .unwrap();
 
-        element.set_property_from_value("target-duration", &2u32.to_value());
+        element.set_property("target-duration", ClockTime::from_seconds(2).to_value());
 
         let mut harness = gst_check::Harness::with_element(&element, Some("sink"), Some("src"));
         harness.set_src_caps_str("application/x-subtitle-vtt");
@@ -264,12 +265,23 @@ Test 00:03.750"
         harness.crank_single_clock_wait().unwrap();
 
         let buffer1 = harness.pull().unwrap();
+        
+        harness.set_time(ClockTime::from_mseconds(4100)).unwrap();
+        harness.crank_single_clock_wait().unwrap();
+
+        let buffer2 = harness.pull().unwrap();
 
         let buffer_mapped1 = buffer1
             .map_readable()
             .map_err(|e| format!("Error mapping output buffer: {e}"))?;
 
         let vtt1 = std::str::from_utf8(buffer_mapped1.as_slice()).unwrap();
+        
+        let buffer_mapped2 = buffer2
+            .map_readable()
+            .map_err(|e| format!("Error mapping output buffer: {e}"))?;
+
+        let vtt2 = std::str::from_utf8(buffer_mapped2.as_slice()).unwrap();
 
         assert_eq!(buffer1.pts().unwrap().mseconds(), 0);
         assert_eq!(buffer1.duration().unwrap().mseconds(), 2000);
@@ -281,6 +293,13 @@ Test 00:03.750"
 Test 00:00.000"
         );
 
+        assert_eq!(buffer2.pts().unwrap().mseconds(), 2000);
+        assert_eq!(buffer2.duration().unwrap().mseconds(), 2000);
+        assert_eq!(
+            vtt2,
+            "WEBVTT\n\n"
+        );
+
         Ok(())
     }
 
@@ -289,7 +308,7 @@ Test 00:00.000"
         init();
 
         let mut harness =
-            gst_check::Harness::new_parse("webvttenc ! webvttaggregator target-duration=2");
+            gst_check::Harness::new_parse("webvttenc ! webvttaggregator target-duration=2000000000");
         harness.set_src_caps_str("text/x-raw,format=utf8");
         harness.use_testclock();
 

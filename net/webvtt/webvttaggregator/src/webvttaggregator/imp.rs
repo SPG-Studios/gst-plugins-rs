@@ -9,7 +9,10 @@ use gst_base::AggregatorPad;
 use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
+use gst::FlowError::Eos;
 use vtt::prelude::*;
+
+const DEFAULT_WEB_VTT_DURATION: gst::ClockTime = gst::ClockTime::from_seconds(1);
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -159,9 +162,10 @@ impl ObjectSubclass for WebVTTAggregator {
 impl ObjectImpl for WebVTTAggregator {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
-            vec![glib::ParamSpecUInt::builder("target-duration")
+            vec![glib::ParamSpecUInt64::builder("target-duration")
                 .nick("Target duration")
                 .blurb("The target duration in seconds of a  webvtt file")
+                .default_value(DEFAULT_WEB_VTT_DURATION.nseconds())
                 .mutable_ready()
                 .build()]
         });
@@ -182,8 +186,7 @@ impl ObjectImpl for WebVTTAggregator {
 
         match pspec.name() {
             "target-duration" => {
-                let target_duration_seconds: u32 = value.get().expect("type checked upstream");
-                settings.target_duration = ClockTime::from_seconds(target_duration_seconds as u64);
+                settings.target_duration = value.get().expect("type checked upstream");
 
                 self.obj().set_latency(settings.target_duration, None);
             }
@@ -196,10 +199,24 @@ impl ObjectImpl for WebVTTAggregator {
         let settings = self.settings.lock().unwrap();
 
         match pspec.name() {
-            "target-duration" => settings.target_duration.seconds().to_value(),
+            "target-duration" => settings.target_duration.to_value(),
 
             _ => unimplemented!(),
         }
+    }
+
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        let obj = self.obj();
+        let class = obj.class();
+        let pad_template = class.pad_template("sink").unwrap();
+
+        let sinkpad = gst::PadBuilder::<gst_base::AggregatorPad>::from_template(&pad_template)
+            .flags(gst::PadFlags::ACCEPT_INTERSECT)
+            .build();
+
+        obj.add_pad(&sinkpad).unwrap();
     }
 }
 
@@ -234,7 +251,7 @@ impl ElementImpl for WebVTTAggregator {
                 gst::PadTemplate::with_gtype(
                     "sink",
                     gst::PadDirection::Sink,
-                    gst::PadPresence::Request,
+                    gst::PadPresence::Always,
                     &sink_caps,
                     super::WebVTTAggregatorPad::static_type(),
                 )
@@ -247,32 +264,6 @@ impl ElementImpl for WebVTTAggregator {
 }
 
 impl AggregatorImpl for WebVTTAggregator {
-    fn sink_event(&self, _aggregator_pad: &AggregatorPad, event: Event) -> bool {
-        match event.view() {
-            EventView::Eos(_) => {
-                gst::info!(CAT, imp = self, "sink pad in EOS");
-
-                // Publish whatever we have in the chunk
-                let web_vtt_publish_result = self
-                    .serialize_web_vtt_chunk()
-                    .and_then(|buffer| self.finish_buffer(buffer));
-
-                match web_vtt_publish_result {
-                    result => {
-                        gst::info!(
-                            CAT,
-                            imp = self,
-                            "sink pad in EOS: Result after last chunk published {:?}",
-                            result
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        true
-    }
 
     fn aggregate(&self, _timeout: bool) -> Result<gst::FlowSuccess, gst::FlowError> {
         let state = self.state.lock().unwrap();
@@ -389,6 +380,10 @@ impl AggregatorImpl for WebVTTAggregator {
             // Sending the webvtt chunk
             return self.finish_buffer(web_vtt_output_buffer);
         } else {
+            if sink.is_eos() {
+                return Err(Eos);
+            }
+            
             let current_wall_clock = self.obj().clock().unwrap().time().unwrap();
 
             if current_wall_clock >= current_web_vtt_chunk_end_time {
@@ -417,5 +412,9 @@ impl AggregatorImpl for WebVTTAggregator {
         let state = self.state.lock().unwrap();
 
         state.next_aggregation_chunk_time
+    }
+    
+    fn negotiate(&self) -> bool {
+        true
     }
 }
