@@ -46,6 +46,10 @@ glib::wrapper! {
     pub struct HlsSink3(ObjectSubclass<imp::HlsSink3>) @extends HlsBaseSink, gst::Bin, gst::Element, gst::Object;
 }
 
+glib::wrapper! {
+    pub struct GstMediaSegment(ObjectSubclass<imp::GstMediaSegment>) @extends gst::Object;
+}
+
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "doc")]
     {
