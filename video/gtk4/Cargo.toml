@@ -41,7 +41,7 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = []
+default = ["dmabuf"]
 static = []
 # Deprecated
 wayland = ["waylandegl"]
