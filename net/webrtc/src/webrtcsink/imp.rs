@@ -1083,6 +1083,20 @@ impl VideoEncoder {
         (width + 1) & !1
     }
 
+    fn scale_width_round_2(&self, width: i32) -> i32 {
+        let ratio = gst_video::calculate_display_ratio(
+            self.video_info.height(),
+            self.video_info.width(),
+            self.video_info.par(),
+            gst::Fraction::new(1, 1),
+        )
+        .unwrap();
+
+        let height = width.mul_div_ceil(ratio.numer(), ratio.denom()).unwrap();
+
+        (height + 1) & !1
+    }
+
     pub(crate) fn set_bitrate(
         &mut self,
         element: &super::BaseWebRTCSink,
@@ -1111,8 +1125,16 @@ impl VideoEncoder {
         // Hardcoded thresholds, may be tuned further in the future, and
         // adapted according to the codec in use
         if bitrate < 500000 {
-            let height = 360i32.min(self.video_info.height() as i32);
-            let width = self.scale_height_round_2(height);
+            let mut width = self.video_info.width() as i32;
+            let mut height = self.video_info.height() as i32;
+
+            if height > width {
+                height = 360i32.min(height);
+                width = self.scale_height_round_2(height);
+            } else {
+                width = 360i32.min(width);
+                height = self.scale_width_round_2(width);
+            }
 
             s.set("height", height);
             s.set("width", width);
@@ -1124,8 +1146,16 @@ impl VideoEncoder {
             self.mitigation_mode =
                 WebRTCSinkMitigationMode::DOWNSAMPLED | WebRTCSinkMitigationMode::DOWNSCALED;
         } else if bitrate < 1000000 {
-            let height = 360i32.min(self.video_info.height() as i32);
-            let width = self.scale_height_round_2(height);
+            let mut width = self.video_info.width() as i32;
+            let mut height = self.video_info.height() as i32;
+
+            if height > width {
+                height = 360i32.min(height);
+                width = self.scale_height_round_2(height);
+            } else {
+                width = 360i32.min(width);
+                height = self.scale_width_round_2(width);
+            }
 
             s.set("height", height);
             s.set("width", width);
@@ -1133,8 +1163,16 @@ impl VideoEncoder {
 
             self.mitigation_mode = WebRTCSinkMitigationMode::DOWNSCALED;
         } else if bitrate < 2000000 {
-            let height = 720i32.min(self.video_info.height() as i32);
-            let width = self.scale_height_round_2(height);
+            let mut width = self.video_info.width() as i32;
+            let mut height = self.video_info.height() as i32;
+
+            if height > width {
+                height = 720i32.min(height);
+                width = self.scale_height_round_2(height);
+            } else {
+                width = 720i32.min(width);
+                height = self.scale_width_round_2(width);
+            }
 
             s.set("height", height);
             s.set("width", width);
