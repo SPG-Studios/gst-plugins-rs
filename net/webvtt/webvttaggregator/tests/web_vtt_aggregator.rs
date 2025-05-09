@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use gst::EventType::Eos;
-use gst::prelude::{ObjectExt, ToValue};
+    use gst::prelude::{ObjectExt, ToValue};
     use gst::{ClockTime, Event};
     use gst_check::Harness;
     use std::time::Duration;
@@ -91,7 +91,7 @@ Test {}",
         push_web_vtt_header(&mut harness);
 
         let duration = 500u64;
-        for start in (0..=1500u64).step_by(duration as usize) {
+        for start in (0..=2000u64).step_by(duration as usize) {
             push_cue(&mut harness, duration, start);
         }
 
@@ -99,7 +99,7 @@ Test {}",
 
         let buffer1 = harness.pull().unwrap();
 
-        for start in (2000..=3500u64).step_by(duration as usize) {
+        for start in (2500..=3500u64).step_by(duration as usize) {
             push_cue(&mut harness, duration, start);
         }
 
@@ -265,7 +265,7 @@ Test 00:03.750"
         harness.crank_single_clock_wait().unwrap();
 
         let buffer1 = harness.pull().unwrap();
-        
+
         harness.set_time(ClockTime::from_mseconds(4100)).unwrap();
         harness.crank_single_clock_wait().unwrap();
 
@@ -276,7 +276,7 @@ Test 00:03.750"
             .map_err(|e| format!("Error mapping output buffer: {e}"))?;
 
         let vtt1 = std::str::from_utf8(buffer_mapped1.as_slice()).unwrap();
-        
+
         let buffer_mapped2 = buffer2
             .map_readable()
             .map_err(|e| format!("Error mapping output buffer: {e}"))?;
@@ -330,6 +330,7 @@ Test 00:00.000"
         }
 
         harness.set_time(ClockTime::from_mseconds(2100)).unwrap();
+        harness.crank_single_clock_wait().unwrap();
 
         let buffer1 = harness.pull().unwrap();
 
@@ -348,6 +349,7 @@ Test 00:00.000"
         }
 
         harness.set_time(ClockTime::from_mseconds(4100)).unwrap();
+        harness.crank_single_clock_wait().unwrap();
 
         let buffer2 = harness.pull().unwrap();
 
