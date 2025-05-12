@@ -786,7 +786,16 @@ impl Translate {
 
             Some(items)
         } else {
-            None
+            match self.upstream_latency() {
+                Some((true, _min, _max)) => None,
+                _ => {
+                    let items = self.state.lock().unwrap().accumulator.drain(false);
+
+                    gst::log!(CAT, imp = self, "not-live, draining");
+
+                    Some(items)
+                }
+            }
         };
 
         {
