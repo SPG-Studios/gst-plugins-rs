@@ -73,6 +73,11 @@ struct Settings {
     fake_protocol: FakeProtocol,
 }
 
+/**
+ * GstPcapWriterFakeProtocol:
+ *
+ * Since: plugins-rs-0.14.0
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, glib::Enum)]
 #[enum_type(name = "GstPcapWriterFakeProtocol")]
 pub enum FakeProtocol {
