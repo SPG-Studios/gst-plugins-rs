@@ -622,7 +622,6 @@ impl BaseSrcImpl for NdiSrc {
                             receive_time_real,
                         } => {
                             let frame_metadata = frame.metadata().unwrap_or("");
-                            println!("FrameMETA: {:?}", frame_metadata);
                             if let Ok(mut meta) =
                                 gst::meta::CustomMeta::add(buffer_ref, "VideoFrameMetadata")
                             {
