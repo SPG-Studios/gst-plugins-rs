@@ -148,6 +148,10 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         ndisink::register(plugin)?;
     }
 
+    if !gst::meta::CustomMeta::is_registered("VideoFrameMetadata") {
+        gst::meta::CustomMeta::register("VideoFrameMetadata", &[]);
+    }
+
     Ok(())
 }
 

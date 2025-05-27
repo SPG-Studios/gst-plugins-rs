@@ -11,7 +11,6 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use std::sync::LazyLock;
-
 use crate::ndisrcmeta::NdiSrcMeta;
 use crate::ndisys;
 use crate::RecvColorFormat;
@@ -621,15 +620,25 @@ impl BaseSrcImpl for NdiSrc {
                             discont,
                             receive_time_gst,
                             receive_time_real,
-                        } => (
-                            self.calculate_video_timestamp(
+                        } => {
+                            let frame_metadata = frame.metadata().unwrap_or("");
+                            println!("FrameMETA: {:?}", frame_metadata);
+                            if let Ok(mut meta) =
+                                gst::meta::CustomMeta::add(buffer_ref, "VideoFrameMetadata")
+                            {
+                                meta.mut_structure()
+                                    .set("p_metadata", frame_metadata);
+                            }
+
+                            let ts = self.calculate_video_timestamp(
                                 &mut state,
                                 receive_time_gst,
                                 receive_time_real,
                                 frame,
-                            ),
-                            discont,
-                        ),
+                            );
+
+                            (ts, discont)
+                        }
                         Buffer::Metadata {
                             ref frame,
                             receive_time_gst,

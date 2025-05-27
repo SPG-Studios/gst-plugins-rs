@@ -10,7 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 glib.workspace = true
-gst = { workspace = true, features = ["v1_16"] }
+gst = { workspace = true, features = ["v1_20"] }
 gst-base = { workspace = true, features = ["v1_16"] }
 gst-audio = { workspace = true, features = ["v1_16"] }
 gst-video = { workspace = true, features = ["v1_16"] }
