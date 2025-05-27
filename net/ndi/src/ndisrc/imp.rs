@@ -10,11 +10,11 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use std::sync::LazyLock;
 use crate::ndisrcmeta::NdiSrcMeta;
 use crate::ndisys;
 use crate::RecvColorFormat;
 use crate::TimestampMode;
+use std::sync::LazyLock;
 
 use super::receiver::{Receiver, ReceiverControlHandle, ReceiverItem};
 use crate::ndisrcmeta::Buffer;
@@ -625,8 +625,7 @@ impl BaseSrcImpl for NdiSrc {
                             if let Ok(mut meta) =
                                 gst::meta::CustomMeta::add(buffer_ref, "VideoFrameMetadata")
                             {
-                                meta.mut_structure()
-                                    .set("p_metadata", frame_metadata);
+                                meta.mut_structure().set("p_metadata", frame_metadata);
                             }
 
                             let ts = self.calculate_video_timestamp(
