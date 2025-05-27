@@ -35,8 +35,10 @@ impl Playlist {
     }
 
     /// Adds a new segment to the playlist.
+    /// The internal playlist index will be updated
     pub fn add_segment(&mut self, segment: MediaSegment) {
         self.start();
+        self.playlist_index += 1;
         self.inner.segments.push(segment);
     }
 
@@ -44,8 +46,7 @@ impl Playlist {
     ///
     /// The playlist will be updated based on it's type. The playlist status is set to started.
     /// When a playlist type is defined, the number of segments is updated to match the max
-    /// playlist length value. The playlist index and current media sequence is also kept up
-    /// to date.
+    /// playlist length value. The playlist current media sequence is also kept up to date.
     pub fn update_playlist_state(&mut self, max_playlist_length: usize) {
         if !self.is_type_undefined() {
             return;
@@ -68,7 +69,6 @@ impl Playlist {
             }
         }
 
-        self.playlist_index += 1;
         self.inner.media_sequence = self.playlist_index - self.inner.segments.len() as u64;
     }
 
