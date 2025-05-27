@@ -66,6 +66,7 @@ impl Default for HlsCmafSinkSettings {
                 gst::ClockTime::from_seconds(DEFAULT_TARGET_DURATION as u64),
             )
             .property("latency", DEFAULT_LATENCY)
+            .property_from_str("header-update-mode", "caps") // Allow caps changes in muxer
             .build()
             .expect("Could not make element cmafmux");
         let appsink = gst_app::AppSink::builder()
@@ -463,6 +464,7 @@ impl HlsCmafSink {
         running_time: Option<gst::ClockTime>,
         location: String,
         timestamp: Option<DateTime<Utc>>,
+        discontinuity: bool,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let uri = base_imp!(self).get_segment_uri(&location, None);
         let mut state = self.state.lock().unwrap();
@@ -483,6 +485,7 @@ impl HlsCmafSink {
                 uri,
                 duration: duration.mseconds() as f32 / 1_000f32,
                 map,
+                discontinuity,
                 ..Default::default()
             },
         )
@@ -491,11 +494,15 @@ impl HlsCmafSink {
     fn on_new_sample(&self, sample: gst::Sample) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut buffer_list = sample.buffer_list_owned().unwrap();
         let mut first = buffer_list.get(0).unwrap();
-
-        if first
+        // If we get a discont or a new header from cmafmux, the next segment
+        // should have EXT-X-DISCONTINUITY set
+        let discont = first
             .flags()
-            .contains(gst::BufferFlags::DISCONT | gst::BufferFlags::HEADER)
-        {
+            .contains(gst::BufferFlags::DISCONT | gst::BufferFlags::HEADER);
+
+        // A new MOOV header was generated
+        if first.flags().contains(gst::BufferFlags::HEADER) {
+            gst::debug!(CAT, imp = self, "Got header/discont buffer");
             let mut stream = self.on_init_segment().map_err(|err| {
                 gst::error!(
                     CAT,
@@ -561,6 +568,6 @@ impl HlsCmafSink {
             gst::FlowError::Error
         })?;
 
-        self.add_segment(duration, running_time, location, None)
+        self.add_segment(duration, running_time, location, None, discont)
     }
 }
