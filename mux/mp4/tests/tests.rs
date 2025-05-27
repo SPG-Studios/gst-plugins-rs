@@ -7,13 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 
-use std::{
-    fs,
-    io::{Cursor, Read},
-    path::Path,
-};
+use std::{fs::File, path::Path};
 
 use gst_pbutils::prelude::*;
+use mp4_atom::{Atom as _, ReadAtom as _, ReadFrom as _};
+use tempfile::tempdir;
 
 fn init() {
     use std::sync::Once;
@@ -63,40 +61,6 @@ impl Pipeline {
 
         self.set_state(gst::State::Null)
             .expect("Unable to set the pipeline to the `Null` state");
-    }
-}
-
-struct FileTypeBox {
-    major_brand: [u8; 4],
-    minor_version: u32,
-    compatible_brands: Vec<[u8; 4]>,
-}
-
-impl FileTypeBox {
-    fn read(mut reader: Cursor<&[u8]>) -> std::io::Result<FileTypeBox> {
-        let mut box_size_buf = [0u8; 4];
-        reader.read_exact(&mut box_size_buf)?;
-        let box_size = u32::from_be_bytes(box_size_buf);
-        let mut four_cc = [0u8; 4];
-        reader.read_exact(&mut four_cc)?;
-        assert_eq!(four_cc, *b"ftyp");
-        let mut major_brand = [0u8; 4];
-        reader.read_exact(&mut major_brand)?;
-        let mut minor_version_buf = [0u8; 4];
-        reader.read_exact(&mut minor_version_buf)?;
-        let minor_version = u32::from_be_bytes(minor_version_buf);
-        let num_brands = (box_size - 16) / 4;
-        let mut compatible_brands = Vec::with_capacity(num_brands.try_into().unwrap());
-        for _ in 0..num_brands {
-            let mut compatible_brand = [0u8; 4];
-            reader.read_exact(&mut compatible_brand)?;
-            compatible_brands.push(compatible_brand);
-        }
-        Ok(FileTypeBox {
-            major_brand,
-            minor_version,
-            compatible_brands,
-        })
     }
 }
 
@@ -236,7 +200,7 @@ fn test_uncompressed_with(format: &str, width: u32, height: u32, cb: impl FnOnce
     };
     let pipeline = Pipeline(pipeline.downcast::<gst::Pipeline>().unwrap());
 
-    let dir = tempfile::TempDir::new().unwrap();
+    let dir = tempdir().unwrap();
     let mut location = dir.path().to_owned();
     location.push("test.mp4");
 
@@ -266,7 +230,10 @@ fn test_roundtrip_uncompressed(video_format: &str, width: u32, height: u32) {
 
 fn test_encode_uncompressed(video_format: &str, width: u32, height: u32) {
     let filename = format!("{video_format}_{width}x{height}.mp4");
-    let pipeline_text = format!("videotestsrc num-buffers=34 ! video/x-raw,format={video_format},width={width},height={height} ! isomp4mux ! filesink location={filename}");
+    let temp_dir = tempdir().unwrap();
+    let temp_file_path = temp_dir.path().join(filename);
+    let location = temp_file_path.as_path();
+    let pipeline_text = format!("videotestsrc num-buffers=34 ! video/x-raw,format={video_format},width={width},height={height} ! isomp4mux ! filesink location={:?}", location);
 
     let Ok(pipeline) = gst::parse::launch(&pipeline_text) else {
         panic!("could not build encoding pipeline")
@@ -294,30 +261,24 @@ fn test_encode_uncompressed(video_format: &str, width: u32, height: u32) {
         .set_state(gst::State::Null)
         .expect("Unable to set the pipeline to the `Null` state");
 
-    test_expected_uncompressed_output(filename);
+    test_expected_uncompressed_output(location);
 }
 
-fn test_expected_uncompressed_output(filename: String) {
-    let check_data: Vec<u8> = fs::read(filename).unwrap();
-    let cursor = Cursor::new(check_data.as_ref());
-    test_default_mpeg_file_type_box(cursor);
-}
+fn test_expected_uncompressed_output(location: &Path) {
+    let required_top_level_boxes: Vec<mp4_atom::FourCC> = vec![
+        b"ftyp".into(),
+        b"free".into(),
+        b"mdat".into(),
+        b"moov".into(),
+    ];
 
-fn test_expected_file_type_box(
-    expected_major_brand: &[u8; 4],
-    expected_minor_version: u32,
-    expected_compatible_brands: Vec<[u8; 4]>,
-    cursor: Cursor<&[u8]>,
-) {
-    let ftyp = FileTypeBox::read(cursor).unwrap();
-
-    assert_eq!(ftyp.major_brand, *expected_major_brand);
-    assert_eq!(ftyp.minor_version, expected_minor_version);
-    let mut sorted_compatible_brands = ftyp.compatible_brands.clone();
-    sorted_compatible_brands.sort();
-    let mut sorted_expected_compatible_brands = expected_compatible_brands.clone();
-    sorted_expected_compatible_brands.sort();
-    assert_eq!(sorted_compatible_brands, sorted_expected_compatible_brands);
+    check_file_boxes(
+        location,
+        required_top_level_boxes,
+        b"iso4".into(),
+        0,
+        vec![b"isom".into(), b"mp41".into(), b"mp42".into()],
+    );
 }
 
 #[test]
@@ -540,7 +501,10 @@ fn encode_uncompressed_bgrp() {
 
 fn test_encode_uncompressed_image_sequence(video_format: &str, width: u32, height: u32) {
     let filename = format!("{video_format}_{width}x{height}.heifs");
-    let pipeline_text = format!("videotestsrc num-buffers=10 ! video/x-raw,format={video_format},width={width},height={height} ! isomp4mux name=mux ! filesink location={filename}");
+    let temp_dir = tempdir().unwrap();
+    let temp_file_path = temp_dir.path().join(filename);
+    let location = temp_file_path.as_path();
+    let pipeline_text = format!("videotestsrc num-buffers=10 ! video/x-raw,format={video_format},width={width},height={height} ! isomp4mux name=mux ! filesink location={:?}", location);
 
     let Ok(pipeline) = gst::parse::launch(&pipeline_text) else {
         panic!("could not build encoding pipeline")
@@ -572,24 +536,23 @@ fn test_encode_uncompressed_image_sequence(video_format: &str, width: u32, heigh
         .set_state(gst::State::Null)
         .expect("Unable to set the pipeline to the `Null` state");
 
-    test_expected_image_sequence_output(filename);
+    test_expected_image_sequence_output(location);
 }
 
-fn test_expected_image_sequence_output(filename: String) {
-    let check_data: Vec<u8> = fs::read(filename).unwrap();
-    let cursor = Cursor::new(check_data.as_ref());
-    test_expected_image_sequence_file_type_box_content(cursor);
-}
+fn test_expected_image_sequence_output(location: &Path) {
+    let required_top_level_boxes: Vec<mp4_atom::FourCC> = vec![
+        b"ftyp".into(),
+        b"free".into(),
+        b"mdat".into(),
+        b"moov".into(),
+    ];
 
-fn test_expected_image_sequence_file_type_box_content(cursor: Cursor<&[u8]>) {
-    let expected_major_brand = b"msf1";
-    let expected_minor_version = 0;
-    let expected_compatible_brands: Vec<[u8; 4]> = vec![*b"iso8", *b"msf1", *b"unif"];
-    test_expected_file_type_box(
-        expected_major_brand,
-        expected_minor_version,
-        expected_compatible_brands,
-        cursor,
+    check_file_boxes(
+        location,
+        required_top_level_boxes,
+        b"msf1".into(),
+        0,
+        vec![b"iso8".into(), b"msf1".into(), b"unif".into()],
     );
 }
 
@@ -608,8 +571,11 @@ fn encode_uncompressed_image_sequence_nv12() {
 #[test]
 fn test_encode_audio_trak() {
     init();
-    let filename = "audio_only.mp4".to_string();
-    let pipeline_text = format!("audiotestsrc num-buffers=100 ! audioconvert ! opusenc ! isomp4mux ! filesink location={filename}");
+    let filename = "audio_only.mp4";
+    let temp_dir = tempdir().unwrap();
+    let temp_file_path = temp_dir.path().join(filename);
+    let location = temp_file_path.as_path();
+    let pipeline_text = format!("audiotestsrc num-buffers=100 ! audioconvert ! opusenc ! isomp4mux ! filesink location={:?}", location);
 
     let Ok(pipeline) = gst::parse::launch(&pipeline_text) else {
         panic!("could not build encoding pipeline")
@@ -637,23 +603,62 @@ fn test_encode_audio_trak() {
         .set_state(gst::State::Null)
         .expect("Unable to set the pipeline to the `Null` state");
 
-    test_audio_only_output(filename);
+    test_audio_only_output(location);
 }
 
-fn test_audio_only_output(filename: String) {
-    let check_data: Vec<u8> = fs::read(filename).unwrap();
-    let cursor = Cursor::new(check_data.as_ref());
-    test_default_mpeg_file_type_box(cursor);
+fn test_audio_only_output(location: &Path) {
+    let required_top_level_boxes: Vec<mp4_atom::FourCC> = vec![
+        b"ftyp".into(),
+        b"free".into(),
+        b"mdat".into(),
+        b"moov".into(),
+    ];
+
+    check_file_boxes(
+        location,
+        required_top_level_boxes,
+        b"iso4".into(),
+        0,
+        vec![b"isom".into(), b"mp41".into(), b"mp42".into()],
+    );
 }
 
-fn test_default_mpeg_file_type_box(cursor: Cursor<&[u8]>) {
-    let expected_major_brand = b"iso4";
-    let expected_minor_version = 0;
-    let expected_compatible_brands: Vec<[u8; 4]> = vec![*b"isom", *b"mp41", *b"mp42"];
-    test_expected_file_type_box(
-        expected_major_brand,
-        expected_minor_version,
-        expected_compatible_brands,
-        cursor,
+fn check_file_boxes(
+    location: &Path,
+    mut required_top_level_boxes: Vec<mp4_atom::FourCC>,
+    expected_major_brand: mp4_atom::FourCC,
+    expected_minor_version: u32,
+    expected_compatible_brands: Vec<mp4_atom::FourCC>,
+) {
+    let mut input = File::open(location).unwrap();
+    while let Ok(header) = mp4_atom::Header::read_from(&mut input) {
+        assert!(required_top_level_boxes.contains(&header.kind));
+        let pos = required_top_level_boxes
+            .iter()
+            .position(|&fourcc| fourcc == header.kind)
+            .unwrap_or_else(|| panic!("expected to find a matching fourcc {:?}", header.kind));
+        required_top_level_boxes.remove(pos);
+        match header.kind {
+            mp4_atom::Ftyp::KIND => {
+                let ftyp = mp4_atom::Ftyp::read_atom(&header, &mut input).unwrap();
+                assert_eq!(ftyp.major_brand, expected_major_brand);
+                assert_eq!(ftyp.minor_version, expected_minor_version);
+                assert_eq!(
+                    ftyp.compatible_brands.len(),
+                    expected_compatible_brands.len()
+                );
+                for fourcc in &expected_compatible_brands {
+                    assert!(ftyp.compatible_brands.contains(fourcc));
+                }
+            }
+            _ => {
+                let _ = mp4_atom::Any::read_atom(&header, &mut input).unwrap();
+            }
+        }
+    }
+    assert!(
+        required_top_level_boxes.is_empty(),
+        "expected all top level boxes to be found, but these were missed: {:?}",
+        required_top_level_boxes
     );
 }

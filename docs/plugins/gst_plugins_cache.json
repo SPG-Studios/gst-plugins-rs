@@ -5315,6 +5315,18 @@
                 ],
                 "kind": "object",
                 "properties": {
+                    "extra-brands": {
+                        "blurb": "Comma-separated list of 4-character brand codes (e.g. duke,sook)",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "gchararray",
+                        "writable": true
+                    },
                     "interleave-bytes": {
                         "blurb": "Interleave between streams in bytes",
                         "conditionally-available": false,
@@ -13211,6 +13223,65 @@
                         "direction": "sink",
                         "presence": "request",
                         "type": "GstWebRTCSinkPad"
+                    }
+                },
+                "properties": {
+                    "janus-state": {
+                        "blurb": "The current state of the signaller",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "initialized (0)",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "GstJanusVRWebRTCJanusState",
+                        "writable": false
+                    },
+                    "use-string-ids": {
+                        "blurb": "Use strings instead of u64 for Janus IDs, see strings_ids config option in janus.plugin.videoroom.jcfg",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": true,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    }
+                },
+                "rank": "none"
+            },
+            "janusvrwebrtcsrc": {
+                "author": "Eva Pace <epace@igalia.com>",
+                "description": "WebRTC source with Janus Video Room signaller",
+                "hierarchy": [
+                    "GstJanusVRWebRTCSrc",
+                    "GstBaseWebRTCSrc",
+                    "GstBin",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "interfaces": [
+                    "GstChildProxy",
+                    "GstURIHandler"
+                ],
+                "klass": "Source/Network/WebRTC",
+                "pad-templates": {
+                    "audio_%%s_%%u": {
+                        "caps": "audio/x-raw(ANY):\napplication/x-rtp:\naudio/x-opus:\n",
+                        "direction": "src",
+                        "presence": "sometimes",
+                        "type": "GstWebRTCSrcPad"
+                    },
+                    "video_%%s_%%u": {
+                        "caps": "video/x-raw(ANY):\napplication/x-rtp:\nvideo/x-vp8:\nvideo/x-h264:\nvideo/x-vp9:\nvideo/x-h265:\nvideo/x-av1:\n",
+                        "direction": "src",
+                        "presence": "sometimes",
+                        "type": "GstWebRTCSrcPad"
                     }
                 },
                 "properties": {

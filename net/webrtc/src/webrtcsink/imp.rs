@@ -128,9 +128,15 @@ struct Settings {
     forward_metas: HashSet<String>,
 }
 
+use std::sync::atomic::{AtomicU32, Ordering};
+static BD_SEQ: AtomicU32 = AtomicU32::new(0);
+fn get_bdseq() -> u32 {
+    BD_SEQ.fetch_and(1, Ordering::SeqCst) + 1
+}
+
 #[derive(Debug, Clone)]
 struct DiscoveryInfo {
-    id: String,
+    id: u32,
     caps: gst::Caps,
     srcs: Arc<Mutex<Vec<gst_app::AppSrc>>>,
 }
@@ -138,7 +144,7 @@ struct DiscoveryInfo {
 impl DiscoveryInfo {
     fn new(caps: gst::Caps) -> Self {
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: get_bdseq(),
             caps,
             srcs: Default::default(),
         }
@@ -5968,6 +5974,14 @@ pub(super) mod janus {
         webrtcsink::JanusVRSignallerState,
     };
 
+    static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+        gst::DebugCategory::new(
+            "janusvrwebrtcsink",
+            gst::DebugColorFlags::empty(),
+            Some("WebRTC Janus Video Room sink"),
+        )
+    });
+
     #[derive(Debug, Clone, Default)]
     struct JanusSettings {
         use_string_ids: bool,
@@ -6001,8 +6015,8 @@ pub(super) mod janus {
          */
         #[property(
         name = "janus-state",
-        // FIXME: can't use `member =` with enums: https://github.com/gtk-rs/gtk-rs-core/issues/1338
-        get = |self_: &Self| self_.state.lock().unwrap().janus_state,
+        get,
+        member = janus_state,
         type = JanusVRSignallerState,
         blurb = "The current state of the signaller",
         builder(JanusVRSignallerState::Initialized)
@@ -6022,9 +6036,9 @@ pub(super) mod janus {
                 .imp();
 
             let signaller: Signallable = if settings.use_string_ids {
-                JanusVRSignallerStr::default().upcast()
+                JanusVRSignallerStr::new(WebRTCSignallerRole::Producer).upcast()
             } else {
-                JanusVRSignallerU64::default().upcast()
+                JanusVRSignallerU64::new(WebRTCSignallerRole::Producer).upcast()
             };
 
             let self_weak = self.downgrade();
@@ -6036,6 +6050,13 @@ pub(super) mod janus {
                     let mut state = self_.state.lock().unwrap();
                     state.janus_state = janus_state;
                 }
+
+                gst::debug!(
+                    CAT,
+                    imp = self_,
+                    "signaller state updated: {:?}",
+                    janus_state
+                );
 
                 self_.obj().notify("janus-state");
 
