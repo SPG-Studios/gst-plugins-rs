@@ -52,6 +52,7 @@ impl Playlist {
             return;
         }
 
+        let mut discont_gone = 0;
         // Remove oldest segments if playlist is at maximum expected capacity
         if max_playlist_length > 0 {
             if self.is_cmaf {
@@ -59,6 +60,11 @@ impl Playlist {
                 // or in case of the very first segment.
                 while self.inner.segments.len() > max_playlist_length {
                     let to_remove = self.inner.segments.remove(0);
+                    if to_remove.discontinuity {
+                        // We are removing a discontinuity segment, the playlist
+                        // discont sequence must be updated
+                        discont_gone += 1;
+                    }
                     if self.inner.segments[0].map.is_none() {
                         self.inner.segments[0].map.clone_from(&to_remove.map)
                     }
@@ -70,6 +76,7 @@ impl Playlist {
         }
 
         self.inner.media_sequence = self.playlist_index - self.inner.segments.len() as u64;
+        self.inner.discontinuity_sequence += discont_gone;
     }
 
     /// Sets the playlist to started state.
