@@ -27,12 +27,11 @@ thiserror = "2"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["sink"]
-sink = ["gst/v1_18", "gst-base/v1_18"]
+default = []
 advanced-sdk = []
 static = []
 capi = []
-doc = ["gst/v1_18"]
+doc = []
 
 [lib]
 name = "gstndi"
