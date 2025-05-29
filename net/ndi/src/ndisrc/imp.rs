@@ -10,14 +10,14 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use super::receiver::{Receiver, ReceiverControlHandle, ReceiverItem};
+use crate::constants::{CUSTOM_META_FIELD, CUSTOM_META_NAME};
+use crate::ndisrcmeta::Buffer;
 use crate::ndisrcmeta::NdiSrcMeta;
 use crate::ndisys;
 use crate::RecvColorFormat;
 use crate::TimestampMode;
 use std::sync::LazyLock;
-use crate::constants::{CUSTOM_META_NAME, CUSTOM_META_FIELD};
-use super::receiver::{Receiver, ReceiverControlHandle, ReceiverItem};
-use crate::ndisrcmeta::Buffer;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(

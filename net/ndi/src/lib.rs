@@ -13,7 +13,6 @@ mod ndisys;
 
 mod device_provider;
 
-
 mod ndisink;
 
 mod ndisinkcombiner;
@@ -24,14 +23,14 @@ mod ndisrc;
 mod ndisrcdemux;
 mod ndisrcmeta;
 
-mod ndi_cc_meta;
 mod constants;
+mod ndi_cc_meta;
 
 #[cfg(feature = "doc")]
 use gst::prelude::*;
 
-use std::sync::LazyLock;
 use crate::constants::CUSTOM_META_NAME;
+use std::sync::LazyLock;
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum, Default)]
 #[repr(u32)]
@@ -144,7 +143,6 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     ndisrc::register(plugin)?;
     ndisrcdemux::register(plugin)?;
 
-    
     {
         ndisinkcombiner::register(plugin)?;
         ndisink::register(plugin)?;

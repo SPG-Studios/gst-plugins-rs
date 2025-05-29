@@ -15,7 +15,6 @@ use gst_video::VideoVBIEncoder;
 use gst_video::{VideoAncillary, VideoAncillaryDID16, VideoVBIParser};
 use std::sync::LazyLock;
 
-
 use std::ffi::CString;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -31,7 +30,6 @@ const C608_TAG_BYTES: &[u8] = C608_TAG.as_bytes();
 
 const C708_TAG: &str = "C708";
 const C708_TAG_BYTES: &[u8] = C708_TAG.as_bytes();
-
 
 const LINE_ATTR: &str = "line";
 
@@ -57,7 +55,6 @@ const NDI_CC_CAPACITY: usize = NDI_CC_CONTENT_CAPACITY + 13 + 10;
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
 /// NDI Video Captions related Errors.
 pub enum NDICCError {
-    
     #[error("Unsupported closed caption type {cc_type:?}")]
     UnsupportedCC {
         cc_type: gst_video::VideoCaptionType,
@@ -79,14 +76,12 @@ impl NDICCError {
     }
 }
 
-
 /// NDI Closed Captions Meta encoder.
 pub struct NDICCMetaEncoder {
     v210_encoder: VideoVBIEncoder,
     width: u32,
     line_buf: Vec<u8>,
 }
-
 
 impl NDICCMetaEncoder {
     pub fn new(width: u32) -> Self {
@@ -393,10 +388,8 @@ impl NDICCMetaDecoder {
 mod tests {
     use super::*;
 
-    
     use gst_video::VideoCaptionType;
 
-    
     #[test]
     fn encode_gst_meta_c608() {
         gst::init().unwrap();
@@ -418,7 +411,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn encode_gst_meta_c708() {
         gst::init().unwrap();
@@ -448,7 +440,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn encode_gst_meta_c608_and_c708() {
         gst::init().unwrap();
@@ -483,7 +474,6 @@ mod tests {
         );
     }
 
-    
     #[test]
     fn encode_gst_meta_unsupported_cc() {
         gst::init().unwrap();
@@ -503,7 +493,6 @@ mod tests {
         assert!(ndi_cc_encoder.encode(&buf).is_none());
     }
 
-    
     #[test]
     fn encode_gst_meta_none() {
         gst::init().unwrap();
