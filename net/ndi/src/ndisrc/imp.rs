@@ -621,11 +621,12 @@ impl BaseSrcImpl for NdiSrc {
                             receive_time_gst,
                             receive_time_real,
                         } => {
-                            let frame_metadata = frame.metadata().unwrap_or("");
-                            if let Ok(mut meta) =
-                                gst::meta::CustomMeta::add(buffer_ref, "VideoFrameMetadata")
-                            {
-                                meta.mut_structure().set("p_metadata", frame_metadata);
+                            if let Some(frame_metadata) = frame.metadata().filter(|metadata| !metadata.is_empty()) {
+                                if let Ok(mut meta) =
+                                    gst::meta::CustomMeta::add(buffer_ref, "VideoFrameMetadata")
+                                {
+                                    meta.mut_structure().set("metadata", frame_metadata);
+                                }
                             }
 
                             let ts = self.calculate_video_timestamp(
