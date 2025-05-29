@@ -15,7 +15,7 @@ use crate::ndisys;
 use crate::RecvColorFormat;
 use crate::TimestampMode;
 use std::sync::LazyLock;
-
+use crate::constants::{CUSTOM_META_NAME, CUSTOM_META_FIELD};
 use super::receiver::{Receiver, ReceiverControlHandle, ReceiverItem};
 use crate::ndisrcmeta::Buffer;
 
@@ -621,11 +621,13 @@ impl BaseSrcImpl for NdiSrc {
                             receive_time_gst,
                             receive_time_real,
                         } => {
-                            if let Some(frame_metadata) = frame.metadata().filter(|metadata| !metadata.is_empty()) {
+                            if let Some(frame_metadata) =
+                                frame.metadata().filter(|metadata| !metadata.is_empty())
+                            {
                                 if let Ok(mut meta) =
-                                    gst::meta::CustomMeta::add(buffer_ref, "VideoFrameMetadata")
+                                    gst::meta::CustomMeta::add(buffer_ref, CUSTOM_META_NAME)
                                 {
-                                    meta.mut_structure().set("metadata", frame_metadata);
+                                    meta.mut_structure().set(CUSTOM_META_FIELD, frame_metadata);
                                 }
                             }
 
