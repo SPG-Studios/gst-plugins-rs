@@ -69,7 +69,7 @@ impl Playlist {
         }
 
         self.playlist_index += 1;
-        self.inner.media_sequence = self.playlist_index - self.inner.segments.len() as u64;
+        self.inner.media_sequence = self.playlist_index - self.inner.segments.len() as u64 + 1;
     }
 
     /// Sets the playlist to started state.

@@ -497,3 +497,121 @@ segments/my-own-filename-000.ts
 
     Ok(())
 }
+
+#[test]
+fn test_hlssink3_correct_media_sequence_number() -> Result<(), ()> {
+    init();
+
+    // Context: there was a bug where the seq number was only set to 1
+    // when a playlist was closed. This makes sure it's 1 from the beginning.
+    const FRAMERATE: i32 = 30;
+    const TARGET_DURATION: u32 = 2;
+    const BUFFER_NB: i32 = FRAMERATE * TARGET_DURATION as i32 * 2;
+
+    let pipeline = gst::Pipeline::with_name("video_pipeline");
+
+    let video_src = try_create_element!("videotestsrc");
+    video_src.set_property("is-live", false);
+    video_src.set_property("num-buffers", BUFFER_NB);
+
+    let x264enc = try_create_element!("x264enc");
+    let h264parse = try_create_element!("h264parse");
+
+    let hlssink3 = gst::ElementFactory::make("hlssink3")
+        .name("test_hlssink3")
+        .property("location", "/www/media/segments/my-own-filename-%03d.ts")
+        .property("playlist-location", "/www/media/main.m3u8")
+        .property("playlist-root", "segments")
+        .property("target-duration", TARGET_DURATION)
+        .build()
+        .expect("Must be able to instantiate hlssink3");
+
+    let playlist_content = Arc::new(Mutex::new(String::from("")));
+
+    hlssink3.connect("get-playlist-stream", false, {
+        let playlist_content = playlist_content.clone();
+        move |_| {
+            // We need an owned type to pass to `gio::WriteOutputStream`
+            let playlist = MemoryPlaylistFile {
+                handler: Arc::clone(&playlist_content),
+            };
+            // Since here a new file will be created, the content is cleared
+            playlist.clear_content();
+            let output = gio::WriteOutputStream::new(playlist);
+            Some(output.to_value())
+        }
+    });
+
+    hlssink3.connect("get-fragment-stream", false, {
+        move |_| {
+            let stream = gio::MemoryOutputStream::new_resizable();
+            Some(stream.to_value())
+        }
+    });
+
+    try_or_pause!(pipeline.add_many([&video_src, &x264enc, &h264parse, &hlssink3]));
+    try_or_pause!(gst::Element::link_many([
+        &video_src, &x264enc, &h264parse, &hlssink3
+    ]));
+
+    pipeline.set_state(gst::State::Playing).unwrap();
+
+    gst::info!(
+        CAT,
+        "hlssink3_video_pipeline: waiting for {} buffers",
+        BUFFER_NB
+    );
+
+    let mut eos = false;
+    let bus = pipeline.bus().unwrap();
+    let mut got_first_fragment = false;
+    while let Some(msg) = bus.timed_pop(gst::ClockTime::NONE) {
+        use gst::MessageView;
+        match msg.view() {
+            MessageView::Eos(..) => {
+                eos = true;
+                break;
+            }
+            MessageView::Element(msg) => {
+                if let Some(structure) = msg.structure() {
+                    if structure.has_name("hls-segment-added") && !got_first_fragment {
+                        let contents = playlist_content.lock().unwrap();
+                        assert_eq!(
+                            r###"#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:1
+#EXTINF:1.999,
+segments/my-own-filename-000.ts
+"###,
+                            contents.to_string()
+                        );
+                        got_first_fragment = true;
+                    }
+                }
+            }
+            MessageView::Error(..) => unreachable!(),
+            _ => (),
+        }
+    }
+
+    pipeline.set_state(gst::State::Null).unwrap();
+    assert!(eos);
+
+    let contents = playlist_content.lock().unwrap();
+    assert_eq!(
+        r###"#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:1
+#EXTINF:1.999,
+segments/my-own-filename-000.ts
+#EXTINF:1.999,
+segments/my-own-filename-001.ts
+#EXT-X-ENDLIST
+"###,
+        contents.to_string()
+    );
+
+    Ok(())
+}

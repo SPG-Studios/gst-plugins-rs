@@ -473,6 +473,9 @@ impl HlsBaseSink {
         }
 
         context.playlist.add_segment(segment);
+        context
+            .playlist
+            .update_playlist_state(context.playlist_length as usize);
 
         if context.playlist.is_type_undefined() {
             context.old_segment_locations.push(location.to_string());
@@ -504,10 +507,6 @@ impl HlsBaseSink {
             "Preparing to write new playlist, COUNT {}",
             context.playlist.len()
         );
-
-        context
-            .playlist
-            .update_playlist_state(context.playlist_length as usize);
 
         // Acquires the playlist file handle so we can update it with new content. By default, this
         // is expected to be the same file every time.
