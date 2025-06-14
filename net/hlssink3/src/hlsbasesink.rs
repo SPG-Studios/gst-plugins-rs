@@ -41,6 +41,19 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
+// Helper function to lock mutexes without panicking on poisoning
+// See https://github.com/rust-lang/rust/issues/134645 for upcoming std::sync::nonpoison
+fn lock_nonpoisoning<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            // Log the error but recover - better than crashing the entire pipeline
+            gst::warning!(CAT, "Mutex was poisoned, recovering data. This may indicate a previous panic in another thread.");
+            poisoned.into_inner()
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstHlsProgramDateTimeReference")]
@@ -170,7 +183,7 @@ impl ObjectImpl for HlsBaseSink {
     }
 
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
-        let mut settings = self.settings.lock().unwrap();
+        let mut settings = lock_nonpoisoning(&self.settings);
         match pspec.name() {
             "playlist-location" => {
                 settings.playlist_location = value
@@ -213,7 +226,7 @@ impl ObjectImpl for HlsBaseSink {
     }
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
-        let settings = self.settings.lock().unwrap();
+        let settings = lock_nonpoisoning(&self.settings);
         match pspec.name() {
             "playlist-location" => settings.playlist_location.to_value(),
             "playlist-root" => settings.playlist_root.to_value(),
@@ -299,7 +312,7 @@ impl ElementImpl for HlsBaseSink {
 
         match transition {
             gst::StateChange::PlayingToPaused => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = lock_nonpoisoning(&self.state);
                 if let Some(context) = state.context.as_mut() {
                     // reset mapping from rt to utc. during pause
                     // rt is stopped but utc keep moving so need to
@@ -324,8 +337,8 @@ impl HlsBaseSinkImpl for HlsBaseSink {}
 
 impl HlsBaseSink {
     pub fn open_playlist(&self, playlist: Playlist, segment_template: String) {
-        let mut state = self.state.lock().unwrap();
-        let settings = self.settings.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
+        let settings = lock_nonpoisoning(&self.settings);
         state.context = Some(PlaylistContext {
             pdt_base_utc: None,
             pdt_base_running_time: None,
@@ -339,19 +352,19 @@ impl HlsBaseSink {
     }
 
     pub fn close_playlist(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
         if let Some(mut context) = state.context.take() {
             if context.playlist.is_rendering() {
                 context
                     .playlist
-                    .stop(self.settings.lock().unwrap().enable_endlist);
+                    .stop(lock_nonpoisoning(&self.settings).enable_endlist);
                 let _ = self.write_playlist(&mut context);
             }
         }
     }
 
     pub fn get_fragment_stream(&self, fragment_id: u32) -> Option<(gio::OutputStream, String)> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
         let context = match state.context.as_mut() {
             Some(context) => context,
             None => {
@@ -380,7 +393,7 @@ impl HlsBaseSink {
     }
 
     pub fn get_segment_uri(&self, location: &str, prefix: Option<&str>) -> String {
-        let settings = self.settings.lock().unwrap();
+        let settings = lock_nonpoisoning(&self.settings);
         let file_name = path::Path::new(&location)
             .file_name()
             .unwrap()
@@ -404,7 +417,7 @@ impl HlsBaseSink {
         timestamp: Option<DateTime<Utc>>,
         mut segment: MediaSegment,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
         let context = match state.context.as_mut() {
             Some(context) => context,
             None => {
@@ -419,7 +432,7 @@ impl HlsBaseSink {
                 context.pdt_base_running_time = Some(running_time);
             }
 
-            let settings = self.settings.lock().unwrap();
+            let settings = lock_nonpoisoning(&self.settings);
 
             // Calculate the mapping from running time to UTC
             // calculate pdt_base_utc for each segment if program_date_time_reference == System
