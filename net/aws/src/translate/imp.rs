@@ -26,6 +26,9 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::LazyLock;
 use std::sync::{mpsc, Mutex};
 
+#[cfg(feature = "reqwest")]
+use crate::http_client;
+
 #[allow(deprecated)]
 static AWS_BEHAVIOR_VERSION: LazyLock<aws_config::BehaviorVersion> =
     LazyLock::new(aws_config::BehaviorVersion::v2023_11_09);
@@ -786,7 +789,16 @@ impl Translate {
 
             Some(items)
         } else {
-            None
+            match self.upstream_latency() {
+                Some((true, _min, _max)) => None,
+                _ => {
+                    let items = self.state.lock().unwrap().accumulator.drain(false);
+
+                    gst::log!(CAT, imp = self, "not-live, draining");
+
+                    Some(items)
+                }
+            }
         };
 
         {
@@ -890,6 +902,9 @@ impl Translate {
 
         let config_loader =
             config_loader.stalled_stream_protection(StalledStreamProtectionConfig::disabled());
+
+        #[cfg(feature = "reqwest")]
+        let config_loader = config_loader.http_client(http_client::client());
 
         let config = futures::executor::block_on(config_loader.load());
         gst::log!(CAT, imp = self, "Using region {}", config.region().unwrap());

@@ -14,6 +14,8 @@
  */
 use gst::glib;
 
+#[cfg(feature = "reqwest")]
+pub mod http_client;
 mod polly;
 mod s3hlssink;
 mod s3sink;
