@@ -15,6 +15,7 @@
 use gst::glib;
 
 mod polly;
+mod s3hlsmultivariantsink;
 mod s3hlssink;
 mod s3sink;
 mod s3src;
@@ -35,6 +36,7 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     transcriber2::register(plugin)?;
     translate::register(plugin)?;
     s3hlssink::register(plugin)?;
+    s3hlsmultivariantsink::register(plugin)?;
     polly::register(plugin)?;
 
     Ok(())
