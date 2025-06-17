@@ -16,6 +16,7 @@ use gst::subclass::prelude::*;
 use m3u8_rs::MediaSegment;
 use std::fs;
 use std::io::Write;
+use std::panic;
 use std::path;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -40,6 +41,19 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
         Some("HLS Base sink"),
     )
 });
+
+// Helper function to lock mutexes without panicking on poisoning
+// See https://github.com/rust-lang/rust/issues/134645 for upcoming std::sync::nonpoison
+fn lock_nonpoisoning<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            // Log the error but recover - better than crashing the entire pipeline
+            gst::warning!(CAT, "Mutex was poisoned, recovering data. This may indicate a previous panic in another thread.");
+            poisoned.into_inner()
+        }
+    }
+}
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
@@ -170,7 +184,7 @@ impl ObjectImpl for HlsBaseSink {
     }
 
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
-        let mut settings = self.settings.lock().unwrap();
+        let mut settings = lock_nonpoisoning(&self.settings);
         match pspec.name() {
             "playlist-location" => {
                 settings.playlist_location = value
@@ -213,7 +227,7 @@ impl ObjectImpl for HlsBaseSink {
     }
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
-        let settings = self.settings.lock().unwrap();
+        let settings = lock_nonpoisoning(&self.settings);
         match pspec.name() {
             "playlist-location" => settings.playlist_location.to_value(),
             "playlist-root" => settings.playlist_root.to_value(),
@@ -299,7 +313,7 @@ impl ElementImpl for HlsBaseSink {
 
         match transition {
             gst::StateChange::PlayingToPaused => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = lock_nonpoisoning(&self.state);
                 if let Some(context) = state.context.as_mut() {
                     // reset mapping from rt to utc. during pause
                     // rt is stopped but utc keep moving so need to
@@ -324,8 +338,8 @@ impl HlsBaseSinkImpl for HlsBaseSink {}
 
 impl HlsBaseSink {
     pub fn open_playlist(&self, playlist: Playlist, segment_template: String) {
-        let mut state = self.state.lock().unwrap();
-        let settings = self.settings.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
+        let settings = lock_nonpoisoning(&self.settings);
         state.context = Some(PlaylistContext {
             pdt_base_utc: None,
             pdt_base_running_time: None,
@@ -339,19 +353,19 @@ impl HlsBaseSink {
     }
 
     pub fn close_playlist(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
         if let Some(mut context) = state.context.take() {
             if context.playlist.is_rendering() {
                 context
                     .playlist
-                    .stop(self.settings.lock().unwrap().enable_endlist);
+                    .stop(lock_nonpoisoning(&self.settings).enable_endlist);
                 let _ = self.write_playlist(&mut context);
             }
         }
     }
 
     pub fn get_fragment_stream(&self, fragment_id: u32) -> Option<(gio::OutputStream, String)> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
         let context = match state.context.as_mut() {
             Some(context) => context,
             None => {
@@ -380,7 +394,7 @@ impl HlsBaseSink {
     }
 
     pub fn get_segment_uri(&self, location: &str, prefix: Option<&str>) -> String {
-        let settings = self.settings.lock().unwrap();
+        let settings = lock_nonpoisoning(&self.settings);
         let file_name = path::Path::new(&location)
             .file_name()
             .unwrap()
@@ -404,7 +418,7 @@ impl HlsBaseSink {
         timestamp: Option<DateTime<Utc>>,
         mut segment: MediaSegment,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = lock_nonpoisoning(&self.state);
         let context = match state.context.as_mut() {
             Some(context) => context,
             None => {
@@ -419,7 +433,7 @@ impl HlsBaseSink {
                 context.pdt_base_running_time = Some(running_time);
             }
 
-            let settings = self.settings.lock().unwrap();
+            let settings = lock_nonpoisoning(&self.settings);
 
             // Calculate the mapping from running time to UTC
             // calculate pdt_base_utc for each segment if program_date_time_reference == System
@@ -430,8 +444,36 @@ impl HlsBaseSink {
             {
                 let obj = self.obj();
                 let now_utc = Utc::now();
-                let now_gst = obj.clock().unwrap().time().unwrap();
-                let pts_clock_time = running_time + obj.base_time().unwrap();
+
+                let (now_gst, base_time) =
+                    match (obj.clock().and_then(|c| c.time()), obj.base_time()) {
+                        (Some(clock_time), Some(base_time)) => (clock_time, base_time),
+                        _ => {
+                            gst::warning!(
+                                CAT,
+                                imp = self,
+                                "Could not get clock or base time, using current time"
+                            );
+                            context.pdt_base_utc = Some(now_utc);
+                            return Ok(gst::FlowSuccess::Ok);
+                        }
+                    };
+
+                // Handle potential overflow in clock time calculation
+                // This should only occur with invalid timestamp data or extreme edge cases
+                let pts_clock_time = match running_time.checked_add(base_time) {
+                    Some(time) => time,
+                    None => {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Clock time overflow: running_time={:?} + base_time={:?}. This indicates invalid timestamp data.",
+                            running_time,
+                            base_time
+                        );
+                        return Err(gst::FlowError::Error);
+                    }
+                };
 
                 let diff = now_gst.nseconds() as i64 - pts_clock_time.nseconds() as i64;
                 let pts_utc = now_utc
@@ -453,17 +495,45 @@ impl HlsBaseSink {
                 } else {
                     // Add the diff of running time to UTC time
                     // date_time = first_segment_utc + (current_seg_running_time - first_seg_running_time)
-                    let date_time =
-                        context
-                            .pdt_base_utc
-                            .unwrap()
-                            .checked_add_signed(Duration::nanoseconds(
-                                running_time
-                                    .opt_checked_sub(context.pdt_base_running_time)
-                                    .unwrap()
-                                    .unwrap()
-                                    .nseconds() as i64,
-                            ));
+                    let date_time = if let (Some(base_utc), Some(base_running_time)) =
+                        (context.pdt_base_utc, context.pdt_base_running_time)
+                    {
+                        // Handle negative PTS values that would cause panic
+                        match running_time.opt_checked_sub(base_running_time) {
+                            Ok(Some(time_diff)) => base_utc.checked_add_signed(
+                                Duration::nanoseconds(time_diff.nseconds() as i64),
+                            ),
+                            Ok(None) => {
+                                // Negative time difference - PTS going backwards
+                                gst::warning!(
+                                    CAT,
+                                    imp = self,
+                                    "PTS going backwards: running_time={:?} < base_running_time={:?}. defaulting to base time",
+                                    running_time,
+                                    base_running_time
+                                );
+                                // Use base time for negative differences to maintain playlist continuity
+                                Some(base_utc)
+                            }
+                            Err(_) => {
+                                gst::warning!(
+                                    CAT,
+                                    imp = self,
+                                    "Time overflow detected in PTS calculation: running_time={:?}, base_running_time={:?}",
+                                    running_time,
+                                    base_running_time
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "Missing base UTC or running time for PTS calculation"
+                        );
+                        None
+                    };
 
                     if let Some(date_time) = date_time {
                         segment.program_date_time = Some(date_time.into());
@@ -481,11 +551,11 @@ impl HlsBaseSink {
         self.write_playlist(context).inspect(|_res| {
             let mut s = gst::Structure::builder("hls-segment-added")
                 .field("location", location)
-                .field("running-time", running_time.unwrap())
-                .field("duration", duration);
-            if let Some(ts) = timestamp {
-                s = s.field("timestamp", ts.timestamp());
-            };
+                .field("duration", duration)
+                // Only add running-time if it exists to avoid unwrap panic
+                .field_if_some("running-time", running_time)
+                .field_if_some("timestamp", timestamp.map(|ts| ts.timestamp()));
+
             self.post_message(
                 gst::message::Element::builder(s.build())
                     .src(&*self.obj())
