@@ -16,7 +16,8 @@ use gio::prelude::*;
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use m3u8_rs::{MediaPlaylist, MediaPlaylistType, MediaSegment};
+use m3u8_rs::{ExtTag, MediaPlaylist, MediaPlaylistType, MediaSegment};
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
@@ -25,6 +26,7 @@ const DEFAULT_TARGET_DURATION: u32 = 15;
 const DEFAULT_PLAYLIST_TYPE: HlsSink3PlaylistType = HlsSink3PlaylistType::Unspecified;
 const DEFAULT_I_FRAMES_ONLY_PLAYLIST: bool = false;
 const DEFAULT_SEND_KEYFRAME_REQUESTS: bool = true;
+const SIGNAL_GET_WRITE_SEGMENT: &str = "get-write-segment";
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new("hlssink3", gst::DebugColorFlags::empty(), Some("HLS sink"))
@@ -91,6 +93,57 @@ impl From<Option<&MediaPlaylistType>> for HlsSink3PlaylistType {
         }
     }
 }
+
+impl Default for super::GstMediaSegment {
+    fn default() -> Self {
+        glib::Object::new()
+    }
+}
+
+impl super::GstMediaSegment {
+    /// Set the media segment title
+    /// `#EXTINF:<duration>,[<title>]`
+    pub fn set_title(&self, title: String) {
+        self.imp().inner.lock().unwrap().title = Some(title);
+    }
+
+    pub fn set_time(&self, program_date_time: DateTime<Utc>) {
+        self.imp().inner.lock().unwrap().program_date_time = Some(program_date_time.into());
+    }
+
+    /// Sets the media segment's unknown_tags
+    /// `#EXT-`
+    pub fn set_unknown_tags(&self, tags: HashMap<String, Option<String>>) {
+        self.imp().inner.lock().unwrap().unknown_tags = tags
+            .into_iter()
+            .map(|(tag, rest)| ExtTag { tag, rest })
+            .collect();
+    }
+
+    fn get_segment(&self) -> MediaSegment {
+        self.imp().inner.lock().unwrap().clone()
+    }
+}
+
+#[derive(Default)]
+pub struct GstMediaSegment {
+    pub inner: Mutex<MediaSegment>,
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for GstMediaSegment {
+    const NAME: &'static str = "GstMediaSegment";
+    type Type = super::GstMediaSegment;
+    type ParentType = glib::Object;
+}
+
+pub trait GstMediaSegmentImpl: BinImpl + ObjectSubclass<Type: IsA<super::GstMediaSegment>> {}
+
+unsafe impl<T: GstMediaSegmentImpl> IsSubclassable<T> for super::GstMediaSegment {}
+
+impl ObjectImpl for GstMediaSegment {}
+
+impl GstObjectImpl for GstMediaSegment {}
 
 struct HlsSink3Settings {
     location: String,
@@ -254,6 +307,24 @@ impl ObjectImpl for HlsSink3 {
             }
             _ => unimplemented!(),
         };
+    }
+
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
+            vec![glib::subclass::Signal::builder(SIGNAL_GET_WRITE_SEGMENT)
+                .param_types([
+                    super::GstMediaSegment::static_type(),
+                    f32::static_type(),
+                    i64::static_type(),
+                    u64::static_type(),
+                ])
+                .return_type::<Option<super::GstMediaSegment>>()
+                .action()
+                .class_handler(|args| Some(args[1].clone()))
+                .build()]
+        });
+
+        SIGNALS.as_ref()
     }
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
@@ -628,6 +699,27 @@ impl HlsSink3 {
 
         drop(state);
 
+        let MediaSegment {
+            title,
+            unknown_tags,
+            program_date_time,
+            ..
+        } = self
+            .obj()
+            .emit_by_name::<Option<super::GstMediaSegment>>(
+                SIGNAL_GET_WRITE_SEGMENT,
+                &[
+                    &glib::Object::new::<super::GstMediaSegment>(),
+                    &duration_msec,
+                    &fragment_start_timestamp
+                        .map(|d| d.timestamp())
+                        .unwrap_or(-1),
+                    &running_time.map(|d| d.useconds()).unwrap_or(0u64),
+                ],
+            )
+            .unwrap_or_default()
+            .get_segment();
+
         let obj = self.obj();
         let base_imp = obj.upcast_ref::<HlsBaseSink>().imp();
         let uri = base_imp.get_segment_uri(&location, None);
@@ -638,7 +730,10 @@ impl HlsSink3 {
             fragment_start_timestamp,
             MediaSegment {
                 uri,
+                title,
+                unknown_tags,
                 duration: duration_msec,
+                program_date_time,
                 ..Default::default()
             },
         );
