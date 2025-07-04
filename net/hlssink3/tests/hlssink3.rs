@@ -266,7 +266,7 @@ fn test_hlssink3_element_with_video_content() -> Result<(), ()> {
         r###"#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:2
-#EXT-X-MEDIA-SEQUENCE:4
+#EXT-X-MEDIA-SEQUENCE:3
 #EXTINF:1.999,
 segment00003.ts
 #EXTINF:0.333,
@@ -483,11 +483,11 @@ fn test_hlssink3_write_correct_playlist_content() -> Result<(), ()> {
     assert_eq!(expected_messages, actual_messages);
 
     let contents = playlist_content.lock().unwrap();
+    // A simple playlist for one segment is generated
     assert_eq!(
         r###"#EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:15
-#EXT-X-MEDIA-SEQUENCE:1
 #EXTINF:1.666,
 segments/my-own-filename-000.ts
 #EXT-X-ENDLIST
