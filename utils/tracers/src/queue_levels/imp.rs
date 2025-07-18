@@ -99,8 +99,24 @@ static APPSRC_TYPE: LazyLock<glib::Type> = LazyLock::new(|| {
     }
 });
 
+static APPSINK_TYPE: LazyLock<glib::Type> = LazyLock::new(|| {
+    if let Some(queue) = gst::ElementFactory::find("appsink").and_then(|f| f.load().ok()) {
+        queue.element_type()
+    } else {
+        gst::warning!(CAT, "Can't instantiate appsink element");
+        glib::Type::INVALID
+    }
+});
+
 fn is_queue_type(type_: glib::Type) -> bool {
-    [*QUEUE_TYPE, *QUEUE2_TYPE, *MULTIQUEUE_TYPE, *APPSRC_TYPE].contains(&type_)
+    [
+        *QUEUE_TYPE,
+        *QUEUE2_TYPE,
+        *MULTIQUEUE_TYPE,
+        *APPSRC_TYPE,
+        *APPSINK_TYPE,
+    ]
+    .contains(&type_)
 }
 
 #[derive(Debug)]
@@ -426,18 +442,21 @@ impl QueueLevels {
             None => return,
         };
 
-        let (max_size_bytes, max_size_time, max_size_buffers) = if element.type_() == *APPSRC_TYPE {
-            (
+        let (max_size_bytes, max_size_time, max_size_buffers) = match element.type_() {
+            t if t == *APPSRC_TYPE || t == *APPSINK_TYPE => (
                 element.property::<u64>("max-bytes"),
                 element.property::<u64>("max-time"),
                 element.property::<u64>("max-buffers"),
-            )
-        } else {
-            (
-                element.property::<u32>("max-size-bytes") as u64,
+            ),
+            t if t == *QUEUE_TYPE || t == *QUEUE2_TYPE || t == *MULTIQUEUE_TYPE => (
+                u64::from(element.property::<u32>("max-size-bytes")),
                 element.property::<u64>("max-size-time"),
-                element.property::<u32>("max-size-buffers") as u64,
-            )
+                u64::from(element.property::<u32>("max-size-buffers")),
+            ),
+            _ => {
+                gst::warning!(CAT, "Unexpected element type: {}", element.type_());
+                (0_u64, 0_u64, 0_u64)
+            }
         };
 
         if element.type_() == *MULTIQUEUE_TYPE {
@@ -495,7 +514,7 @@ impl QueueLevels {
             }
         } else {
             let (cur_level_bytes, cur_level_time, cur_level_buffers) =
-                if element.type_() == *APPSRC_TYPE {
+                if element.type_() == *APPSRC_TYPE || element.type_() == *APPSINK_TYPE {
                     (
                         element.property::<u64>("current-level-bytes") as u32,
                         element.property::<u64>("current-level-time"),
