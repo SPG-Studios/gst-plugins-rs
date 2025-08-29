@@ -5441,6 +5441,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-videorate2"
+version = "0.15.0-alpha.1"
+dependencies = [
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-check",
+ "gstreamer-video",
+]
+
+[[package]]
 name = "gst-plugin-vvdec"
 version = "0.15.0-alpha.1"
 dependencies = [

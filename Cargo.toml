@@ -68,6 +68,7 @@ members = [
     "video/gtk4",
     "video/hsv",
     "video/png",
+    "video/videorate2",
     "video/rav1e",
     "video/skia",
     "video/videofx",
@@ -130,6 +131,7 @@ default-members = [
     "video/gif",
     "video/hsv",
     "video/png",
+    "video/videorate2",
     "video/rav1e",
 ]
 
