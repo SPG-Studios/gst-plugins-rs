@@ -31,7 +31,7 @@ pub enum OutgoingMessage {
     /// Let consumer know that the requested session is starting with the specified identifier
     #[serde(rename_all = "camelCase")]
     SessionStarted {
-        producer_peer_id: String,
+        peer_id: String,
         consumer_peer_id: String,
         session_id: String,
     },

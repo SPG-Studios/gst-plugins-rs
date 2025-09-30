@@ -356,7 +356,7 @@ impl Handler {
         self.items.push_back((
             consumer_id.to_string(),
             p::OutgoingMessage::SessionStarted {
-                producer_peer_id: producer_id.to_string(),
+                peer_id: producer_id.to_string(),
                 consumer_peer_id: consumer_id.to_string(),
                 session_id: session_id.clone(),
             },
@@ -376,7 +376,7 @@ impl Handler {
             self.items.push_back((
                 listening_peer.id.to_string(),
                 p::OutgoingMessage::SessionStarted {
-                    producer_peer_id: producer_id.to_string(),
+                    peer_id: producer_id.to_string(),
                     consumer_peer_id: consumer_id.to_string(),
                     session_id: session_id.clone(),
                 },
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -609,6 +609,92 @@ mod tests {
                 peer_id: "consumer".to_string(),
                 session_id: session_id.to_string(),
                 offer: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_start_session_with_listeners() {
+        let (mut tx, rx) = mpsc::unbounded();
+        let mut handler = Handler::new(Box::pin(rx));
+
+        new_peer(&mut tx, &mut handler, "listener").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Listener],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("listener".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let _ = handler.next().await.unwrap();
+
+        new_peer(&mut tx, &mut handler, "producer").await;
+
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Producer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Producer],
+                peer_id: Some("producer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "consumer").await;
+
+        let message = p::IncomingMessage::StartSession(p::StartSessionMessage {
+            peer_id: "producer".to_string(),
+            offer: None,
+        });
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "consumer");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing {sent_message:?}"),
+        };
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::StartSession {
+                peer_id: "consumer".to_string(),
+                session_id: session_id.to_string(),
+                offer: None,
+            }
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::SessionStarted {
+                peer_id: "producer".to_string(),
+                consumer_peer_id: "consumer".to_string(),
+                session_id: session_id.to_string(),
             }
         );
     }
@@ -642,7 +728,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -740,7 +826,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -763,6 +849,120 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
 
         assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_end_session_consumer_with_listeners() {
+        let (mut tx, rx) = mpsc::unbounded();
+        let mut handler = Handler::new(Box::pin(rx));
+
+        new_peer(&mut tx, &mut handler, "listener").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Listener],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("listener".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Listener],
+                peer_id: Some("listener".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "producer").await;
+
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Producer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Producer],
+                peer_id: Some("producer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "consumer").await;
+
+        let message = p::IncomingMessage::StartSession(p::StartSessionMessage {
+            peer_id: "producer".to_string(),
+            offer: None,
+        });
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "consumer");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let _producer_start_session = handler.next().await.unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let message = p::IncomingMessage::EndSession(p::EndSessionMessage {
+            session_id: session_id.clone(),
+        });
+
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                session_id: session_id.clone()
+            })
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
             p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
@@ -798,7 +998,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -815,6 +1015,114 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
 
         assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_consumer_with_listeners() {
+        let (mut tx, rx) = mpsc::unbounded();
+        let mut handler = Handler::new(Box::pin(rx));
+
+        new_peer(&mut tx, &mut handler, "listener").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Listener],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("listener".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Listener],
+                peer_id: Some("listener".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "producer").await;
+
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Producer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Producer],
+                peer_id: Some("producer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "consumer").await;
+
+        let message = p::IncomingMessage::StartSession(p::StartSessionMessage {
+            peer_id: "producer".to_string(),
+            offer: None,
+        });
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "consumer");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let _producer_start_session = handler.next().await.unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        tx.send(("consumer".to_string(), None)).await.unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                session_id: session_id.clone()
+            })
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
             p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
@@ -850,7 +1158,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -872,6 +1180,119 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
 
         assert_eq!(peer_id, "consumer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_end_session_producer_with_listeners() {
+        let (mut tx, rx) = mpsc::unbounded();
+        let mut handler = Handler::new(Box::pin(rx));
+
+        new_peer(&mut tx, &mut handler, "listener").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Listener],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("listener".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Listener],
+                peer_id: Some("listener".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "producer").await;
+
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Producer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Producer],
+                peer_id: Some("producer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "consumer").await;
+
+        let message = p::IncomingMessage::StartSession(p::StartSessionMessage {
+            peer_id: "producer".to_string(),
+            offer: None,
+        });
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "consumer");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let _producer_start_session = handler.next().await.unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let message = p::IncomingMessage::EndSession(p::EndSessionMessage {
+            session_id: session_id.clone(),
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "consumer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                session_id: session_id.clone()
+            })
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
             p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
@@ -907,7 +1328,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -972,7 +1393,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1063,7 +1484,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1151,7 +1572,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1191,6 +1612,132 @@ mod tests {
             p::OutgoingMessage::EndSession(p::EndSessionMessage {
                 session_id: session_id.clone(),
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_producing_with_listeners() {
+        let (mut tx, rx) = mpsc::unbounded();
+        let mut handler = Handler::new(Box::pin(rx));
+
+        new_peer(&mut tx, &mut handler, "listener").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Listener],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("listener".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Listener],
+                peer_id: Some("listener".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "producer").await;
+
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Producer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Producer],
+                peer_id: Some("producer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "consumer").await;
+
+        let message = p::IncomingMessage::StartSession(p::StartSessionMessage {
+            peer_id: "producer".to_string(),
+            offer: None,
+        });
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "consumer");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::StartSession {
+                peer_id: "consumer".to_string(),
+                session_id: session_id.clone(),
+                offer: None,
+            }
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "consumer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                session_id: session_id.clone(),
+            })
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
         );
     }
 
@@ -1245,7 +1792,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1272,7 +1819,7 @@ mod tests {
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1384,7 +1931,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session0_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1409,7 +1956,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session1_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1460,7 +2007,7 @@ mod tests {
         assert_eq!(peer_id, "producer-consumer");
         let session0_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1529,7 +2076,7 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref producer_peer_id,
+                peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
             } => {
@@ -1550,5 +2097,113 @@ mod tests {
                 offer: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_start_session_passive_consumer_with_listeners() {
+        let (mut tx, rx) = mpsc::unbounded();
+        let mut handler = Handler::new(Box::pin(rx));
+
+        new_peer(&mut tx, &mut handler, "listener").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Listener],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("listener".to_string(), Some(message)))
+            .await
+            .unwrap();
+        let _ = handler.next().await.unwrap();
+
+        new_peer(&mut tx, &mut handler, "consumer").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Consumer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("consumer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Consumer],
+                peer_id: Some("consumer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        new_peer(&mut tx, &mut handler, "producer").await;
+        let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
+            roles: vec![p::PeerRole::Producer],
+            meta: None,
+            peer_id: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                roles: vec![p::PeerRole::Producer],
+                peer_id: Some("producer".to_string()),
+                meta: Default::default()
+            })
+        );
+
+        let message = p::IncomingMessage::StartSession(p::StartSessionMessage {
+            peer_id: "consumer".to_string(),
+            offer: None,
+        });
+        tx.send(("producer".to_string(), Some(message)))
+            .await
+            .unwrap();
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "consumer");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "producer");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::StartSession {
+                peer_id: "consumer".to_string(),
+                session_id,
+                offer: None,
+            }
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                peer_id: ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing"),
+        };
     }
 }
