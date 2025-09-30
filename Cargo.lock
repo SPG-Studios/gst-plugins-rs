@@ -3227,6 +3227,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-audio",
  "gstreamer-check",
+ "gstreamer-video",
  "gtk4",
  "num-rational",
  "parking_lot",

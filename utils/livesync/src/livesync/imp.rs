@@ -1489,6 +1489,17 @@ impl LiveSync {
             }
         }
 
+        if let Some(mut tc) = buffer
+            .iter_meta::<gst_video::VideoTimeCodeMeta>()
+            .last()
+            .map(|meta| meta.tc())
+        {
+            for mut meta in buffer.iter_meta_mut::<gst_video::VideoTimeCodeMeta>() {
+                tc.increment_frame();
+                meta.set_tc(tc.clone());
+            }
+        }
+
         buffer.set_dts(dts);
         buffer.set_pts(pts);
         buffer.set_flags(gst::BufferFlags::GAP);
