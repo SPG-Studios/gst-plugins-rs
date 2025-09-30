@@ -356,7 +356,8 @@ impl Handler {
         self.items.push_back((
             consumer_id.to_string(),
             p::OutgoingMessage::SessionStarted {
-                peer_id: producer_id.to_string(),
+                producer_peer_id: producer_id.to_string(),
+                consumer_peer_id: consumer_id.to_string(),
                 session_id: session_id.clone(),
             },
         ));
@@ -375,7 +376,8 @@ impl Handler {
             self.items.push_back((
                 listening_peer.id.to_string(),
                 p::OutgoingMessage::SessionStarted {
-                    peer_id: String::new(),
+                    producer_peer_id: producer_id.to_string(),
+                    consumer_peer_id: consumer_id.to_string(),
                     session_id: session_id.clone(),
                 },
             ))
@@ -588,10 +590,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing {sent_message:?}"),
@@ -638,10 +642,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -677,7 +683,19 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+            p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                session_id: session_id.clone()
+            })
+        );
+
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+
+        assert_eq!(peer_id, "listener");
+        assert_eq!(
+            sent_message,
+            p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                session_id: session_id.clone()
+            })
         );
 
         let (peer_id, sent_message) = handler.next().await.unwrap();
@@ -722,10 +740,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -778,10 +798,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -828,10 +850,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -883,10 +907,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -946,10 +972,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -1035,10 +1063,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -1121,10 +1151,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -1213,10 +1245,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing {sent_message:?}"),
@@ -1234,6 +1268,21 @@ mod tests {
             }
         );
 
+        let (peer_id, sent_message) = handler.next().await.unwrap();
+        assert_eq!(peer_id, "listener");
+        let session_id = match sent_message {
+            p::OutgoingMessage::SessionStarted {
+                ref producer_peer_id,
+                ref consumer_peer_id,
+                ref session_id,
+            } => {
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
+                session_id.to_string()
+            }
+            _ => panic!("SessionStarted message missing {sent_message:?}"),
+        };
+
         let message = p::IncomingMessage::SetPeerStatus(p::PeerStatus {
             roles: vec![],
             meta: None,
@@ -1250,6 +1299,14 @@ mod tests {
                 p::OutgoingMessage::EndSession(p::EndSessionMessage {
                     session_id: session_id.clone(),
                 })
+            )
+        );
+
+        assert_eq!(
+            handler.next().await.unwrap(),
+            (
+                "listener".into(),
+                p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
             )
         );
 
@@ -1327,10 +1384,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session0_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -1350,10 +1409,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session1_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -1399,10 +1460,12 @@ mod tests {
         assert_eq!(peer_id, "producer-consumer");
         let session0_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "producer-consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),
@@ -1466,10 +1529,12 @@ mod tests {
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
             p::OutgoingMessage::SessionStarted {
-                ref peer_id,
+                ref producer_peer_id,
+                ref consumer_peer_id,
                 ref session_id,
             } => {
-                assert_eq!(peer_id, "producer");
+                assert_eq!(producer_peer_id, "producer");
+                assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
             }
             _ => panic!("SessionStarted message missing"),

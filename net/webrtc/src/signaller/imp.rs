@@ -409,11 +409,14 @@ impl Signaller {
                             }
                         }
                         p::OutgoingMessage::SessionStarted {
-                            peer_id,
+                            producer_peer_id,
+                            consumer_peer_id: _,
                             session_id,
                         } => {
-                            self.obj()
-                                .emit_by_name::<()>("session-started", &[&session_id, &peer_id]);
+                            self.obj().emit_by_name::<()>(
+                                "session-started",
+                                &[&session_id, &producer_peer_id],
+                            );
                         }
                         p::OutgoingMessage::StartSession {
                             session_id,

@@ -30,7 +30,11 @@ pub enum OutgoingMessage {
     },
     /// Let consumer know that the requested session is starting with the specified identifier
     #[serde(rename_all = "camelCase")]
-    SessionStarted { peer_id: String, session_id: String },
+    SessionStarted {
+        producer_peer_id: String,
+        consumer_peer_id: String,
+        session_id: String,
+    },
     /// Signals that the session the peer was in was ended
     EndSession(EndSessionMessage),
     /// Messages directly forwarded from one peer to another
