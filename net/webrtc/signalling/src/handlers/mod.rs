@@ -157,17 +157,17 @@ impl Handler {
         self.stop_producer(peer_id);
         self.stop_consumer(peer_id);
 
-        for (id, p) in self.peers.iter() {
-            if !p.listening() {
-                continue;
-            }
+        let listeners = self.filter_peers(|status| status.listening());
 
-            let message = p::OutgoingMessage::PeerStatusChanged(PeerStatus {
-                roles: Default::default(),
-                meta: peer_status.meta.clone(),
-                peer_id: Some(peer_id.to_string()),
-            });
-            self.items.push_back((id.to_string(), message));
+        for listening_peer in listeners {
+            self.items.push_back((
+                listening_peer.id.to_string(),
+                p::OutgoingMessage::PeerStatusChanged(PeerStatus {
+                    roles: Default::default(),
+                    meta: peer_status.meta.clone(),
+                    peer_id: Some(peer_id.to_string()),
+                }),
+            ));
         }
     }
 
@@ -203,9 +203,9 @@ impl Handler {
 
         let listeners = self.filter_peers(|status| status.listening());
 
-        for peer in listeners {
+        for listening_peer in listeners {
             self.items.push_back((
-                peer.id.to_string(),
+                listening_peer.id.to_string(),
                 p::OutgoingMessage::EndSession(p::EndSessionMessage {
                     session_id: session_id.to_string(),
                 }),
@@ -286,13 +286,12 @@ impl Handler {
         let mut status = status.clone();
         status.peer_id = Some(peer_id.to_string());
         self.peers.insert(peer_id.to_string(), status.clone());
-        for (id, peer) in &self.peers {
-            if !peer.listening() {
-                continue;
-            }
 
+        let listeners = self.filter_peers(|status| status.listening());
+
+        for listening_peer in listeners {
             self.items.push_back((
-                id.to_string(),
+                listening_peer.id.to_string(),
                 p::OutgoingMessage::PeerStatusChanged(p::PeerStatus {
                     peer_id: Some(peer_id.to_string()),
                     roles: status.roles.clone(),
@@ -372,9 +371,9 @@ impl Handler {
 
         let listeners = self.filter_peers(|status| status.listening());
 
-        for peer in listeners {
+        for listening_peer in listeners {
             self.items.push_back((
-                peer.id.to_string(),
+                listening_peer.id.to_string(),
                 p::OutgoingMessage::SessionStarted {
                     peer_id: String::new(),
                     session_id: session_id.clone(),
