@@ -201,6 +201,17 @@ impl Handler {
             }),
         ));
 
+        let listeners = self.filter_peers(|status| status.listening());
+
+        for peer in listeners {
+            self.items.push_back((
+                peer.id.to_string(),
+                p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                    session_id: session_id.to_string(),
+                }),
+            ))
+        }
+
         Ok(())
     }
 
@@ -358,6 +369,18 @@ impl Handler {
                 offer: offer.map(String::from),
             },
         ));
+
+        let listeners = self.filter_peers(|status| status.listening());
+
+        for peer in listeners {
+            self.items.push_back((
+                peer.id.to_string(),
+                p::OutgoingMessage::SessionStarted {
+                    peer_id: String::new(),
+                    session_id: session_id.clone(),
+                },
+            ))
+        }
 
         info!(id = %session_id, producer_id = %producer_id, consumer_id = %consumer_id, "started a session");
 
