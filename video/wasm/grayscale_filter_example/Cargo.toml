@@ -1,0 +1,10 @@
+[package]
+name = "wasm-grayscale-filter"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+name = "grayscale"
+path = "src/lib.rs"
+[dependencies]
