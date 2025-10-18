@@ -3944,9 +3944,14 @@ dependencies = [
  "anyhow",
  "gst-plugin-version-helper",
  "gstreamer",
+ "gstreamer-app",
  "gstreamer-base",
+ "gstreamer-check",
  "gstreamer-video",
  "once_cell",
+ "pretty_assertions",
+ "sha2",
+ "tempfile",
  "wasmtime",
 ]
 

@@ -19,11 +19,18 @@ gst-video = { workspace = true, features = ["v1_26"] }
 
 [lib]
 name = "gstwasm"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [build-dependencies]
 gst-plugin-version-helper.workspace = true
+
+[dev-dependencies]
+pretty_assertions = "1"
+gst-check.workspace = true
+gst-app.workspace = true
+tempfile = "3.23.0"
+sha2 = "0.10.9"
 
 [package.metadata.capi]
 min_version = "0.9.21"
