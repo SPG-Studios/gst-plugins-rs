@@ -17,7 +17,7 @@ type WasmAllocate = wasmtime::TypedFunc<u32, u32>;
 //ptr,len
 type WasmDeallocate = wasmtime::TypedFunc<(u32, u32), ()>;
 //in_ptr,in_len,out_ptr,out_len -> result
-type WasmProcessFrame = wasmtime::TypedFunc<(u32, u32, u32, u32), i32>;
+type WasmProcessBuffer = wasmtime::TypedFunc<(u32, u32, u32, u32), i32>;
 //caps_str,caps_len
 type WasmSetCaps = wasmtime::TypedFunc<(u32, u32), ()>;
 //caps_str,caps_len -> (out_caps_ptr << 32 | out_caps_len)
@@ -46,7 +46,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             module_path: None,
-            entrypoint: "process_frame".to_string(),
+            entrypoint: "process_buffer".to_string(),
             config_str: None,
         }
     }
@@ -57,7 +57,7 @@ struct WasmState {
     instance: Instance,
     allocate_fn: WasmAllocate,
     deallocate_fn: WasmDeallocate,
-    process_frame_fn: WasmProcessFrame,
+    process_buffer_fn: WasmProcessBuffer,
     configure_fn: Option<WasmConfig>,
     set_caps_fn: Option<WasmSetCaps>,
     transform_caps_fn: Option<WasmTransformCaps>,
@@ -90,8 +90,8 @@ impl ObjectImpl for WasmFilter {
                     .build(),
                 glib::ParamSpecString::builder("entrypoint")
                     .nick("Entrypoint")
-                    .blurb("Name of the exported WASM function to call per frame")
-                    .default_value("process_frame")
+                    .blurb("Name of the exported WASM function to call per buffer")
+                    .default_value("process_buffer")
                     .flags(ParamFlags::READWRITE)
                     .build(),
                 glib::ParamSpecString::builder("config-str")
@@ -324,7 +324,7 @@ impl BaseTransformImpl for WasmFilter {
                 Ok(s)
             }
             Err(e) => {
-                gst::error!(CAT, obj = self.obj(), "Trnasform frame failed: {}", e);
+                gst::error!(CAT, obj = self.obj(), "Trnasform buffer failed: {}", e);
                 Err(gst::FlowError::Error)
             }
         }
@@ -385,12 +385,12 @@ impl BaseTransformImpl for WasmFilter {
                 )
             })?;
 
-        let process_frame_fn = instance
+        let process_buffer_fn = instance
             .get_typed_func::<(u32, u32, u32, u32), i32>(&mut store, &settings.entrypoint)
             .map_err(|e| {
                 gst::error_msg!(
                     gst::CoreError::Failed,
-                    ["Failed to get process_frame function: {}", e]
+                    ["Failed to get process_buffer function: {}", e]
                 )
             })?;
 
@@ -466,7 +466,7 @@ impl BaseTransformImpl for WasmFilter {
             instance,
             allocate_fn,
             deallocate_fn,
-            process_frame_fn,
+            process_buffer_fn,
             configure_fn,
             set_caps_fn,
             transform_caps_fn,
@@ -504,7 +504,7 @@ impl WasmFilter {
             .ok_or_else(|| anyhow::anyhow!("WASM module must export 'memory'"))?;
         let allocate_fn = &wasm_state.allocate_fn;
         let deallocate_fn = &wasm_state.deallocate_fn;
-        let process_fn = &wasm_state.process_frame_fn;
+        let process_buffer_fn = &wasm_state.process_buffer_fn;
 
         let in_map = in_buffer.map_readable()?;
         let input_data = in_map.as_slice();
@@ -519,7 +519,7 @@ impl WasmFilter {
 
         memory.write(&mut *store, input_ptr as usize, input_data)?;
 
-        let result: i32 = process_fn.call(
+        let result: i32 = process_buffer_fn.call(
             &mut *store,
             (input_ptr, input_size, output_ptr, output_size),
         )?;

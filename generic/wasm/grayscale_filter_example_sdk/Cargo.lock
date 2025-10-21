@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "gst-wasm-filter-sdk"
+version = "0.1.0"
+dependencies = [
+ "once_cell",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -108,7 +117,5 @@ checksum = "462eeb75aeb73aea900253ce739c8e18a67423fadf006037cd3ff27e82748a06"
 name = "wasm-grayscale-filter"
 version = "0.1.0"
 dependencies = [
- "once_cell",
- "serde",
- "serde_json",
+ "gst-wasm-filter-sdk",
 ]
