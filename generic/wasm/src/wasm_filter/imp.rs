@@ -407,7 +407,7 @@ impl BaseTransformImpl for WasmFilter {
             .ok();
 
         let configure_fn = instance
-            .get_typed_func::<(u32, u32), ()>(&mut store, "configure")
+            .get_typed_func::<(u32, u32), ()>(&mut store, "set_config")
             .ok();
         if let Some(config_str) = settings.config_str {
             let config_str_len = config_str.len();

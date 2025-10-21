@@ -24,6 +24,7 @@ pub trait WasmModuleImpl: Sized + Send + 'static {
     fn transform_caps(&self, caps: &Caps) -> Option<Caps> {
         Some(caps.to_owned())
     }
+    fn set_config(&mut self, config: String) {}
     fn process_buffer(&mut self, input: &[u8], output: &mut [u8]) -> i32;
 }
 
@@ -89,6 +90,19 @@ macro_rules! define_wasm_module {
                 }
             }
             0
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn set_config(ptr: *const u8, len: u32) {
+            let config_bytes = slice::from_raw_parts(ptr, len as usize);
+            let config_str = match str::from_utf8(config_bytes) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            FILTER_INSTANCE
+                .lock()
+                .unwrap()
+                .set_config(config_str.to_owned());
         }
 
         #[unsafe(no_mangle)]
