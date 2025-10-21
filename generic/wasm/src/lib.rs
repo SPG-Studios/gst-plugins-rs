@@ -1,6 +1,7 @@
 use gst::glib;
 
-mod wasm_video_filter;
+mod json_caps;
+mod wasm_filter;
 
 gst::plugin_define!(
     wasm,
@@ -15,6 +16,6 @@ gst::plugin_define!(
 );
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    wasm_video_filter::register(plugin)?;
+    wasm_filter::register(plugin)?;
     Ok(())
 }

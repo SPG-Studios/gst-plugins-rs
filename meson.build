@@ -91,6 +91,7 @@ plugins = {
   },
   'inter': {'library': 'libgstrsinter'},
   'streamgrouper': {'library': 'libgststreamgrouper'},
+  'wasm': {'library': 'libgstwasm', 'features': ['serde', 'serde_json']}
 
   'isobmff': {
     'library': 'libgstisobmff',

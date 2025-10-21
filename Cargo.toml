@@ -23,6 +23,7 @@ members = [
   "generic/inter",
   "generic/streamgrouper",
   "generic/gopbuffer",
+  "generic/wasm",
 
   "mux/flavors",
   "mux/isobmff",
@@ -69,7 +70,6 @@ members = [
   "video/videofx",
   "video/vvdec",
   "video/webp",
-  "video/wasm",
 ]
 
 # Only plugins without external dependencies
@@ -88,6 +88,7 @@ default-members = [
   "generic/inter",
   "generic/gopbuffer",
   "generic/streamgrouper",
+  "generic/wasm",
 
   "mux/isobmff",
 
@@ -124,7 +125,6 @@ default-members = [
   "video/hsv",
   "video/png",
   "video/rav1e",
-  "video/wasm",
 ]
 
 [profile.release]

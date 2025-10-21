@@ -1,25 +1,37 @@
+use std::str::FromStr;
 use std::sync::Mutex;
 
 use gst::glib::{self, prelude::*, ParamFlags};
-use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gst::{prelude::*, SerializeFlags};
 use gst_base::subclass::prelude::*;
 use gst_video::prelude::*;
-use gst_video::subclass::prelude::*;
 use gst_video::VideoInfo;
 use once_cell::sync::Lazy;
 use wasmtime::{Engine, Instance, Module, Store};
 
+use crate::json_caps;
+
+//ptr,len
 type WasmAllocate = wasmtime::TypedFunc<u32, u32>;
+//ptr,len
 type WasmDeallocate = wasmtime::TypedFunc<(u32, u32), ()>;
-type WasmProcessFrame = wasmtime::TypedFunc<(u32, u32, u32, u32), ()>;
+//in_ptr,in_len,out_ptr,out_len -> result
+type WasmProcessFrame = wasmtime::TypedFunc<(u32, u32, u32, u32), i32>;
+//caps_str,caps_len
+type WasmSetCaps = wasmtime::TypedFunc<(u32, u32), ()>;
+//caps_str,caps_len -> (out_caps_ptr << 32 | out_caps_len)
+type WasmTransformCaps = wasmtime::TypedFunc<(u32, u32), i64>;
+//ptr
+type WasmFreeResult = wasmtime::TypedFunc<u32, ()>;
+//config_ptr,config_len
 type WasmConfig = wasmtime::TypedFunc<(u32, u32), ()>;
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
-        "wasmvideofilter",
+        "wasmfilter",
         gst::DebugColorFlags::empty(),
-        Some("WASM Video Filter"),
+        Some("WASM Filter"),
     )
 });
 
@@ -47,25 +59,27 @@ struct WasmState {
     deallocate_fn: WasmDeallocate,
     process_frame_fn: WasmProcessFrame,
     configure_fn: Option<WasmConfig>,
+    set_caps_fn: Option<WasmSetCaps>,
+    transform_caps_fn: Option<WasmTransformCaps>,
+    free_result_fn: Option<WasmFreeResult>,
 }
 
 #[derive(Default)]
-pub struct WasmVideoFilter {
+pub struct WasmFilter {
     settings: Mutex<Settings>,
     wasm_state: Mutex<Option<WasmState>>,
-    video_info: Mutex<Option<VideoInfo>>,
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for WasmVideoFilter {
-    const NAME: &'static str = "GstWasmVideoFilter";
+impl ObjectSubclass for WasmFilter {
+    const NAME: &'static str = "GstWasmFilter";
 
-    type Type = super::WasmVideoFilter;
+    type Type = super::WasmFilter;
 
-    type ParentType = gst_video::VideoFilter;
+    type ParentType = gst_base::BaseTransform;
 }
 
-impl ObjectImpl for WasmVideoFilter {
+impl ObjectImpl for WasmFilter {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
             vec![
@@ -117,15 +131,15 @@ impl ObjectImpl for WasmVideoFilter {
     }
 }
 
-impl GstObjectImpl for WasmVideoFilter {}
+impl GstObjectImpl for WasmFilter {}
 
-impl ElementImpl for WasmVideoFilter {
+impl ElementImpl for WasmFilter {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
             gst::subclass::ElementMetadata::new(
-                "WASM Video Filter",
-                "Filter/Video",
-                "Executes a WebAssembly module on video frames",
+                "WASM Filter",
+                "Filter",
+                "Executes a WebAssembly module on GStreamer buffers",
                 "David Maseda Neira  <david.masedan@gmail.com>",
             )
         });
@@ -134,14 +148,7 @@ impl ElementImpl for WasmVideoFilter {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: Lazy<Vec<gst::PadTemplate>> = Lazy::new(|| {
-            let caps = gst_video::VideoCapsBuilder::new()
-                .format_list([
-                    gst_video::VideoFormat::Rgb,
-                    gst_video::VideoFormat::Rgba,
-                    gst_video::VideoFormat::Bgr,
-                    gst_video::VideoFormat::Bgra,
-                ])
-                .build();
+            let caps = gst::Caps::new_any();
             vec![
                 gst::PadTemplate::new(
                     "src",
@@ -163,31 +170,165 @@ impl ElementImpl for WasmVideoFilter {
     }
 }
 
-impl BaseTransformImpl for WasmVideoFilter {
+impl BaseTransformImpl for WasmFilter {
+    const MODE: gst_base::subclass::BaseTransformMode = gst_base::subclass::BaseTransformMode::Both;
+
+    const PASSTHROUGH_ON_SAME_CAPS: bool = false;
+
+    const TRANSFORM_IP_ON_PASSTHROUGH: bool = false;
+
     fn transform_caps(
         &self,
         direction: gst::PadDirection,
         caps: &gst::Caps,
         filter: Option<&gst::Caps>,
     ) -> Option<gst::Caps> {
-        let other_caps = caps.clone();
+        let mut wasm_state_guard = self.wasm_state.lock().unwrap();
+        let wasm_state = match wasm_state_guard.as_mut() {
+            Some(s) => s,
+            None => {
+                // WASM module not loaded yet, use passthrough
+                return Some(
+                    caps.intersect_with_mode(filter.unwrap_or(caps), gst::CapsIntersectMode::First),
+                );
+            }
+        };
 
-        gst::debug!(
-            CAT,
-            imp = self,
-            "Transforming caps {:?} in direction {:?} with filter {:?}",
-            caps,
-            direction,
-            filter
-        );
+        // Check if the WASM module supports transforming caps.
+        // If not, we just propose intersection with the filter caps
 
-        if let Some(filter) = filter {
-            Some(other_caps.intersect(filter))
+        let (transform_caps_fn, free_result_fn) = match (
+            wasm_state.transform_caps_fn.clone(),
+            wasm_state.free_result_fn.clone(),
+        ) {
+            (Some(t), Some(f)) => (t, f),
+            _ => {
+                gst::debug!(CAT,obj = self.obj(), "WASM module does not export 'transform_caps' and 'free_result'. Using passthrough logic");
+                return Some(
+                    caps.intersect_with_mode(filter.unwrap_or(caps), gst::CapsIntersectMode::First),
+                );
+            }
+        };
+
+        let (in_ptr, in_len) = match self.copy_string_to_wasm(&mut *wasm_state, &caps.to_string()) {
+            Ok(val) => val,
+            Err(e) => {
+                gst::error!(CAT, obj = self.obj(), "Failed to copy caps to WASM: {}", e);
+                return None;
+            }
+        };
+
+        // Call the actual WASM function to transform caps
+        let result_i64 = match transform_caps_fn.call(&mut wasm_state.store, (in_ptr, in_len)) {
+            Ok(res) => res,
+            Err(e) => {
+                gst::error!(
+                    CAT,
+                    obj = self.obj(),
+                    "WASM 'transform_caps' trapped: {}",
+                    e
+                );
+                return None;
+            }
+        };
+
+        self.deallocate_in_wasm(&mut *wasm_state, in_ptr, in_len);
+
+        if result_i64 == 0 {
+            return Some(
+                caps.intersect_with_mode(filter.unwrap_or(caps), gst::CapsIntersectMode::First),
+            );
+        }
+
+        // Unpack ptr and len from i64 return value
+        let out_ptr = (result_i64 >> 32) as u32;
+        let out_len = result_i64 as u32;
+
+        let result_str = match self.read_string_from_wasm(wasm_state, out_ptr, out_len) {
+            Ok(s) => s,
+            Err(e) => {
+                gst::error!(
+                    CAT,
+                    obj = self.obj(),
+                    "Failed to read result from WASM: {}",
+                    e
+                );
+                return None;
+            }
+        };
+
+        if let Err(e) = free_result_fn.call(&mut wasm_state.store, out_ptr) {
+            gst::warning!(CAT, obj = self.obj(), "WASM 'free_result' trapped: {}", e);
+        }
+
+        let result_caps = gst::Caps::from_str(&result_str).unwrap();
+
+        if let Some(f) = filter {
+            Some(result_caps.intersect_with_mode(f, gst::CapsIntersectMode::First))
         } else {
-            Some(other_caps)
+            Some(result_caps)
         }
     }
 
+    fn transform_size(
+        &self,
+        direction: gst::PadDirection,
+        _caps: &gst::Caps,
+        size: usize,
+        _othercaps: &gst::Caps,
+    ) -> Option<usize> {
+        // For now, assume output size equals input size
+        Some(size)
+    }
+
+    fn set_caps(&self, incaps: &gst::Caps, _outcaps: &gst::Caps) -> Result<(), gst::LoggableError> {
+        let mut wasm_state_guard = self.wasm_state.lock().unwrap();
+        let wasm_state = match wasm_state_guard.as_mut() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        //Inform WASM about the negotiated caps
+
+        let json_caps = json_caps::caps_to_json_string(incaps)
+            .map_err(|e| gst::loggable_error!(CAT, "Failed to convert caps to json: {}", e))?;
+
+        if let Some(set_caps_fn) = wasm_state.set_caps_fn.clone() {
+            let (ptr, len) = self
+                .copy_string_to_wasm(wasm_state, &json_caps)
+                .map_err(|e| gst::loggable_error!(CAT, "Failed to copy caps: {}", e))?;
+
+            if let Err(e) = set_caps_fn.call(&mut wasm_state.store, (ptr, len)) {
+                gst::warning!(CAT, obj = self.obj(), "WASM 'set_caps' trapped: {}", e);
+            }
+            self.deallocate_in_wasm(wasm_state, ptr, len);
+        }
+        Ok(())
+    }
+
+    fn transform(
+        &self,
+        in_buf: &gst::Buffer,
+        out_buf: &mut gst::BufferRef,
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        match self.transform_buffer_internal(in_buf, out_buf) {
+            Ok(s) => {
+                // Copy metadata (timestamps, duration, flags) from input to output
+                let _ = in_buf.copy_into(
+                    out_buf,
+                    gst::BufferCopyFlags::TIMESTAMPS
+                        | gst::BufferCopyFlags::FLAGS
+                        | gst::BufferCopyFlags::META,
+                    ..,
+                );
+                Ok(s)
+            }
+            Err(e) => {
+                gst::error!(CAT, obj = self.obj(), "Trnasform frame failed: {}", e);
+                Err(gst::FlowError::Error)
+            }
+        }
+    }
     // Called when the pipeline goes to PLAYING. Load the WASM module here.
     fn start(&self) -> Result<(), gst::ErrorMessage> {
         gst::log!(CAT, obj = self.obj(), "Starting");
@@ -240,18 +381,30 @@ impl BaseTransformImpl for WasmVideoFilter {
             .map_err(|e| {
                 gst::error_msg!(
                     gst::CoreError::Failed,
-                    ["Failed to get allocation function: {}", e]
+                    ["Failed to get deallocation function: {}", e]
                 )
             })?;
 
         let process_frame_fn = instance
-            .get_typed_func::<(u32, u32, u32, u32), ()>(&mut store, &settings.entrypoint)
+            .get_typed_func::<(u32, u32, u32, u32), i32>(&mut store, &settings.entrypoint)
             .map_err(|e| {
                 gst::error_msg!(
                     gst::CoreError::Failed,
-                    ["Failed to get allocation function: {}", e]
+                    ["Failed to get process_frame function: {}", e]
                 )
             })?;
+
+        let set_caps_fn = instance
+            .get_typed_func::<(u32, u32), ()>(&mut store, "set_caps")
+            .ok();
+
+        let transform_caps_fn = instance
+            .get_typed_func::<(u32, u32), i64>(&mut store, "transform_caps")
+            .ok();
+
+        let free_result_fn = instance
+            .get_typed_func::<u32, ()>(&mut store, "free_result")
+            .ok();
 
         let configure_fn = instance
             .get_typed_func::<(u32, u32), ()>(&mut store, "configure")
@@ -315,6 +468,9 @@ impl BaseTransformImpl for WasmVideoFilter {
             deallocate_fn,
             process_frame_fn,
             configure_fn,
+            set_caps_fn,
+            transform_caps_fn,
+            free_result_fn,
         });
 
         Ok(())
@@ -326,20 +482,13 @@ impl BaseTransformImpl for WasmVideoFilter {
         *self.wasm_state.lock().unwrap() = None;
         Ok(())
     }
-
-    const MODE: gst_base::subclass::BaseTransformMode =
-        gst_base::subclass::BaseTransformMode::NeverInPlace;
-
-    const PASSTHROUGH_ON_SAME_CAPS: bool = false;
-
-    const TRANSFORM_IP_ON_PASSTHROUGH: bool = false;
 }
 
-impl WasmVideoFilter {
-    fn transform_frame_internal(
+impl WasmFilter {
+    fn transform_buffer_internal(
         &self,
-        in_frame: &gst_video::VideoFrameRef<&gst::BufferRef>,
-        out_frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
+        in_buffer: &gst::Buffer,
+        out_buffer: &mut gst::BufferRef,
     ) -> Result<gst::FlowSuccess, anyhow::Error> {
         let mut wasm_state_guard = self.wasm_state.lock().unwrap();
         let wasm_state = wasm_state_guard
@@ -357,65 +506,71 @@ impl WasmVideoFilter {
         let deallocate_fn = &wasm_state.deallocate_fn;
         let process_fn = &wasm_state.process_frame_fn;
 
-        let input_data = in_frame.plane_data(0).unwrap();
-        let frame_size = input_data.len() as u32;
+        let in_map = in_buffer.map_readable()?;
+        let input_data = in_map.as_slice();
+        let input_size = input_data.len() as u32;
+        let input_ptr = allocate_fn.call(&mut *store, input_size)?;
 
-        let wasm_ptr = allocate_fn.call(&mut *store, frame_size)?;
+        //let out_buffer_ref = out_buffer.make_mut();
+        let mut out_map = out_buffer.map_writable()?;
+        let mut output_data = out_map.as_mut_slice();
+        let output_size = output_data.len() as u32;
+        let output_ptr = allocate_fn.call(&mut *store, output_size)?;
 
-        memory.write(&mut *store, wasm_ptr as usize, input_data)?;
+        memory.write(&mut *store, input_ptr as usize, input_data)?;
 
-        let width = in_frame.width();
-        let height = in_frame.height();
-        let stride = in_frame.plane_stride()[0];
-        process_fn.call(&mut *store, (wasm_ptr, width, height, stride as u32))?;
+        let result: i32 = process_fn.call(
+            &mut *store,
+            (input_ptr, input_size, output_ptr, output_size),
+        )?;
 
-        let mut output_data_mut = out_frame.plane_data_mut(0).unwrap();
-        memory.read(&mut *store, wasm_ptr as usize, &mut output_data_mut)?;
+        memory.read(&mut *store, output_ptr as usize, &mut output_data)?;
 
-        deallocate_fn.call(store, (wasm_ptr, frame_size))?;
+        deallocate_fn.call(&mut *store, (input_ptr, input_size))?;
+        deallocate_fn.call(store, (output_ptr, output_size))?;
 
         Ok(gst::FlowSuccess::Ok)
     }
-}
-// VideoFilter implementation
-impl VideoFilterImpl for WasmVideoFilter {
-    fn set_info(
-        &self,
-        incaps: &gst::Caps,
-        in_info: &VideoInfo,
-        outcaps: &gst::Caps,
-        out_info: &VideoInfo,
-    ) -> Result<(), gst::LoggableError> {
-        gst::log!(
-            CAT,
-            obj = self.obj(),
-            "Setting format info: caps={}",
-            incaps
-        );
-        // Store the negotiated video info for later use.
-        *self.video_info.lock().unwrap() = Some(in_info.clone());
 
-        self.parent_set_info(incaps, in_info, outcaps, out_info)
+    fn copy_string_to_wasm(
+        &self,
+        wasm_state: &mut WasmState,
+        s: &str,
+    ) -> Result<(u32, u32), anyhow::Error> {
+        let bytes = s.as_bytes();
+        let len = bytes.len() as u32;
+        let ptr = wasm_state.allocate_fn.call(&mut wasm_state.store, len)?;
+
+        let memory = wasm_state
+            .instance
+            .get_memory(&mut wasm_state.store, "memory")
+            .unwrap();
+        memory.write(&mut wasm_state.store, ptr as usize, bytes)?;
+
+        Ok((ptr, len))
     }
 
-    fn transform_frame(
+    fn read_string_from_wasm(
         &self,
-        in_frame: &gst_video::VideoFrameRef<&gst::BufferRef>,
-        out_frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
-    ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        // TODO: This is where we will call the WASM function.
-        // For now, just copy input to output to have a working passthrough filter.
-        in_frame.copy(out_frame).unwrap();
-        match self.transform_frame_internal(in_frame, out_frame) {
-            Ok(ret) => Ok(ret),
-            Err(e) => {
-                gst::element_error!(
-                    self.obj(),
-                    gst::CoreError::Failed,
-                    ("Failed to process frame in WASM runtime: {}", e)
-                );
-                Err(gst::FlowError::Error)
-            }
+        wasm_state: &mut WasmState,
+        ptr: u32,
+        len: u32,
+    ) -> Result<String, anyhow::Error> {
+        let memory = wasm_state
+            .instance
+            .get_memory(&mut wasm_state.store, "memory")
+            .unwrap();
+        let mut buffer = vec![0; len as usize];
+        memory.read(&mut wasm_state.store, ptr as usize, &mut buffer);
+        Ok(String::from_utf8(buffer)?)
+    }
+
+    fn deallocate_in_wasm(&self, wasm_state: &mut WasmState, ptr: u32, len: u32) {
+        if let Err(e) = wasm_state
+            .deallocate_fn
+            .call(&mut wasm_state.store, (ptr, len))
+        {
+            gst::warning!(CAT, obj = self.obj(), "WASM 'deallocate' trapped: {}", e);
         }
     }
 }
