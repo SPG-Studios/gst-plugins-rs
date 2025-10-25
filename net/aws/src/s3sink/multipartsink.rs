@@ -89,7 +89,7 @@ impl Started {
             upload_id,
             part_number: 1,
             completed_parts: Vec::new(),
-            cache: UploaderPartCache::new(num_cache_parts),
+            cache: UploaderPartCache::new(num_cache_parts, part_size),
             upload_pos: 0,
         }
     }
@@ -127,14 +127,16 @@ impl PartInfo {
 struct UploaderPartCache {
     from_head: bool,
     max_depth: usize,
+    max_part_size: usize,
     cache: Vec<PartInfo>,
 }
 
 impl UploaderPartCache {
-    pub fn new(depth: i64) -> UploaderPartCache {
+    pub fn new(depth: i64, max_part_size: usize) -> UploaderPartCache {
         UploaderPartCache {
             from_head: (depth > 0),
             max_depth: depth.abs().try_into().unwrap(),
+            max_part_size,
             cache: Default::default(),
         }
     }
@@ -170,13 +172,23 @@ impl UploaderPartCache {
         }
 
         if self.max_depth > 0 {
+            // Caching enabled.  For head caching, the allowed range is
+            // the set [0..=max_depth-1] and the last index.  For tail
+            // caching, the range is the set [len-max_depth..=len-1].
             let first: usize;
             let last: usize;
+            let mut retain_indices: Vec<usize>;
 
             if self.from_head {
-                // Keeping up to the first N buffers
-                last = self.max_depth - 1;
+                // Keeping up to the first N buffers plus the last one.
                 first = 0;
+                last = self.max_depth - 1;
+                retain_indices = (first..=last).collect();
+
+                if !retain_indices.contains(&(self.cache.len() - 1)) {
+                    // Ensure last part is included
+                    retain_indices.push(self.cache.len() - 1);
+                }
             } else {
                 // Keeping the last / most recent N buffers
                 last = self.cache.len();
@@ -185,14 +197,15 @@ impl UploaderPartCache {
                 } else {
                     first = 0;
                 }
+                retain_indices = (first..=last).collect();
             }
-
-            let is_last = part_num == self.cache.len();
 
             for (i, part) in self.cache.iter_mut().enumerate() {
                 // Retain the given range and also the last part
-                if is_last || (first <= i && i <= last) {
-                    // part is in 'retain' range
+                // Example [keep][keep][drop][drop][keep(last)]
+                // This is to allow seeking into the cache and then forwards into the
+                // last part written prior to a seek.
+                if retain_indices.contains(&i) {
                     if i == part_idx {
                         // 'buffer' is this part; update it
                         part.buffer = Some(buffer.to_owned());
@@ -224,19 +237,14 @@ impl UploaderPartCache {
      * be filled with a copy.
      */
     pub fn find(&self, offset: u64) -> Result<(&PartInfo, u16), gst::ErrorMessage> {
-        let mut start = 0_u64;
-
-        for (i, item) in self.cache.iter().enumerate() {
-            // We can seek to one byte past the end to append
-            let is_last = i == self.cache.len() - 1;
-            let item_size: u64 = item.data_size as u64;
-            let range = start..start + item_size + if is_last { 1 } else { 0 };
-            let part_num = (i + 1) as u16;
-
-            if range.contains(&offset) {
-                return Ok((self.get(part_num).unwrap(), part_num));
+        let part_index = offset / self.max_part_size as u64;
+        let part_offset = offset % self.max_part_size as u64;
+        if let Some(part) = self.cache.get(part_index as usize) {
+            // Verify that the offset is within the part's data size to allow for appending
+            if part_offset <= part.data_size as u64 {
+                let part_number = part_index + 1;
+                return Ok((part, part_number as u16));
             }
-            start += item_size;
         }
         return Err(gst::error_msg!(
             gst::ResourceError::NotFound,
@@ -258,7 +266,7 @@ mod tests {
         const DEPTH: i64 = 0;
         const SIZE_BUFFER: usize = 100;
 
-        let mut uut = UploaderPartCache::new(DEPTH);
+        let mut uut = UploaderPartCache::new(DEPTH, SIZE_BUFFER);
         let buffer = vec![0; SIZE_BUFFER];
 
         // Insert and 'find' should both be TRUE since we're looking for the
@@ -293,10 +301,10 @@ mod tests {
     fn find_by_offset() {
         const BUFFER_SIZE: usize = 100;
         const NUM_PARTS: usize = 3;
-        let mut uut = UploaderPartCache::new(0);
+        let mut uut = UploaderPartCache::new(0, BUFFER_SIZE);
 
         // Populate the cache
-        for i in 1..NUM_PARTS as usize {
+        for i in 1..=NUM_PARTS as usize {
             assert_eq!(uut.cache.len(), i - 1);
             assert!(uut.update_or_append(i, &vec![0; BUFFER_SIZE]));
             assert_eq!(uut.cache.len(), i);
@@ -304,7 +312,7 @@ mod tests {
 
         // Validate the cache offsets
         let mut offset_start: u64 = 0;
-        for i in 1..NUM_PARTS as u16 {
+        for i in 1..=NUM_PARTS as u16 {
             let offset_end = (offset_start + BUFFER_SIZE as u64) - 1;
 
             let mut find_result = uut.find(offset_start);
@@ -319,6 +327,9 @@ mod tests {
 
             offset_start = offset_end + 1;
         }
+
+        // Should not be able to find offset 300 (past end)
+        assert!(uut.find((NUM_PARTS * BUFFER_SIZE) as u64).is_err());
     }
 
     /**
@@ -327,7 +338,7 @@ mod tests {
     #[test]
     fn cache_miss() {
         const BUFFER_SIZE: usize = 100;
-        let mut uut = UploaderPartCache::new(0);
+        let mut uut = UploaderPartCache::new(0, BUFFER_SIZE);
         let out_buffer: Vec<u8> = Default::default();
         let buffer = vec![0; BUFFER_SIZE];
 
@@ -344,7 +355,7 @@ mod tests {
         assert!(uut.update_or_append(1_usize, &buffer));
 
         // Should be able to access part 1, but it's buffer should be empty
-        // since it's beyond the depth being retained in the cache.
+        // since caching is disabled.
         let (result, _) = uut.find(BUFFER_SIZE as u64 - 1).unwrap();
         assert!(result.buffer.is_none());
         assert_eq!(result.data_size, BUFFER_SIZE);
@@ -354,24 +365,30 @@ mod tests {
     }
 
     /**
-     * Verify the behavior of retaining the first N parts, remainders are empty.
+     * Verify the behavior of retaining the first N parts.  The most recently written
+     * part should still have a buffer even if it's outside the cache boundary:
+     * e.g. retain first 1 parts, write parts 1, 2, 3; parts 1 and 3 have buffers,
+     * part 2 does not.  This is to support returning to the "end" of the most
+     * recently written part after a seek.
      */
     #[test]
     fn retain_head() {
         const BUFFER_SIZE: usize = 100;
-        let mut uut = UploaderPartCache::new(2);
+        let depth = 2;
+        let test_depth = depth + 2 as usize;
+        let mut uut = UploaderPartCache::new(depth as i64, BUFFER_SIZE);
         let in_buffer = vec![0; BUFFER_SIZE];
 
         assert_eq!(uut.cache.len(), 0);
 
-        for i in 1..=uut.max_depth + 1 {
+        for i in 1..=test_depth {
             assert!(uut.update_or_append(i, &in_buffer));
 
             // Since this is head retention, immediately upon insertion
-            // if the part number is within the limit, it should be kept,
-            // otherwise immediately dropped.
+            // if the part number is within the limit or the last part,
+            // it should be kept.
             let (temp, temp_size) = uut.get_copy(i).unwrap();
-            if i <= uut.max_depth {
+            if i <= uut.max_depth || i == test_depth || i == uut.cache.len() {
                 // Retained
                 assert!(temp.len() != 0);
                 assert!(temp_size == BUFFER_SIZE);
@@ -381,10 +398,10 @@ mod tests {
                 assert!(temp_size == BUFFER_SIZE);
             }
         }
-        // There should be 3 parts in the cache (though only 2 are retained).
-        assert_eq!(uut.cache.len(), 3);
+        // There should be test_depth parts in the cache.
+        assert_eq!(uut.cache.len(), test_depth);
 
-        // 1 and 2 should have a buffer, 3 should not.
+        // 1 and 2 should have a buffer, 3 should not, 4 should.
         let mut get_result = uut.get_copy(1_u16);
         assert!(get_result.is_some());
         let (mut out_buffer, mut out_buffer_size) = get_result.unwrap();
@@ -402,6 +419,12 @@ mod tests {
         (out_buffer, out_buffer_size) = get_result.unwrap();
         assert!(out_buffer.len() == 0);
         assert!(out_buffer_size == BUFFER_SIZE);
+
+        get_result = uut.get_copy(4_u16);
+        assert!(get_result.is_some());
+        (out_buffer, out_buffer_size) = get_result.unwrap();
+        assert!(out_buffer.len() == BUFFER_SIZE);
+        assert!(out_buffer_size == BUFFER_SIZE);
     }
 
     /**
@@ -410,7 +433,7 @@ mod tests {
     #[test]
     fn retain_tail() {
         const BUFFER_SIZE: usize = 100;
-        let mut uut = UploaderPartCache::new(-2);
+        let mut uut = UploaderPartCache::new(-2, BUFFER_SIZE);
         let in_buffer = vec![0; BUFFER_SIZE];
 
         assert_eq!(uut.cache.len(), 0);
@@ -684,12 +707,22 @@ impl S3Sink {
                     if false == *eos_pending {
                         // Cache miss (case 3) -- the part number was known but the buffer
                         // was not stored in the cache (because of the cache configuration).
+                        // Now, if the next event is to seek to where the cache is valid,
+                        // then it's OK.  Otherwise, the next write will be a cache miss.
+                        // This can happen if the user has configured head caching and
+                        // written to the end of a part that is outside the cache depth.
+                        // Then they seek back into the cache, write, and try to seek back
+                        // to the end of the stream (i.e., what would begin a new part).
+                        // In that special case, the cache will contain an empty buffer for
+                        // that part number and the write will NOT result in a cache miss
+                        // and this debug log message can be ignored.
                         *self.write_will_cache_miss.lock().unwrap() = true;
                         state.buffer_offset = 0;
                         gst::debug!(
                             CAT,
                             imp = self,
-                            "Next write will cause a cache miss unless another seek is performed."
+                            "Next write may cause a cache miss on {} unless another seek is performed.",
+                            state.part_number
                         );
                     }
                 }
@@ -722,15 +755,16 @@ impl S3Sink {
             }
         };
 
+        // Update/append the part cache (even if the buffer is empty).  This lets
+        // the seek logic be a little simpler.
+        state
+            .cache
+            .update_or_append(state.part_number as usize, &state.buffer);
+
         if state.buffer_offset == 0 {
             // Nothing to upload.
             return Ok(None);
         }
-
-        // Update/append the part cache
-        state
-            .cache
-            .update_or_append(state.part_number as usize, &state.buffer);
 
         let body = Some(ByteStream::from(std::mem::replace(
             &mut state.buffer,
@@ -1043,7 +1077,7 @@ impl S3Sink {
         gst::trace!(
             CAT,
             imp = self,
-            "Updating buffer at {} wiith {} bytes",
+            "Updating buffer at {} with {} bytes",
             started_state.buffer_offset,
             to_copy
         );
@@ -1138,22 +1172,26 @@ impl S3Sink {
             return Ok(());
         }
 
-        // Determine if new_offset is within the current part or one in the cache.
-        let part_start = (started_state.part_number as u64 - 1) * started_state.part_size as u64;
-        let part_end = part_start + started_state.buffer.len() as u64;
-        // Allow appending to the end of the last part
-        let maybe_one_more =
-            if started_state.part_number as usize == started_state.cache.cache.len() {
-                1
-            } else {
-                0
-            };
-        let part_limits = part_start..(part_end + maybe_one_more);
+        // Determine if new_offset is within the current part or if perhaps in the cache.
+        // The current part limits are:
+        //    start: (part_number - 1) * part_size
+        //    end: start + min(buffer.len() + 1, part_size)
+        // This allows seeking to the end of the current buffer for appending.
+        let current_part_start = (started_state.part_number as u64 - 1) * started_state.part_size as u64;
+        let current_part_end = current_part_start
+            + std::cmp::min(
+                started_state.buffer.len() as u64 + 1,
+                started_state.part_size as u64,
+            );
+        let current_part_limits = current_part_start..current_part_end;
 
+        // This is so that the log message can show the actual limits of the current part
+        // and not confuse someone.
+        let reported_part_limits = current_part_start..started_state.buffer.len() as u64;
         gst::trace!(
             CAT,
             imp = self,
-            "Current part {} {part_limits:?} - seeking to {new_offset}",
+            "Current part {} [{reported_part_limits:?}] - seeking to {new_offset}",
             started_state.part_number
         );
 
@@ -1161,7 +1199,7 @@ impl S3Sink {
 
         let offset_in_buffer = new_offset as usize % started_state.part_size;
 
-        if part_limits.contains(&new_offset) {
+        if current_part_limits.contains(&new_offset) {
             gst::trace!(
                 CAT,
                 imp = self,
@@ -1173,9 +1211,9 @@ impl S3Sink {
 
             return Ok(());
         } else if let Ok((result, next_part)) = cache_result {
-            let next_buffer = result.buffer.as_ref().unwrap_or(&Vec::new()).to_owned();
-            if 0 < next_buffer.len() {
+            if let Some(buffer_ref) = result.buffer.as_ref() {
                 // cache hit
+                let next_buffer = buffer_ref.to_owned();
                 drop(state);
                 self.flush_current_buffer()?;
 
@@ -1198,7 +1236,7 @@ impl S3Sink {
                 );
 
                 started_state.part_number = next_part.try_into().unwrap();
-                started_state.buffer = next_buffer;
+                started_state.buffer = next_buffer.to_owned();
                 started_state.buffer_offset = offset_in_buffer;
                 started_state.upload_pos = new_offset;
 

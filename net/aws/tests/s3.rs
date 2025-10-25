@@ -470,7 +470,7 @@ mod tests {
      * does not attempt to do any download/re-upload of previous parts, the expected result
      * is a flow error when the boundary is crossed.
      *
-     * The test configures 1 part head cache, writes two parts, seeks into the tail of the
+     * The test configures 1 part head cache, writes three parts, seeks into the tail of the
      * first part and writes a buffer that would cross the part boundary (cache miss).
      * The expected result is a flow error.
      */
@@ -485,7 +485,7 @@ mod tests {
         let buffer_size = 1024 * 1024;
         let buffers_per_part = 5;
         let part_size = buffer_size * buffers_per_part;
-        let num_buffers = 6;
+        let num_buffers = 11;
 
         let mut h1 = gst_check::Harness::new_parse(&format!(
             "awss3sink name=\"sink\" uri=\"{uri}\" num-cached-parts=1 part-size={part_size}"
@@ -674,6 +674,131 @@ mod tests {
         assert!(seekable);
         assert_eq!(0, lower.value() as u64);
         assert_eq!(u64::MAX - 1, upper.value() as u64);
+    }
+
+    #[test_with::env(AWS_ACCESS_KEY_ID)]
+    #[test_with::env(AWS_SECRET_ACCESS_KEY)]
+    #[tokio::test]
+    async fn test_s3_multipart_seek_to_end() {
+        // Some elements seek back and forth between the middle of a stream to the last byte
+        // written (like matraskamux).  This test verifies that behavior works by considering
+        // the following case:
+        //
+        //   [       CACHED       ]
+        //   [       part 1       ][       part 2       ][       part 3       ]
+        //
+        //  Step 1: Write 2048 bytes into part 1 (OK)
+        //  Step 2: Seek backwards 1024 bytes, write 512 bytes. (OK)
+        //  Step 3: Seek forward to 2048 bytes (last byte written in the part). (OK)
+        //  Step 4: Write to end of part 2 (OK)
+        //  Step 5: Seek back into part 1 (cache hit), write 512 bytes. (OK)
+        //  Step 6: Seek forward to end of part 2 (i.e., start of part 3). (OK)
+        //  Step 7: Write to end of part 3 (OK)
+        //  Step 8: Seek back into part 2 (cache miss).
+        init();
+        let (region, bucket, key) = get_env_args("seek_to_end");
+        let uri = get_uri(&region, &bucket, &key);
+
+        let mut h1 = gst_check::Harness::new_parse(&format!(
+            "awss3sink name=\"sink\" uri=\"{uri}\" num-cached-parts=1"
+        ));
+        let sink = h1
+            .element()
+            .unwrap()
+            .dynamic_cast::<gst::Bin>()
+            .unwrap()
+            .by_name("sink")
+            .unwrap();
+        let part_size = sink.property::<u64>("part-size");
+        let mut written_file = vec![0; part_size as usize * 3];
+
+        h1.set_src_caps(gst::Caps::builder("text/plain").build());
+        h1.play();
+
+        // Push stream start, segment
+        let mut segment = gst::FormattedSegment::<gst::format::Bytes>::new();
+        h1.push_event(gst::event::StreamStart::builder(&"test-stream").build());
+        h1.push_event(gst::event::Segment::new(&segment));
+
+        let mut current_pos = 0usize;
+        let mut end_pos: usize;
+
+        // Step 1: Write 2048 bytes into part 1 (OK)
+        let write_size = 2048;
+        h1.push(make_buffer(&vec![0xAA; write_size])).unwrap();
+        written_file[current_pos..(current_pos + write_size)].fill(0xAA);
+        current_pos += write_size;
+        end_pos = current_pos;
+
+        // Step 2; Seek backwards 1024 bytes, write 512 bytes. (OK)
+        segment = gst::FormattedSegment::<gst::format::Bytes>::new();
+        segment.set_start(gst::format::Bytes::from_u64((current_pos - 1024) as u64));
+        assert!(h1.push_event(gst::event::Segment::new(&segment)));
+        current_pos -= 1024;
+        let write_size = 512;
+        h1.push(make_buffer(&vec![0xBB; write_size])).unwrap();
+        written_file[current_pos..current_pos + write_size].fill(0xBB);
+
+        // Step 3: Seek forward to the last byte written prior to seek. (OK)
+        segment = gst::FormattedSegment::<gst::format::Bytes>::new();
+        segment.set_start(gst::format::Bytes::from_u64(end_pos as u64));
+        assert!(h1.push_event(gst::event::Segment::new(&segment)));
+        current_pos = end_pos;
+
+        // Step 4: From current_pos, write to the end of part 2 (2*part_size) (OK)
+        // NOTE: The end_pos is actually the first byte in part 3, which has not been
+        // written yet.
+        let write_size = (2 * part_size as usize) - current_pos;
+        h1.push(make_buffer(&vec![0xCC; write_size])).unwrap();
+        written_file[current_pos..(current_pos + write_size)].fill(0xCC);
+        current_pos += write_size;
+        end_pos = current_pos;
+
+        // Step 5: Seek back into part 1 (offset 512, cache hit), write 512 bytes. (OK)
+        segment = gst::FormattedSegment::<gst::format::Bytes>::new();
+        segment.set_start(gst::format::Bytes::from_u64(512));
+        assert!(h1.push_event(gst::event::Segment::new(&segment)));
+        current_pos = 512;
+        let write_size = 512;
+        h1.push(make_buffer(&vec![0xDD; write_size])).unwrap();
+        written_file[current_pos..(current_pos + write_size)].fill(0xDD);
+
+        // Step 6: Seek forward to last position before seek (i.e., start of part 3, end_pos). (OK)
+        segment = gst::FormattedSegment::<gst::format::Bytes>::new();
+        segment.set_start(gst::format::Bytes::from_u64(end_pos as u64));
+        assert!(h1.push_event(gst::event::Segment::new(&segment)));
+        current_pos = end_pos;
+
+        // Step 7: Write to end of part 3 (OK)
+        let write_size = part_size as usize;
+        h1.push(make_buffer(&vec![0xEE; write_size])).unwrap();
+        written_file[current_pos..(current_pos + write_size)].fill(0xEE);
+
+        // Step 8: Seek back into part 2 (cache miss).
+        segment = gst::FormattedSegment::<gst::format::Bytes>::new();
+        segment.set_start(gst::format::Bytes::from_u64(part_size as u64));
+        assert!(h1.push_event(gst::event::Segment::new(&segment)));
+
+        // This write should fail with a flow error
+        assert!(h1.push(make_buffer(&vec![0xFF; 1024])).is_err());
+        h1.push_event(gst::event::Eos::new());
+        drop(h1);
+
+        // Verify
+        let mut h2 = gst_check::Harness::new("awss3src");
+        h2.element().unwrap().set_property("uri", uri.clone());
+        h2.play();
+        let read_file = pull_all_buffers_as_slice(&mut h2);
+
+        // Compare written_file to read_file
+        assert_eq!(written_file.len(), read_file.len());
+        for i in 0..written_file.len() {
+            assert_eq!(written_file[i], read_file[i]);
+        }
+
+        // Cleanup
+        delete_object(region.clone(), &bucket, &key).await;
+        drop(h2);
     }
 
     #[test_with::env(AWS_ACCESS_KEY_ID)]
