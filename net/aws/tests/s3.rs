@@ -406,6 +406,97 @@ mod tests {
         out
     }
 
+    /// Plays a GstHarness until either EOS or Error is observed on the bin's bus
+    /// Returns Ok(()) if EOS was received, or Err(error_message) if an error occurred
+    /// The function will timeout after the specified duration if neither EOS nor Error is received
+    fn play_harness_until_eos_or_error(
+        harness: &mut gst_check::Harness,
+        timeout: gst::ClockTime,
+    ) -> Result<(), String> {
+        // Get the bin from the harness and if it has no bus, add one.
+        let bin = harness.element().unwrap();
+        let bus = if let Some(b) = bin.bus() {
+            b
+        } else {
+            let b = gst::Bus::new();
+            bin.set_bus(Some(&b));
+            b
+        };
+
+        // Start playing
+        harness.play();
+
+        let start_time = std::time::Instant::now();
+        let timeout_duration = std::time::Duration::from_nanos(timeout.nseconds());
+
+        loop {
+            // Check for timeout
+            if start_time.elapsed() > timeout_duration {
+                return Err("Timeout waiting for EOS or Error".to_string());
+            }
+
+            // Poll for messages with a short timeout to avoid blocking too long
+            if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) {
+                match msg.view() {
+                    gst::MessageView::Eos(_) => {
+                        gst::debug!(CAT,"Received EOS message on bus; setting bin to NULL state");
+                        bin.set_state(gst::State::Null).unwrap();
+                    }
+                    gst::MessageView::Error(err) => {
+                        let error_msg = format!(
+                            "Bus error: {} (debug: {:?})",
+                            err.error(),
+                            err.debug()
+                        );
+                        gst::error!(CAT,"{}", error_msg);
+                        return Err(error_msg);
+                    }
+                    gst::MessageView::StateChanged(s) => {
+                        // Log state changes for the main bin element
+                        if msg.src() == Some(bin.upcast_ref()) {
+                            // If the state is NULL after EOS, we can return OK
+                            gst::debug!(CAT,"Bin state changed from {:?} to {:?}", s.old(), s.current());
+                            if s.current() == gst::State::Null {
+                                return Ok(());
+                            }
+                        }
+                    }
+                    gst::MessageView::Warning(warn) => {
+                        gst::warning!(CAT,"Pipeline warning: {} (debug: {:?})", warn.error(), warn.debug());
+                    }
+                    _ => {
+                        // Handle other message types silently
+                    }
+                }
+            }
+        }
+    }
+
+    /// Alternative version that plays until EOS or Error with a default timeout of 30 seconds
+    #[allow(dead_code)]
+    fn play_harness_until_completion(harness: &mut gst_check::Harness) -> Result<(), String> {
+        play_harness_until_eos_or_error(harness, gst::ClockTime::from_seconds(30))
+    }
+
+    /// Version that plays until EOS or Error and also processes any pulled buffers
+    /// Returns the concatenated buffer data along with the result
+    #[allow(dead_code)]
+    fn play_harness_and_collect_output(
+        harness: &mut gst_check::Harness,
+        timeout: gst::ClockTime,
+    ) -> Result<Vec<u8>, String> {
+        let result = play_harness_until_eos_or_error(harness, timeout);
+
+        // Collect any output buffers regardless of success/failure
+        let output_data = pull_all_buffers_as_slice(harness);
+
+        // Return the output data if successful, otherwise return the error
+        match result {
+            Ok(()) => Ok(output_data),
+            Err(e) => Err(e),
+        }
+    }
+
     /**
      * This test verifies that a seek within the current part is permitted.
      * Since the cache is not involved, subsequent writes beyond the previous "end" of
@@ -674,6 +765,66 @@ mod tests {
         assert!(seekable);
         assert_eq!(0, lower.value() as u64);
         assert_eq!(u64::MAX - 1, upper.value() as u64);
+    }
+
+    #[test_with::env(AWS_ACCESS_KEY_ID)]
+    #[test_with::env(AWS_SECRET_ACCESS_KEY)]
+    #[tokio::test]
+    async fn test_s3_multipart_matroska_test() {
+        // Test will configure for 1 part cached at the head and allow the matroska
+        // muxer to write until ~90% of the part size is reached, at which point an EOS
+        // event is sent to finalize the file.  The uploaded file is then read back
+        // and decoded to verify correctness.
+        //
+        // The matroska muxer is chosen here because of all the seeking it performs.
+        init();
+
+        let (region, bucket, key) = get_env_args("matroska-test");
+        let uri = get_uri(&region, &bucket, &key);
+        let num_parts = 1;
+        let mut writer = gst_check::Harness::new_parse(&format!(
+            "audiotestsrc name=\"source\" ! audioconvert ! vorbisenc ! matroskamux ! \
+            identity name=\"identity\" ! \
+            awss3sink name=\"sink\" uri={uri} num-cached-parts={num_parts}"
+        ));
+
+        let bin = writer.element().unwrap().dynamic_cast::<gst::Bin>().unwrap();
+        let source = bin.by_name("source").unwrap();
+        let identity = bin.by_name("identity").unwrap();
+        let sink = bin.by_name("sink").unwrap();
+
+        let part_size = sink.property::<u64>("part-size");
+        let max_size_bytes = num_parts * part_size - (part_size / 10); // 90% of total cache size
+
+        // Use "handoff" to identify how many bytes have been pushed and perform
+        // an EOS before reaching a full part.
+        identity.connect("handoff", false, move |args| {
+            static mut TOTAL_SIZE: u64 = 0u64;
+            let buffer = args[1]
+                .get::<gst::Buffer>()
+                .expect("Failed to get buffer from handoff");
+
+            unsafe {
+                TOTAL_SIZE += buffer.size() as u64;
+
+                // Check if we've reached the max size
+                if TOTAL_SIZE >= max_size_bytes {
+                    gst::info!(CAT, "Max size reached ({} bytes), sending EOS", TOTAL_SIZE);
+                    source.send_event(gst::event::Eos::new());
+                }
+            }
+            None
+        });
+
+        // Start the writer and let it run until EOS and expect pull_until_eos to be OK
+        assert!(play_harness_until_eos_or_error(&mut writer, gst::ClockTime::from_seconds(30)).is_ok());
+        drop(writer);
+
+        // Read the data back and verify it can be decoded (no error on play).
+        let mut reader = gst_check::Harness::new_parse(&format!(
+            "awss3src uri=\"{uri}\" ! matroskademux ! vorbisdec ! audioconvert ! autoaudiosink"
+        ));
+        assert!(play_harness_until_eos_or_error(&mut reader, gst::ClockTime::from_seconds(30)).is_ok());
     }
 
     #[test_with::env(AWS_ACCESS_KEY_ID)]
