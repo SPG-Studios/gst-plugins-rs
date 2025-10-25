@@ -658,7 +658,7 @@ impl S3Sink {
         // be the final part size).
         state.upload_pos += state.buffer_offset as u64;
 
-        gst::info!(CAT, imp = self, "Uploaded part {}", state.part_number);
+        gst::debug!(CAT, imp = self, "Uploaded part {}", state.part_number);
 
         // Increment part number
         state.increment_part_number()?;
