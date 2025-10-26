@@ -55,6 +55,7 @@ members = [
     "utils/togglerecord",
     "utils/tracers",
     "utils/uriplaylistbin",
+    "utils/parsebinloop",
 
     "video/cdg",
     "video/closedcaption",

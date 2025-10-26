@@ -3311,6 +3311,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-parsebinloop"
+version = "0.15.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "gio",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-check",
+ "gtk4",
+ "once_cell",
+]
+
+[[package]]
 name = "gst-plugin-png"
 version = "0.15.0-alpha.1"
 dependencies = [
