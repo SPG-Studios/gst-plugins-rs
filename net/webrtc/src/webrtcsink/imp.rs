@@ -49,6 +49,7 @@ const CUDA_MEMORY_FEATURE: &str = "memory:CUDAMemory";
 const GL_MEMORY_FEATURE: &str = "memory:GLMemory";
 const NVMM_MEMORY_FEATURE: &str = "memory:NVMM";
 const D3D11_MEMORY_FEATURE: &str = "memory:D3D11Memory";
+const DMABUF_MEMORY_FEATURE: &str = "memory:DMABuf";
 
 const RTP_TWCC_URI: &str =
     "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
@@ -5336,6 +5337,10 @@ impl ElementImpl for BaseWebRTCSink {
                 .structure_with_features(
                     gst::Structure::builder("video/x-raw").build(),
                     gst::CapsFeatures::new([D3D11_MEMORY_FEATURE]),
+                )
+                .structure_with_features(
+                    gst::Structure::builder("video/x-raw").build(),
+                    gst::CapsFeatures::new([DMABUF_MEMORY_FEATURE]),
                 );
 
             // Ignore specific raw caps from Codecs: they are covered by video/x-raw & audio/x-raw
