@@ -10,10 +10,10 @@ rust-version.workspace = true
 
 [dependencies]
 glib.workspace = true
-gst = { workspace = true, features = ["v1_16"] }
-gst-base = { workspace = true, features = ["v1_16"] }
-gst-audio = { workspace = true, features = ["v1_16"] }
-gst-video = { workspace = true, features = ["v1_16"] }
+gst = { workspace = true, features = ["v1_20"] }
+gst-base = { workspace = true, features = ["v1_20"] }
+gst-audio = { workspace = true, features = ["v1_20"] }
+gst-video = { workspace = true, features = ["v1_20"] }
 anyhow = "1.0"
 byte-slice-cast = "1"
 byteorder = "1.0"
@@ -27,12 +27,11 @@ thiserror = "2"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["sink"]
-sink = ["gst/v1_18", "gst-base/v1_18"]
+default = []
 advanced-sdk = []
 static = []
 capi = []
-doc = ["gst/v1_18"]
+doc = []
 
 [lib]
 name = "gstndi"

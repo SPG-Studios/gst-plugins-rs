@@ -10,15 +10,14 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use std::sync::LazyLock;
-
+use super::receiver::{Receiver, ReceiverControlHandle, ReceiverItem};
+use crate::constants::{CUSTOM_META_FIELD, CUSTOM_META_NAME};
+use crate::ndisrcmeta::Buffer;
 use crate::ndisrcmeta::NdiSrcMeta;
 use crate::ndisys;
 use crate::RecvColorFormat;
 use crate::TimestampMode;
-
-use super::receiver::{Receiver, ReceiverControlHandle, ReceiverItem};
-use crate::ndisrcmeta::Buffer;
+use std::sync::LazyLock;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -621,15 +620,26 @@ impl BaseSrcImpl for NdiSrc {
                             discont,
                             receive_time_gst,
                             receive_time_real,
-                        } => (
-                            self.calculate_video_timestamp(
+                        } => {
+                            if let Some(frame_metadata) =
+                                frame.metadata().filter(|metadata| !metadata.is_empty())
+                            {
+                                if let Ok(mut meta) =
+                                    gst::meta::CustomMeta::add(buffer_ref, CUSTOM_META_NAME)
+                                {
+                                    meta.mut_structure().set(CUSTOM_META_FIELD, frame_metadata);
+                                }
+                            }
+
+                            let ts = self.calculate_video_timestamp(
                                 &mut state,
                                 receive_time_gst,
                                 receive_time_real,
                                 frame,
-                            ),
-                            discont,
-                        ),
+                            );
+
+                            (ts, discont)
+                        }
                         Buffer::Metadata {
                             ref frame,
                             receive_time_gst,

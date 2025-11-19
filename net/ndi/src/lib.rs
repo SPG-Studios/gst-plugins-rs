@@ -13,22 +13,23 @@ mod ndisys;
 
 mod device_provider;
 
-#[cfg(feature = "sink")]
 mod ndisink;
-#[cfg(feature = "sink")]
+
 mod ndisinkcombiner;
-#[cfg(feature = "sink")]
+
 mod ndisinkmeta;
 
 mod ndisrc;
 mod ndisrcdemux;
 mod ndisrcmeta;
 
+mod constants;
 mod ndi_cc_meta;
 
 #[cfg(feature = "doc")]
 use gst::prelude::*;
 
+use crate::constants::CUSTOM_META_NAME;
 use std::sync::LazyLock;
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum, Default)]
@@ -142,10 +143,13 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     ndisrc::register(plugin)?;
     ndisrcdemux::register(plugin)?;
 
-    #[cfg(feature = "sink")]
     {
         ndisinkcombiner::register(plugin)?;
         ndisink::register(plugin)?;
+    }
+
+    if !gst::meta::CustomMeta::is_registered(CUSTOM_META_NAME) {
+        gst::meta::CustomMeta::register(CUSTOM_META_NAME, &[]);
     }
 
     Ok(())
