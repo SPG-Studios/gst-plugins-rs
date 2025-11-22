@@ -315,9 +315,9 @@ impl RtpBaseDepay2Impl for RtpVorbisDepay {
 
         let mut hdr = BitReader::endian(&payload[0..6], BigEndian);
 
-        let ident = hdr.read::<u32>(24).unwrap();
+        let ident = hdr.read::<24, u32>().unwrap();
 
-        let frag_type = match hdr.read::<u8>(2).unwrap() {
+        let frag_type = match hdr.read::<2, u8>().unwrap() {
             0 => FragType::NotFragmented,
             1 => FragType::Start,
             2 => FragType::Continuation,
@@ -325,7 +325,7 @@ impl RtpBaseDepay2Impl for RtpVorbisDepay {
             _ => unreachable!(),
         };
 
-        let vdt = match hdr.read::<u8>(2).unwrap() {
+        let vdt = match hdr.read::<2, u8>().unwrap() {
             0 => VorbisDataType::RawPacket,
             1 => VorbisDataType::PackedConfig,
             2 => VorbisDataType::LegacyComment,
@@ -345,10 +345,10 @@ impl RtpBaseDepay2Impl for RtpVorbisDepay {
         }
 
         // Number of packets is informational only, we don't use it
-        let n_packets = hdr.read::<u8>(4).unwrap();
+        let n_packets = hdr.read::<4, u8>().unwrap();
 
         // All packet types have a two-byte length indicator at the start
-        let packet_len = hdr.read::<u16>(16).unwrap() as usize;
+        let packet_len = hdr.read::<16, u16>().unwrap() as usize;
 
         gst::log!(
             CAT,
