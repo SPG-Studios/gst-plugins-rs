@@ -80,7 +80,7 @@ impl FromBitStream for VorbisBlockModes {
     type Error = anyhow::Error;
 
     fn from_reader<R: BitRead + ?Sized>(r: &mut R) -> anyhow::Result<Self> {
-        let mode_count = 1 + r.read::<u8>(6)? as usize;
+        let mode_count = 1 + r.read::<6, u8>()? as usize;
 
         let mut mode_blockflags = 0;
 
@@ -89,9 +89,9 @@ impl FromBitStream for VorbisBlockModes {
             if blockflag {
                 mode_blockflags |= 1u64 << m;
             }
-            let windowtype = r.read::<u16>(16)?;
-            let transformtype = r.read::<u16>(16)?;
-            let _mapping = r.read::<u8>(8)?;
+            let windowtype = r.read::<16, u16>()?;
+            let transformtype = r.read::<16, u16>()?;
+            let _mapping = r.read::<8, u8>()?;
             if windowtype != 0 || transformtype != 0 {
                 anyhow::bail!("invalid window type or transform type");
             }
@@ -152,13 +152,13 @@ impl VorbisInfo {
 
         let mut br = BitReader::endian(Cursor::new(&id_header[7..]), LittleEndian);
 
-        let vorbis_version = br.read::<u32>(32)?;
+        let vorbis_version = br.read::<32, u32>()?;
         if vorbis_version != 0 {
             Err(UnsupportedVersion(vorbis_version))?;
         }
 
-        let channels = br.read::<u8>(8)?;
-        let rate = br.read::<u32>(32)?;
+        let channels = br.read::<8, u8>()?;
+        let rate = br.read::<32, u32>()?;
 
         if channels == 0 || rate == 0 || rate > 192000 {
             Err(InvalidHeader {
@@ -167,12 +167,12 @@ impl VorbisInfo {
             })?;
         }
 
-        let _bitrate_max = br.read::<u32>(32)?;
-        let _bitrate_nom = br.read::<u32>(32)?;
-        let _bitrate_min = br.read::<u32>(32)?;
+        let _bitrate_max = br.read::<32, u32>()?;
+        let _bitrate_nom = br.read::<32, u32>()?;
+        let _bitrate_min = br.read::<32, u32>()?;
 
-        let blocksize0 = 1u16 << br.read::<u8>(4)?;
-        let blocksize1 = 1u16 << br.read::<u8>(4)?;
+        let blocksize0 = 1u16 << br.read::<4, u8>()?;
+        let blocksize1 = 1u16 << br.read::<4, u8>()?;
 
         // Allowed block sizes: 64, 128, 256, 512, 1024, 2048, 4096, 8192
         #[allow(clippy::manual_range_contains)]
@@ -276,13 +276,13 @@ impl VorbisInfo {
 
         let mut br = BitReader::endian(Cursor::new(&packet_data), LittleEndian);
 
-        if br.read::<u8>(1).context("packet type bit")? != 0 {
+        if br.read::<1, u8>().context("packet type bit")? != 0 {
             bail!("Not an audio packet");
         }
 
         let blockmode_bits = (self.blockmodes.n_modes - 1).checked_ilog2().unwrap_or(0) + 1;
 
-        let blockmode = br.read::<u8>(blockmode_bits).context("blockmode")? as usize;
+        let blockmode = br.read_var::<u8>(blockmode_bits).context("blockmode")? as usize;
 
         if blockmode >= self.blockmodes.n_modes {
             gst::warning!(
@@ -317,16 +317,14 @@ impl VorbisInfo {
         let decode_blocksize = if packet_size == Short {
             short_size / 2
         } else {
-            let prev_size = match br.read::<u8>(1).context("previous_window_flag")? & 1 {
-                0 => Short,
-                1 => Long,
-                _ => unreachable!(),
+            let prev_size = match br.read_bit().context("previous_window_flag")? {
+                false => Short,
+                true => Long,
             };
 
-            let next_size = match br.read::<u8>(1).context("next_window_flag")? & 1 {
-                0 => Short,
-                1 => Long,
-                _ => unreachable!(),
+            let next_size = match br.read_bit().context("next_window_flag")? {
+                false => Short,
+                true => Long,
             };
 
             match (prev_size, next_size) {
