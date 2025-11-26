@@ -15,7 +15,7 @@
  * Since: plugins-rs-0.12 */
 use gst::glib;
 
-mod originalbuffermeta;
+pub mod originalbuffermeta;
 mod originalbufferrestore;
 mod originalbuffersave;
 
