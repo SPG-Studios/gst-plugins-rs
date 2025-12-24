@@ -110,6 +110,7 @@ impl FromByteStream for Header {
 }
 
 #[derive(Clone, Debug)]
+#[allow(unused)]
 pub(crate) enum Item {
     Caps(gst::Caps),
     Buffer(gst::Buffer),
