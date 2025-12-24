@@ -574,7 +574,7 @@ fn read_xiph_length<R: ByteRead + ?Sized>(br: &mut R) -> anyhow::Result<usize> {
     for i in 0.. {
         let b = br.read::<u8>().context("xiph length")?;
 
-        len = (len << 8) | (b & 0x7f) as usize;
+        len = (len << 7) | (b & 0x7f) as usize;
 
         if b & 0x80 == 0 {
             break;
@@ -589,6 +589,8 @@ fn read_xiph_length<R: ByteRead + ?Sized>(br: &mut R) -> anyhow::Result<usize> {
 }
 
 fn write_xiph_length(len: usize) -> Vec<u8> {
+    const MORE_FLAG: u8 = 0x80;
+
     // Could write into a caller-provided stack-allocated buffer,
     // but not really perf sensitive, so KISS for now.
     let mut v = Vec::with_capacity(8);
@@ -597,15 +599,38 @@ fn write_xiph_length(len: usize) -> Vec<u8> {
 
     loop {
         let b = (len & 0x7f) as u8;
+
+        v.insert(0, b | MORE_FLAG);
+
         len >>= 7;
-        let more_flag = ((len > 0) as u8) << 7;
-        v.push(b | more_flag);
+
         if len == 0 {
             break;
         }
     }
 
+    // Clear more flag for last part
+    let last = v.last_mut().expect("last");
+    *last &= !MORE_FLAG;
+
     v
+}
+
+#[test]
+fn test_vorbis_xiph_length_read_write() {
+    for value in [81, 981, 98765] {
+        let bytes = write_xiph_length(value);
+
+        eprintln!("{value} ({value:04x}) as xiph length: {bytes:02x?}");
+
+        let mut r = ByteReader::endian(Cursor::new(&bytes), BigEndian);
+        let len: usize = read_xiph_length(&mut r).unwrap();
+
+        assert_eq!(len, value);
+    }
+
+    const MORE_FLAG: u8 = 0x80;
+    assert_eq!(!MORE_FLAG, 0x7f);
 }
 
 impl FromByteStream for VorbisHeaders {
