@@ -839,6 +839,9 @@ impl FromByteStream for VorbisHeaders {
         let id_len = read_xiph_length(r).context("id header length")?;
         let comment_len = read_xiph_length(r).context("comment header length")?;
 
+        gst::trace!(CAT, "id len: {}", id_len);
+        gst::trace!(CAT, "comment len: {}", comment_len);
+
         // Read identification header
         let id_header = r.read_to_vec(id_len).context("id header")?;
 
@@ -851,6 +854,8 @@ impl FromByteStream for VorbisHeaders {
         while let Ok(b) = r.read::<u8>() {
             setup_header.push(b);
         }
+
+        gst::trace!(CAT, "setup len: {}", setup_header.len());
 
         VorbisHeaders::new(id_header, comment_header, setup_header)
     }
