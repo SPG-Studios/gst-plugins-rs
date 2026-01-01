@@ -19,6 +19,27 @@ use gst::glib;
 mod reqwesthttpsrc;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    #[cfg(feature = "ring")]
+    {
+        use std::sync::LazyLock;
+
+        static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+            gst::DebugCategory::new(
+                "reqwest",
+                gst::DebugColorFlags::empty(),
+                Some("reqwest HTTP plugin"),
+            )
+        });
+
+        match rustls::crypto::ring::default_provider().install_default() {
+            Ok(_) => {
+                gst::debug!(CAT, "Set ring as default rustls crypto provider");
+            }
+            Err(_) => {
+                gst::debug!(CAT, "Using application's default rustls crypto provider");
+            }
+        }
+    }
     reqwesthttpsrc::register(plugin)
 }
 

@@ -166,7 +166,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "reqwesthttpsrc",
         gst::DebugColorFlags::empty(),
-        Some("Rust HTTP source"),
+        Some("reqwest HTTP source"),
     )
 });
 
@@ -1245,15 +1245,12 @@ impl PushSrcImpl for ReqwestHttpSrc {
             Some(chunk) => {
                 /* do something with the chunk and store the body again in the state */
 
+                let size = chunk.len();
                 gst::trace!(
                     CAT,
                     imp = self,
-                    "Chunk of {} bytes received at offset {}",
-                    chunk.len(),
-                    offset
+                    "Chunk of {size} bytes received at offset {offset}",
                 );
-                let size = chunk.len();
-                assert_ne!(chunk.len(), 0);
 
                 *position += size as u64;
 
