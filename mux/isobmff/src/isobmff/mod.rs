@@ -118,6 +118,11 @@ glib::wrapper! {
     pub(crate) struct ONVIFMP4Mux(ObjectSubclass<crate::isobmff::mp4mux::imp::ONVIFMP4Mux>) @extends MP4Mux, gst_base::Aggregator, gst::Element, gst::Object, @implements gst::ChildProxy;
 }
 
+#[cfg(feature = "v1_28")]
+glib::wrapper! {
+    pub(crate) struct GimiMP4Mux(ObjectSubclass<crate::isobmff::mp4mux::imp::GimiMP4Mux>) @extends MP4Mux, gst_base::Aggregator, gst::Element, gst::Object, @implements gst::ChildProxy;
+}
+
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     if !gst::meta::CustomMeta::is_registered("FMP4KeyframeMeta") {
         gst::meta::CustomMeta::register("FMP4KeyframeMeta", &[]);
@@ -169,6 +174,13 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         "onvifmp4mux",
         gst::Rank::MARGINAL,
         ONVIFMP4Mux::static_type(),
+    )?;
+    #[cfg(feature = "v1_28")]
+    gst::Element::register(
+        Some(plugin),
+        "gimimp4mux",
+        gst::Rank::MARGINAL,
+        GimiMP4Mux::static_type(),
     )?;
 
     #[cfg(feature = "v1_28")]

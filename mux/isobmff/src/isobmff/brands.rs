@@ -307,6 +307,7 @@ pub(crate) fn brands_from_variant_and_caps<'a>(
     caps: impl Iterator<Item = &'a gst::Caps> + Clone,
     image_sequence_mode: bool,
     with_precision_timestamps: bool,
+    is_gimi: bool,
     extra_brands: &[[u8; 4]],
 ) -> (u32, [u8; 4], Vec<[u8; 4]>) {
     let mut major_brand = *b"iso6";
@@ -407,6 +408,11 @@ pub(crate) fn brands_from_variant_and_caps<'a>(
         compatible_brands.insert(*brand);
     }
     compatible_brands.insert(major_brand);
+
+    if is_gimi {
+        compatible_brands.insert(*b"geo1");
+        compatible_brands.insert(*b"unif");
+    }
 
     (
         minor_version,

@@ -6833,6 +6833,49 @@
                 },
                 "rank": "primary"
             },
+            "gimimp4mux": {
+                "author": "Sebastian Dröge <sebastian@centricular.com>",
+                "description": "GIMI MP4 muxer",
+                "hierarchy": [
+                    "GstGimiMP4Mux",
+                    "GstRsMP4Mux",
+                    "GstAggregator",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "interfaces": [
+                    "GstChildProxy"
+                ],
+                "klass": "Codec/Muxer",
+                "pad-templates": {
+                    "sink_audio_%%u": {
+                        "caps": "audio/mpeg:\n    mpegversion: 4\n  stream-format: raw\n       channels: [ 1, 65535 ]\n           rate: [ 1, 2147483647 ]\n",
+                        "direction": "sink",
+                        "presence": "request",
+                        "type": "GstRsBaseMP4MuxPad"
+                    },
+                    "sink_image_%%u": {
+                        "caps": "video/x-h264:\n  stream-format: { (string)avc, (string)avc3 }\n      alignment: au\n          width: [ 1, 65535 ]\n         height: [ 1, 65535 ]\nvideo/x-h265:\n  stream-format: { (string)hvc1, (string)hev1 }\n      alignment: au\n          width: [ 1, 65535 ]\n         height: [ 1, 65535 ]\nvideo/x-raw:\n         format: { IYU2, RGB, BGR, NV12, NV21, RGBA, ARGB, ABGR, BGRA, RGBx, BGRx, Y444, AYUV, GRAY8, GRAY16_BE, GBR, RGBP, BGRP, v308, r210 }\n          width: [ 1, 2147483647 ]\n         height: [ 1, 2147483647 ]\n interlace-mode: progressive\nvideo/x-raw:\n         format: { Y41B, NV16, NV61, Y42B }\n          width: [ 4, 2147483644, 4 ]\n         height: [ 1, 2147483647 ]\n interlace-mode: progressive\nvideo/x-raw:\n         format: { I420, YV12, YUY2, YVYU, UYVY, VYUY }\n          width: [ 4, 2147483644, 4 ]\n         height: [ 2, 2147483646, 2 ]\n interlace-mode: progressive\n",
+                        "direction": "sink",
+                        "presence": "request",
+                        "type": "GstRsBaseMP4MuxPad"
+                    },
+                    "sink_video_%%u": {
+                        "caps": "video/x-h265:\n  stream-format: { (string)hvc1, (string)hev1 }\n      alignment: au\n          width: [ 1, 65535 ]\n         height: [ 1, 65535 ]\n        profile: { (string)main-444-12, (string)main-422-12, (string)main-10 }\nvideo/x-h264:\n  stream-format: { (string)avc, (string)avc3 }\n      alignment: au\n          width: [ 1, 65535 ]\n         height: [ 1, 65535 ]\n        profile: { (string)high-4:4:4, (string)high-4:2:2, (string)high, (string)main, (string)constrained-baseline }\nvideo/x-raw:\n         format: { IYU2, RGB, BGR, NV12, NV21, RGBA, ARGB, ABGR, BGRA, RGBx, BGRx, Y444, AYUV, GRAY8, GRAY16_BE, GBR, RGBP, BGRP, v308, r210 }\n          width: [ 1, 2147483647 ]\n         height: [ 1, 2147483647 ]\n interlace-mode: progressive\nvideo/x-raw:\n         format: { NV16, NV61, Y42B }\n          width: [ 4, 2147483644, 4 ]\n         height: [ 1, 2147483647 ]\n interlace-mode: progressive\nvideo/x-raw:\n         format: { I420, YV12, YUY2, YVYU, UYVY, VYUY }\n          width: [ 4, 2147483644, 4 ]\n         height: [ 2, 2147483646, 2 ]\n interlace-mode: progressive\n",
+                        "direction": "sink",
+                        "presence": "request",
+                        "type": "GstRsBaseMP4MuxPad"
+                    },
+                    "src": {
+                        "caps": "video/quicktime:\n        variant: iso\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "rank": "marginal"
+            },
             "isofmp4mux": {
                 "author": "Sebastian Dröge <sebastian@centricular.com>",
                 "description": "ISO fragmented MP4 muxer",

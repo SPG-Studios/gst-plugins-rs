@@ -123,6 +123,7 @@ struct Settings {
     movie_timescale: u32,
     extra_brands: Vec<[u8; 4]>,
     with_precision_timestamps: bool,
+    is_gimi: bool,
 }
 
 impl Default for Settings {
@@ -133,6 +134,7 @@ impl Default for Settings {
             movie_timescale: 0,
             extra_brands: Vec::new(),
             with_precision_timestamps: false,
+            is_gimi: false,
         }
     }
 }
@@ -2473,6 +2475,7 @@ impl AggregatorImpl for MP4Mux {
                     stream.caps.iter(),
                     stream.image_sequence_mode(),
                     settings.with_precision_timestamps,
+                    settings.is_gimi,
                     extra_brands,
                 );
 
@@ -2945,6 +2948,169 @@ impl AggregatorImpl for ONVIFMP4Mux {}
 
 impl MP4MuxImpl for ONVIFMP4Mux {
     const VARIANT: Variant = Variant::ONVIF;
+}
+
+#[cfg(feature = "v1_28")]
+#[derive(Default)]
+pub(crate) struct GimiMP4Mux;
+
+#[cfg(feature = "v1_28")]
+#[glib::object_subclass]
+impl ObjectSubclass for GimiMP4Mux {
+    const NAME: &'static str = "GstGimiMP4Mux";
+    type Type = crate::isobmff::GimiMP4Mux;
+    type ParentType = crate::isobmff::MP4Mux;
+}
+
+#[cfg(feature = "v1_28")]
+impl ObjectImpl for GimiMP4Mux {
+    fn constructed(&self) {
+        let obj = self.obj();
+        let mut settings = obj
+            .upcast_ref::<crate::isobmff::MP4Mux>()
+            .imp()
+            .settings
+            .lock()
+            .unwrap();
+        settings.is_gimi = true;
+        settings.with_precision_timestamps = true;
+    }
+}
+
+#[cfg(feature = "v1_28")]
+impl GstObjectImpl for GimiMP4Mux {}
+
+#[cfg(feature = "v1_28")]
+impl ElementImpl for GimiMP4Mux {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
+            gst::subclass::ElementMetadata::new(
+                "GimiMP4Mux",
+                "Codec/Muxer",
+                "GIMI MP4 muxer",
+                "Sebastian Dröge <sebastian@centricular.com>",
+            )
+        });
+
+        Some(&*ELEMENT_METADATA)
+    }
+
+    fn pad_templates() -> &'static [gst::PadTemplate] {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
+            let src_pad_template = gst::PadTemplate::new(
+                "src",
+                gst::PadDirection::Src,
+                gst::PadPresence::Always,
+                &gst::Caps::builder("video/quicktime")
+                    .field("variant", "iso")
+                    .build(),
+            )
+            .unwrap();
+
+            let sink_pad_template = gst::PadTemplate::with_gtype(
+                "sink_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-h265")
+                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // formats that do not use subsampling
+                            // Plus NV12 and NV21 because that works OK with the interleaved planes
+                            gst::List::new([
+                                "IYU2",
+                                "RGB",
+                                "BGR",
+                                "NV12",
+                                "NV21",
+                                "RGBA",
+                                "ARGB",
+                                "ABGR",
+                                "BGRA",
+                                "RGBx",
+                                "BGRx",
+                                "Y444",
+                                "AYUV",
+                                "GRAY8",
+                                "GRAY16_BE",
+                                "GBR",
+                                "RGBP",
+                                "BGRP",
+                                "v308",
+                                "r210",
+                            ]),
+                        )
+                        .field("width", gst::IntRange::new(1, i32::MAX))
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use horizontal subsampling, but not vertical subsampling (4:2:2 and 4:1:1)
+                            gst::List::new(["Y41B", "NV16", "NV61", "Y42B"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use both horizontal and vertical subsampling (4:2:0)
+                            gst::List::new(["I420", "YV12", "YUY2", "YVYU", "UYVY", "VYUY"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field(
+                            "height",
+                            gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
+                        )
+                        .build(),
+                    gst::Structure::builder("audio/mpeg")
+                        .field("mpegversion", 4i32)
+                        .field("stream-format", "raw")
+                        .field("channels", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("rate", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                ]
+                .into_iter()
+                .collect::<gst::Caps>(),
+                crate::isobmff::MP4MuxPad::static_type(),
+            )
+            .unwrap();
+
+            vec![src_pad_template, sink_pad_template]
+        });
+
+        PAD_TEMPLATES.as_ref()
+    }
+}
+
+#[cfg(feature = "v1_28")]
+impl AggregatorImpl for GimiMP4Mux {}
+
+#[cfg(feature = "v1_28")]
+impl MP4MuxImpl for GimiMP4Mux {
+    const VARIANT: Variant = Variant::ISO;
 }
 
 #[derive(Default, Clone)]
