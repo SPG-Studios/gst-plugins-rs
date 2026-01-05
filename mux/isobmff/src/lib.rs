@@ -18,7 +18,13 @@ mod av1;
 mod isobmff;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    isobmff::register(plugin)
+    isobmff::register(plugin)?;
+
+    if !gst::meta::CustomMeta::is_registered("GimiContentID") {
+        gst::meta::CustomMeta::register("GimiContentID", &[]);
+    }
+
+    Ok(())
 }
 
 gst::plugin_define!(

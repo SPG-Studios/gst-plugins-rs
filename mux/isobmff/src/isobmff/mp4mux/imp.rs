@@ -1388,8 +1388,33 @@ impl MP4Mux {
             }
 
             #[cfg(feature = "v1_28")]
-            if settings.is_gimi {
-                let mut content_id: Vec<u8> = generate_gimi_content_id().into_bytes();
+            let gimi_content_id = gst::meta::CustomMeta::from_buffer(&buffer, "GimiContentID")
+                .ok()
+                .and_then(|meta| {
+                    meta.structure()
+                        .get_optional::<&str>("content-id")
+                        .ok()
+                        .flatten()
+                        .map(|s| s.to_owned())
+                })
+                .or_else(|| {
+                    if settings.is_gimi {
+                        Some(generate_gimi_content_id())
+                    } else {
+                        None
+                    }
+                });
+
+            #[cfg(feature = "v1_28")]
+            if let Some(gimi_content_id) = gimi_content_id {
+                gst::trace!(
+                    CAT,
+                    obj = stream.sinkpad,
+                    "Sample GIMI Content-ID is {}",
+                    gimi_content_id
+                );
+
+                let mut content_id: Vec<u8> = gimi_content_id.into_bytes();
                 content_id.extend([0]);
 
                 stream
