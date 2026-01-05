@@ -3045,6 +3045,39 @@ impl ObjectImpl for GimiMP4Mux {
         settings.is_gimi = true;
         settings.with_precision_timestamps = true;
     }
+
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            vec![
+                glib::ParamSpecOverride::for_class::<crate::isobmff::MP4Mux>(
+                    "tai-precision-timestamps",
+                ),
+            ]
+        });
+        PROPERTIES.as_ref()
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "tai-precision-timestamps" => {
+                if !value.get::<bool>().unwrap() {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "tai-precision-timestamps is always enabled for GIMI"
+                    );
+                }
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "tai-precision-timestamps" => true.to_value(),
+            _ => unimplemented!(),
+        }
+    }
 }
 
 #[cfg(feature = "v1_28")]
