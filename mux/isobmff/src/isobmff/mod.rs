@@ -187,6 +187,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     {
         tags::register::<PrecisionClockTypeTag>();
         tags::register::<PrecisionClockTimeUncertaintyNanosecondsTag>();
+        tags::register::<GimiTrackContentIDTag>();
     }
     Ok(())
 }
@@ -196,6 +197,9 @@ pub enum PrecisionClockTimeUncertaintyNanosecondsTag {}
 
 #[cfg(feature = "v1_28")]
 pub enum PrecisionClockTypeTag {}
+
+#[cfg(feature = "v1_28")]
+pub enum GimiTrackContentIDTag {}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum DeltaFrames {
@@ -750,4 +754,19 @@ pub(crate) struct ChnlLayoutInfo {
     layout_idx: u8, /* Must be u8 for `chnl` box */
     reorder_map: Option<Vec<usize>>,
     omitted_channels_map: u64,
+}
+
+#[cfg(feature = "v1_28")]
+impl<'a> Tag<'a> for GimiTrackContentIDTag {
+    type TagType = &'a str;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-track-content-id");
+}
+
+#[cfg(feature = "v1_28")]
+impl CustomTag<'_> for GimiTrackContentIDTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-track-content-id");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) ContentID"
+    );
 }

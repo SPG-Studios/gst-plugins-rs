@@ -226,6 +226,10 @@ struct Stream {
     #[cfg(feature = "v1_28")]
     /// The last TAI timestamp value, in nanoseconds after epoch
     last_tai_timestamp: u64,
+
+    #[cfg(feature = "v1_28")]
+    /// Optional GIMI content id
+    gimi_content_id: Option<String>,
 }
 
 impl Stream {
@@ -1383,11 +1387,12 @@ impl MP4Mux {
                 }
             }
 
+            #[cfg(feature = "v1_28")]
             if settings.is_gimi {
                 let mut content_id: Vec<u8> = generate_gimi_content_id().into_bytes();
                 content_id.extend([0]);
 
-		stream
+                stream
                     .pending_aux_info_data
                     .entry(AuxiliaryInformation {
                         aux_info_type: Some(*b"suid"),
@@ -1457,6 +1462,9 @@ impl MP4Mux {
             let mut clock_type = TaicClockType::Unknown;
             #[cfg(feature = "v1_28")]
             let mut time_uncertainty = TAIC_TIME_UNCERTAINTY_UNKNOWN;
+            #[cfg(feature = "v1_28")]
+            let mut gimi_content_id: Option<String> = None;
+
             pad.sticky_events_foreach(|ev| {
                 if let gst::EventView::Tag(ev) = ev.view() {
                     let tag = ev.tag();
@@ -1577,6 +1585,11 @@ impl MP4Mux {
                             );
                         }
                     }
+		    #[cfg(feature = "v1_28")]
+		    if let Some(tag_value) = ev.tag().get::<crate::isobmff::GimiTrackContentIDTag>() {
+			gimi_content_id = Some(tag_value.get().to_owned());
+		    }
+
                 }
                 std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
             });
@@ -1742,6 +1755,19 @@ impl MP4Mux {
                 _ => unreachable!(),
             }
 
+            #[cfg(feature = "v1_28")]
+            if _settings.is_gimi && gimi_content_id.is_none() {
+                gimi_content_id = Some(generate_gimi_content_id());
+            }
+
+            #[cfg(feature = "v1_28")]
+            gst::debug!(
+                CAT,
+                obj = pad,
+                "Track GIMI Content-ID: {}",
+                gimi_content_id.as_deref().unwrap_or("None")
+            );
+
             state.streams.push(Stream {
                 sinkpad: pad,
                 pre_queue: VecDeque::new(),
@@ -1772,6 +1798,8 @@ impl MP4Mux {
                 chnl_layout_info,
                 #[cfg(feature = "v1_28")]
                 last_tai_timestamp: 0,
+                #[cfg(feature = "v1_28")]
+                gimi_content_id,
             });
         }
 
@@ -2559,13 +2587,6 @@ impl AggregatorImpl for MP4Mux {
                     None => continue, // empty stream
                 };
 
-                #[cfg(feature = "v1_28")]
-                let gimi_content_id = if settings.is_gimi {
-                    Some(generate_gimi_content_id())
-                } else {
-                    None
-                };
-
                 streams.push(TrackConfiguration {
                     caps: stream.caps.clone(),
                     delta_frames: stream.delta_frames,
@@ -2590,7 +2611,7 @@ impl AggregatorImpl for MP4Mux {
                     codec_specific_boxes: stream.codec_specific_boxes.clone(),
                     chnl_layout_info: stream.chnl_layout_info.clone(),
                     #[cfg(feature = "v1_28")]
-                    gimi_content_id,
+                    gimi_content_id: stream.gimi_content_id,
                 });
             }
 
