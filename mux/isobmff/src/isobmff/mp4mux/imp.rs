@@ -1382,6 +1382,21 @@ impl MP4Mux {
                         .push_back(timestamp_packet);
                 }
             }
+
+            if settings.is_gimi {
+                let mut content_id: Vec<u8> = generate_gimi_content_id().into_bytes();
+                content_id.extend([0]);
+
+		stream
+                    .pending_aux_info_data
+                    .entry(AuxiliaryInformation {
+                        aux_info_type: Some(*b"suid"),
+                        aux_info_type_parameter: 0,
+                    })
+                    .or_default()
+                    .push_back(content_id);
+            }
+
             stream.queued_chunk_time += duration;
             stream.queued_chunk_bytes += buffer.size() as u64;
 
