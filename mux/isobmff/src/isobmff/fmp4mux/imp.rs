@@ -4083,6 +4083,8 @@ impl FMP4Mux {
                     tai_clock_info: None,
                     auxiliary_info: BTreeMap::new(),
                     chnl_layout_info: s.chnl_layout_info.clone(),
+                    #[cfg(feature = "v1_28")]
+                    gimi_content_id: None,
                 }
             })
             .collect::<Vec<_>>();

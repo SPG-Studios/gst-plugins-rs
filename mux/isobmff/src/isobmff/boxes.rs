@@ -215,6 +215,13 @@ fn write_trak(
         |v| write_tkhd(v, cfg, idx, stream, creation_time),
     )?;
 
+    #[cfg(feature = "v1_28")]
+    if let Some(ref gimi_content_id) = stream.gimi_content_id {
+        write_full_box(v, b"meta", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+            write_track_meta(v, gimi_content_id)
+        })?;
+    }
+
     // TODO: write edts optionally for negative DTS instead of offsetting the DTS
     write_box(v, b"mdia", |v| write_mdia(v, cfg, stream, creation_time))?;
     // TODO: see if we can handle this better
@@ -1158,6 +1165,89 @@ fn write_tkhd(
         }
         _ => v.extend([0u8; 2 * 4]),
     }
+
+    Ok(())
+}
+
+#[cfg(feature = "v1_28")]
+fn write_track_meta(v: &mut Vec<u8>, gimi_content_id: &str) -> Result<(), Error> {
+    write_full_box(v, b"hdlr", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+        write_hdlr_box(v, b"null", b"TrackMetadataHandler")
+    })?;
+
+    write_full_box(v, b"iinf", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+        write_track_iinf(v)
+    })?;
+
+    write_full_box(v, b"iloc", FULL_BOX_VERSION_1, FULL_BOX_FLAGS_NONE, |v| {
+        write_track_iloc(v, gimi_content_id.len().try_into().unwrap())
+    })?;
+
+    write_box(v, b"idat", |v| {
+        v.extend(gimi_content_id.as_bytes());
+        // nul terminated string
+        v.extend([0]);
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[cfg(feature = "v1_28")]
+fn write_track_iinf(v: &mut Vec<u8>) -> Result<(), Error> {
+    v.extend(1u16.to_be_bytes());
+
+    write_full_box(v, b"infe", 2, FULL_BOX_FLAGS_NONE, |v| {
+        // item_id, 1 for the first one
+        v.extend(1u16.to_be_bytes());
+        // item_protection, 0 as unprotected
+        v.extend(0u16.to_be_bytes());
+        // item_type
+        v.extend(b"uri ");
+
+        // item name is empty
+        v.extend([0u8]);
+
+        // URN for GIMI Content ID defined in GIMI spec
+        v.extend(b"urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73");
+        // nul termination
+        v.extend([0u8]);
+
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[cfg(feature = "v1_28")]
+fn write_track_iloc(v: &mut Vec<u8>, gimi_content_id_len: u32) -> Result<(), Error> {
+    // offset size is 4 (at the start) (4 bits)
+    // length is 4 (the whole box) (4 bits)
+    // base_offset is 0 (a the start (4 bits)
+    // index_size is 0 (construction_method is 1), (4 bits)
+    v.extend([4 << 4 | 4, 0]);
+
+    // item_count == 1 item
+    v.extend(1u16.to_be_bytes());
+
+    // item_id = 1
+    v.extend(1u16.to_be_bytes());
+
+    // construction_method = 1
+    v.extend(1u16.to_be_bytes());
+
+    // data_reference_index == 0, this file
+    v.extend(0u16.to_be_bytes());
+
+    // no base offset
+
+    // extent_count is 1
+    v.extend(1u16.to_be_bytes());
+
+    // offset is 0, length is the string length
+    v.extend(0u32.to_be_bytes());
+    // The strings are NULL terminated in ISOMBFF, so add 1
+    v.extend((gimi_content_id_len + 1).to_be_bytes());
 
     Ok(())
 }

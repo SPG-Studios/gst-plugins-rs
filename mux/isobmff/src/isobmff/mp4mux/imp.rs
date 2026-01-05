@@ -2544,6 +2544,13 @@ impl AggregatorImpl for MP4Mux {
                     None => continue, // empty stream
                 };
 
+                #[cfg(feature = "v1_28")]
+                let gimi_content_id = if settings.is_gimi {
+                    Some(generate_gimi_content_id())
+                } else {
+                    None
+                };
+
                 streams.push(TrackConfiguration {
                     caps: stream.caps.clone(),
                     delta_frames: stream.delta_frames,
@@ -2567,6 +2574,8 @@ impl AggregatorImpl for MP4Mux {
                     auxiliary_info: stream.aux_info,
                     codec_specific_boxes: stream.codec_specific_boxes.clone(),
                     chnl_layout_info: stream.chnl_layout_info.clone(),
+                    #[cfg(feature = "v1_28")]
+                    gimi_content_id,
                 });
             }
 
@@ -3274,4 +3283,9 @@ fn get_variable_fields_for_media_type(media_type: &str) -> &'static [&'static st
     } else {
         &[]
     }
+}
+
+#[cfg(feature = "v1_28")]
+fn generate_gimi_content_id() -> String {
+    uuid::Uuid::now_v7().urn().to_string()
 }

@@ -473,6 +473,10 @@ pub(crate) struct TrackConfiguration {
 
     /// Information needed for creating `chnl` box
     chnl_layout_info: Option<ChnlLayoutInfo>,
+
+    /// GIMI (NGA-0076) Track Content ID
+    #[cfg(feature = "v1_28")]
+    pub(crate) gimi_content_id: Option<String>,
 }
 
 /// Returns the caps for all uncompressed video formats that `isobmff` muxers support.
