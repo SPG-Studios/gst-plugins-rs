@@ -83,7 +83,11 @@ glib::wrapper! {
 }
 
 glib::wrapper! {
-    pub(crate) struct MP4MuxPad(ObjectSubclass<crate::isobmff::mp4mux::imp::MP4MuxPad>) @extends gst_base::AggregatorPad, gst::Pad, gst::Object;
+    pub(crate) struct BaseMP4MuxPad(ObjectSubclass<crate::isobmff::mp4mux::imp::BaseMP4MuxPad>) @extends gst_base::AggregatorPad, gst::Pad, gst::Object;
+}
+
+glib::wrapper! {
+    pub(crate) struct MP4MuxPad(ObjectSubclass<crate::isobmff::mp4mux::imp::MP4MuxPad>) @extends BaseMP4MuxPad, gst_base::AggregatorPad, gst::Pad, gst::Object;
 }
 
 glib::wrapper! {
@@ -136,6 +140,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         WriteEdtsMode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
         ChunkMode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
         MP4Mux::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+        BaseMP4MuxPad::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
         MP4MuxPad::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
     }
 

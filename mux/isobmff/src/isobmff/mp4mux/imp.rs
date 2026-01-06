@@ -151,7 +151,7 @@ struct PendingBuffer {
 #[derive(Debug)]
 struct Stream {
     /// Sink pad for this stream.
-    sinkpad: crate::isobmff::MP4MuxPad,
+    sinkpad: crate::isobmff::BaseMP4MuxPad,
 
     /// Pre-queue for ONVIF variant to timestamp all buffers with their UTC time.
     pre_queue: VecDeque<(gst::FormattedSegment<gst::ClockTime>, gst::Buffer)>,
@@ -425,7 +425,7 @@ impl MP4Mux {
     /// Checks if a buffer is valid according to the stream configuration.
     fn check_buffer(
         buffer: &gst::BufferRef,
-        sinkpad: &crate::isobmff::MP4MuxPad,
+        sinkpad: &crate::isobmff::BaseMP4MuxPad,
         delta_frames: DeltaFrames,
         discard_headers: bool,
     ) -> Result<(), gst::FlowError> {
@@ -522,7 +522,7 @@ impl MP4Mux {
 
     fn peek_buffer(
         &self,
-        sinkpad: &crate::isobmff::MP4MuxPad,
+        sinkpad: &crate::isobmff::BaseMP4MuxPad,
         delta_frames: DeltaFrames,
         discard_headers: bool,
         pre_queue: &mut VecDeque<(gst::FormattedSegment<gst::ClockTime>, gst::Buffer)>,
@@ -1472,7 +1472,7 @@ impl MP4Mux {
             .obj()
             .sink_pads()
             .into_iter()
-            .map(|pad| pad.downcast::<crate::isobmff::MP4MuxPad>().unwrap())
+            .map(|pad| pad.downcast::<crate::isobmff::BaseMP4MuxPad>().unwrap())
         {
             // Check if language or orientation tags have already been
             // received
@@ -3223,29 +3223,34 @@ struct PadSettings {
 }
 
 #[derive(Default)]
-pub(crate) struct MP4MuxPad {
+pub(crate) struct BaseMP4MuxPad {
     settings: Mutex<PadSettings>,
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for MP4MuxPad {
-    const NAME: &'static str = "GstRsMP4MuxPad";
-    type Type = crate::isobmff::MP4MuxPad;
+impl ObjectSubclass for BaseMP4MuxPad {
+    const NAME: &'static str = "GstRsBaseMP4MuxPad";
+    type Type = crate::isobmff::BaseMP4MuxPad;
     type ParentType = gst_base::AggregatorPad;
 }
 
-impl ObjectImpl for MP4MuxPad {
+unsafe impl<T: BaseMP4MuxPadImpl> glib::subclass::types::IsSubclassable<T>
+    for crate::isobmff::BaseMP4MuxPad
+{
+}
+
+pub(crate) trait BaseMP4MuxPadImpl:
+    AggregatorPadImpl + ObjectSubclass<Type: IsA<crate::isobmff::BaseMP4MuxPad>>
+{
+}
+
+impl ObjectImpl for BaseMP4MuxPad {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("trak-timescale")
                     .nick("Track Timescale")
                     .blurb("Timescale to use for the track (units per second, 0 is automatic)")
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecBoolean::builder("image-sequence")
-                    .nick("Generate image sequence")
-                    .blurb("Generate ISO/IEC 23008-12 image sequence instead of video")
                     .mutable_ready()
                     .build(),
             ]
@@ -3261,11 +3266,6 @@ impl ObjectImpl for MP4MuxPad {
                 settings.trak_timescale = value.get().expect("type checked upstream");
             }
 
-            "image-sequence" => {
-                let mut settings = self.settings.lock().unwrap();
-                settings.image_sequence_mode = value.get().expect("type checked upstream");
-            }
-
             _ => unimplemented!(),
         }
     }
@@ -3277,21 +3277,16 @@ impl ObjectImpl for MP4MuxPad {
                 settings.trak_timescale.to_value()
             }
 
-            "image-sequence" => {
-                let settings = self.settings.lock().unwrap();
-                settings.image_sequence_mode.to_value()
-            }
-
             _ => unimplemented!(),
         }
     }
 }
 
-impl GstObjectImpl for MP4MuxPad {}
+impl GstObjectImpl for BaseMP4MuxPad {}
 
-impl PadImpl for MP4MuxPad {}
+impl PadImpl for BaseMP4MuxPad {}
 
-impl AggregatorPadImpl for MP4MuxPad {
+impl AggregatorPadImpl for BaseMP4MuxPad {
     fn flush(&self, aggregator: &gst_base::Aggregator) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mux = aggregator.downcast_ref::<crate::isobmff::MP4Mux>().unwrap();
         let mut mux_state = mux.imp().state.lock().unwrap();
@@ -3312,6 +3307,74 @@ impl AggregatorPadImpl for MP4MuxPad {
         self.parent_flush(aggregator)
     }
 }
+
+#[derive(Default)]
+pub(crate) struct MP4MuxPad {}
+
+#[glib::object_subclass]
+impl ObjectSubclass for MP4MuxPad {
+    const NAME: &'static str = "GstRsMP4MuxPad";
+    type Type = crate::isobmff::MP4MuxPad;
+    type ParentType = crate::isobmff::BaseMP4MuxPad;
+}
+
+impl ObjectImpl for MP4MuxPad {
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            vec![
+                glib::ParamSpecBoolean::builder("image-sequence")
+                    .nick("Generate image sequence")
+                    .blurb("Generate ISO/IEC 23008-12 image sequence instead of video")
+                    .mutable_ready()
+                    .build(),
+            ]
+        });
+
+        &PROPERTIES
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "image-sequence" => {
+                let obj = self.obj();
+                let mut settings = obj
+                    .upcast_ref::<crate::isobmff::BaseMP4MuxPad>()
+                    .imp()
+                    .settings
+                    .lock()
+                    .unwrap();
+                settings.image_sequence_mode = value.get().expect("type checked upstream");
+            }
+
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "image-sequence" => {
+                let obj = self.obj();
+                let settings = obj
+                    .upcast_ref::<crate::isobmff::BaseMP4MuxPad>()
+                    .imp()
+                    .settings
+                    .lock()
+                    .unwrap();
+                settings.image_sequence_mode.to_value()
+            }
+
+            _ => unimplemented!(),
+        }
+    }
+}
+
+impl GstObjectImpl for MP4MuxPad {}
+
+impl PadImpl for MP4MuxPad {}
+
+impl AggregatorPadImpl for MP4MuxPad {}
+
+impl BaseMP4MuxPadImpl for MP4MuxPad {}
 
 impl ChildProxyImpl for MP4Mux {
     fn children_count(&self) -> u32 {

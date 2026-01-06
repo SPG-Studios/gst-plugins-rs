@@ -7339,6 +7339,33 @@
                     }
                 ]
             },
+            "GstRsBaseMP4MuxPad": {
+                "hierarchy": [
+                    "GstRsBaseMP4MuxPad",
+                    "GstAggregatorPad",
+                    "GstPad",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "kind": "object",
+                "properties": {
+                    "trak-timescale": {
+                        "blurb": "Timescale to use for the track (units per second, 0 is automatic)",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "0",
+                        "max": "-1",
+                        "min": "0",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "guint",
+                        "writable": true
+                    }
+                }
+            },
             "GstRsMP4Mux": {
                 "hierarchy": [
                     "GstRsMP4Mux",
@@ -7424,6 +7451,7 @@
             "GstRsMP4MuxPad": {
                 "hierarchy": [
                     "GstRsMP4MuxPad",
+                    "GstRsBaseMP4MuxPad",
                     "GstAggregatorPad",
                     "GstPad",
                     "GstObject",
