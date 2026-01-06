@@ -3219,18 +3219,34 @@ impl ElementImpl for GimiMP4Mux {
                 gst::PadDirection::Sink,
                 gst::PadPresence::Request,
                 &[
-                    gst::Structure::builder("video/x-h264")
-                        .field("stream-format", gst::List::new(["avc", "avc3"]))
-                        .field("alignment", "au")
-                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
-                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
-                        .build(),
+                    // MISB Class 1/2 motion imagery
                     gst::Structure::builder("video/x-h265")
                         .field("stream-format", gst::List::new(["hvc1", "hev1"]))
                         .field("alignment", "au")
                         .field("width", gst::IntRange::new(1, u16::MAX as i32))
                         .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .field(
+                            "profile",
+                            gst::List::new(["main-444-12", "main-422-12", "main-10"]),
+                        )
                         .build(),
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .field(
+                            "profile",
+                            gst::List::new([
+                                "high-4:4:4",
+                                "high-4:2:2",
+                                "high",
+                                "main",
+                                "constrained-baseline",
+                            ]),
+                        )
+                        .build(),
+                    // MISB Class 0 motion imagery
                     gst::Structure::builder("video/x-raw")
                         // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
                         .field(
