@@ -3265,7 +3265,7 @@ impl ElementImpl for GimiMP4Mux {
                         .field(
                             "format",
                             // Formats that use horizontal subsampling, but not vertical subsampling (4:2:2 and 4:1:1)
-                            gst::List::new(["Y41B", "NV16", "NV61", "Y42B"]),
+                            gst::List::new(["NV16", "NV61", "Y42B"]),
                         )
                         .field(
                             "width",
