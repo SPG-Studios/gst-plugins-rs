@@ -3158,6 +3158,7 @@ impl ElementImpl for GimiMP4Mux {
                         )
                         .field("width", gst::IntRange::new(1, i32::MAX))
                         .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
                         .build(),
                     gst::Structure::builder("video/x-raw")
                         // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
@@ -3171,6 +3172,7 @@ impl ElementImpl for GimiMP4Mux {
                             gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
                         )
                         .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
                         .build(),
                     gst::Structure::builder("video/x-raw")
                         // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
@@ -3187,6 +3189,7 @@ impl ElementImpl for GimiMP4Mux {
                             "height",
                             gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
                         )
+                        .field("interlace-mode", "progressive")
                         .build(),
                 ]
                 .into_iter()
@@ -3259,6 +3262,7 @@ impl ElementImpl for GimiMP4Mux {
                         )
                         .field("width", gst::IntRange::new(1, i32::MAX))
                         .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
                         .build(),
                     gst::Structure::builder("video/x-raw")
                         // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
@@ -3272,6 +3276,7 @@ impl ElementImpl for GimiMP4Mux {
                             gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
                         )
                         .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
                         .build(),
                     gst::Structure::builder("video/x-raw")
                         // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
@@ -3288,6 +3293,7 @@ impl ElementImpl for GimiMP4Mux {
                             "height",
                             gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
                         )
+                        .field("interlace-mode", "progressive")
                         .build(),
                 ]
                 .into_iter()
