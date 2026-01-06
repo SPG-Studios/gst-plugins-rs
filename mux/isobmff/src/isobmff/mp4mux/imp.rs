@@ -3110,8 +3110,8 @@ impl ElementImpl for GimiMP4Mux {
             )
             .unwrap();
 
-            let sink_pad_template = gst::PadTemplate::with_gtype(
-                "sink_%u",
+            let sink_image_pad_template = gst::PadTemplate::with_gtype(
+                "sink_image_%u",
                 gst::PadDirection::Sink,
                 gst::PadPresence::Request,
                 &[
@@ -3188,23 +3188,143 @@ impl ElementImpl for GimiMP4Mux {
                             gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
                         )
                         .build(),
-                    gst::Structure::builder("audio/mpeg")
-                        .field("mpegversion", 4i32)
-                        .field("stream-format", "raw")
-                        .field("channels", gst::IntRange::new(1, u16::MAX as i32))
-                        .field("rate", gst::IntRange::new(1, i32::MAX))
+                ]
+                .into_iter()
+                .collect::<gst::Caps>(),
+                crate::isobmff::BaseMP4MuxPad::static_type(),
+            )
+            .unwrap();
+
+            let sink_audio_pad_template = gst::PadTemplate::with_gtype(
+                "sink_audio_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[gst::Structure::builder("audio/mpeg")
+                    .field("mpegversion", 4i32)
+                    .field("stream-format", "raw")
+                    .field("channels", gst::IntRange::new(1, u16::MAX as i32))
+                    .field("rate", gst::IntRange::new(1, i32::MAX))
+                    .build()]
+                .into_iter()
+                .collect::<gst::Caps>(),
+                crate::isobmff::BaseMP4MuxPad::static_type(),
+            )
+            .unwrap();
+
+            let sink_video_pad_template = gst::PadTemplate::with_gtype(
+                "sink_video_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-h265")
+                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // formats that do not use subsampling
+                            // Plus NV12 and NV21 because that works OK with the interleaved planes
+                            gst::List::new([
+                                "IYU2",
+                                "RGB",
+                                "BGR",
+                                "NV12",
+                                "NV21",
+                                "RGBA",
+                                "ARGB",
+                                "ABGR",
+                                "BGRA",
+                                "RGBx",
+                                "BGRx",
+                                "Y444",
+                                "AYUV",
+                                "GRAY8",
+                                "GRAY16_BE",
+                                "GBR",
+                                "RGBP",
+                                "BGRP",
+                                "v308",
+                                "r210",
+                            ]),
+                        )
+                        .field("width", gst::IntRange::new(1, i32::MAX))
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use horizontal subsampling, but not vertical subsampling (4:2:2 and 4:1:1)
+                            gst::List::new(["Y41B", "NV16", "NV61", "Y42B"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use both horizontal and vertical subsampling (4:2:0)
+                            gst::List::new(["I420", "YV12", "YUY2", "YVYU", "UYVY", "VYUY"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field(
+                            "height",
+                            gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
+                        )
                         .build(),
                 ]
                 .into_iter()
                 .collect::<gst::Caps>(),
-                crate::isobmff::MP4MuxPad::static_type(),
+                crate::isobmff::BaseMP4MuxPad::static_type(),
             )
             .unwrap();
 
-            vec![src_pad_template, sink_pad_template]
+            vec![
+                src_pad_template,
+                sink_image_pad_template,
+                sink_audio_pad_template,
+                sink_video_pad_template,
+            ]
         });
 
         PAD_TEMPLATES.as_ref()
+    }
+
+    fn request_new_pad(
+        &self,
+        templ: &gst::PadTemplate,
+        name: Option<&str>,
+        caps: Option<&gst::Caps>,
+    ) -> Option<gst::Pad> {
+        let pad = self.parent_request_new_pad(templ, name, caps);
+
+        if let Some(ref pad) = pad
+            && templ.name_template() == "sink_image_%u"
+        {
+            let basepad = pad.downcast_ref::<crate::isobmff::BaseMP4MuxPad>().unwrap();
+            let mut settings = basepad.imp().settings.lock().unwrap();
+
+            settings.image_sequence_mode = true;
+        }
+
+        pad
     }
 }
 
