@@ -337,14 +337,22 @@ fn check_stsd_sanity(stsd: &mp4_atom::Stsd, expected_config: &ExpectedConfigurat
             mp4_atom::Codec::Eac3(eac3) => {
                 check_eac3_codec_sanity(eac3, expected_config);
             }
+            mp4_atom::Codec::Ipcm(ipcm) => {
+                // TODO: check ipcm output
+            }
+            mp4_atom::Codec::Fpcm(fpcm) => {
+                // TODO: check fpcm output
+            }
+            mp4_atom::Codec::Sowt(sowt) => todo!(),
+            mp4_atom::Codec::Twos(twos) => todo!(),
+            mp4_atom::Codec::Lpcm(lpcm) => todo!(),
+            mp4_atom::Codec::In24(in24) => todo!(),
+            mp4_atom::Codec::In32(in32) => todo!(),
+            mp4_atom::Codec::Fl32(fl32) => todo!(),
+            mp4_atom::Codec::Fl64(fl64) => todo!(),
+            mp4_atom::Codec::S16l(s16l) => todo!(),
             mp4_atom::Codec::Unknown(four_cc) => {
-                let ipcm = mp4_atom::FourCC::new(b"ipcm");
-                let fpcm = mp4_atom::FourCC::new(b"fpcm");
-                if expected_config.is_audio && (*four_cc == ipcm || *four_cc == fpcm) {
-                    // Do nothing for now, mp4-atom does not support these yet.
-                } else {
-                    todo!("Unsupported codec type: {:?}", four_cc);
-                }
+                todo!("Unsupported codec type: {:?}", four_cc);
             }
         }
     }
