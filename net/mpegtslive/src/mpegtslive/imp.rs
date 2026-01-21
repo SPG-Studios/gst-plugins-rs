@@ -237,6 +237,7 @@ struct Stream {
 #[derive(Default)]
 struct Settings {
     source: Option<gst::Element>,
+    uri: Option<String>,
 }
 
 #[derive(Default)]
@@ -803,6 +804,68 @@ impl MpegTsLiveSource {
 
         gst::ProxyPad::chain_list_default(pad, Some(&*self.obj()), bufferlist)
     }
+
+    // Set the source to use, either directly specifying the element or by
+    // providing a uri
+    fn set_source(
+        &self,
+        source: Option<gst::Element>,
+        uri: Option<String>,
+    ) -> Result<(), glib::Error> {
+        let mut settings = self.settings.lock().unwrap();
+        let source = match (source, uri) {
+            (Some(element), _) => Some(element),
+            (_, Some(uri)) => {
+                let suburi = uri.strip_prefix("mpegts+");
+                if let Some(uri) = suburi {
+                    // Instantiate an element for the given uri
+                    Some(gst::Element::make_from_uri(gst::URIType::Src, uri, None)?)
+                } else {
+                    None
+                }
+            }
+            (_, _) => None,
+        };
+        if let Some(existing_source) = settings.source.take() {
+            let _ = self.obj().remove(&existing_source);
+            let _ = self.srcpad.set_target(None::<&gst::Pad>);
+        }
+        if let Some(source) = source {
+            if self.obj().add(&source).is_err() {
+                gst::warning!(CAT, imp = self, "Failed to add source");
+                return Err(glib::Error::new(
+                    gst::URIError::BadState,
+                    "Failed to add source",
+                ));
+            };
+            if source.set_clock(Some(&self.internal_clock)).is_err() {
+                gst::warning!(CAT, imp = self, "Failed to set clock on source");
+                return Err(glib::Error::new(
+                    gst::URIError::BadState,
+                    "Failed to set clock on source",
+                ));
+            };
+
+            let Some(target_pad) = source.static_pad("src") else {
+                gst::warning!(CAT, imp = self, "Source element has no 'src' pad");
+                return Err(glib::Error::new(
+                    gst::URIError::BadState,
+                    "Source element has no 'src' pad",
+                ));
+            };
+            if self.srcpad.set_target(Some(&target_pad)).is_err() {
+                gst::warning!(CAT, imp = self, "Failed to set ghost pad target");
+                return Err(glib::Error::new(
+                    gst::URIError::BadState,
+                    "Failed to set ghost pad target",
+                ));
+            }
+            settings.source = Some(source);
+        } else {
+            settings.source = None;
+        }
+        Ok(())
+    }
 }
 
 #[glib::object_subclass]
@@ -810,6 +873,7 @@ impl ObjectSubclass for MpegTsLiveSource {
     const NAME: &'static str = "GstMpegTsLiveSource";
     type Type = super::MpegTsLiveSource;
     type ParentType = gst::Bin;
+    type Interfaces = (gst::URIHandler,);
 
     fn with_class(klass: &Self::Class) -> Self {
         let templ = klass.pad_template("src").unwrap();
@@ -868,6 +932,12 @@ impl ObjectImpl for MpegTsLiveSource {
                     .mutable_ready()
                     .readwrite()
                     .build(),
+                glib::ParamSpecString::builder("uri")
+                    .nick("URI")
+                    .blurb("URI")
+                    .mutable_ready()
+                    .readwrite()
+                    .build(),
                 glib::ParamSpecInt::builder("window-size")
                     .nick("Window Size")
                     .blurb("The size of the window used to calculate rate and offset")
@@ -919,6 +989,9 @@ impl ObjectImpl for MpegTsLiveSource {
                     }
                 }
             }
+            "uri" => {
+                let _ = self.set_source(None, value.get().unwrap());
+            }
             "window-size" => {
                 self.external_clock.set_window_size(value.get().unwrap());
             }
@@ -930,6 +1003,7 @@ impl ObjectImpl for MpegTsLiveSource {
         match pspec.name() {
             "source" => self.settings.lock().unwrap().source.to_value(),
             "window-size" => self.external_clock.window_size().to_value(),
+            "uri" => self.settings.lock().unwrap().uri.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -953,6 +1027,23 @@ impl ObjectImpl for MpegTsLiveSource {
 }
 
 impl GstObjectImpl for MpegTsLiveSource {}
+
+impl URIHandlerImpl for MpegTsLiveSource {
+    const URI_TYPE: gst::URIType = gst::URIType::Src;
+
+    fn protocols() -> &'static [&'static str] {
+        &["mpegts+udp", "mpegts+srt"]
+    }
+
+    fn uri(&self) -> Option<String> {
+        let settings = self.settings.lock().unwrap();
+        settings.uri.clone()
+    }
+
+    fn set_uri(&self, uri: &str) -> std::result::Result<(), glib::Error> {
+        self.set_source(None, Some(uri.to_string()))
+    }
+}
 
 impl ElementImpl for MpegTsLiveSource {
     fn change_state(

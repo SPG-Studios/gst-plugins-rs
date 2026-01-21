@@ -13,7 +13,7 @@ mod imp;
 mod parser;
 
 glib::wrapper! {
-    pub struct MpegTsLiveSource(ObjectSubclass<imp::MpegTsLiveSource>) @extends gst::Bin, gst::Element, gst::Object;
+    pub struct MpegTsLiveSource(ObjectSubclass<imp::MpegTsLiveSource>) @extends gst::Bin, gst::Element, gst::Object, @implements gst::URIHandler;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
