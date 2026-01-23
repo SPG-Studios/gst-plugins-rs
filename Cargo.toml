@@ -27,6 +27,7 @@ members = [
     "generic/inter",
     "generic/streamgrouper",
     "generic/gopbuffer",
+    "generic/timeshift",
 
     "mux/flavors",
     "mux/isobmff",
