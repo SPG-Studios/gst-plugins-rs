@@ -7,32 +7,24 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 
+#[cfg(feature = "v1_28")]
+use std::fs::File;
+#[cfg(feature = "v1_28")]
+use std::{io::Seek as _, sync::LazyLock};
 use std::{
-    fs::File,
     path::Path,
     sync::{Arc, Mutex},
 };
-#[cfg(feature = "v1_28")]
-use std::{io::Seek as _, sync::LazyLock};
 
 #[cfg(feature = "v1_28")]
 use gst::{ClockTime, ReferenceTimestampMeta};
 use gst_pbutils::prelude::*;
+#[cfg(feature = "v1_28")]
 use mp4_atom::{Atom, ReadAtom as _, ReadFrom as _};
 use tempfile::tempdir;
 
 pub mod support;
-use support::{ExpectedConfiguration, check_ftyp_output, check_mvhd_sanity, check_trak_sanity};
-
-fn init() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-
-    INIT.call_once(|| {
-        gst::init().unwrap();
-        gstisobmff::plugin_register_static().unwrap();
-    });
-}
+use support::{ExpectedConfiguration, check_generic_single_trak_file_structure, init};
 
 #[cfg(feature = "v1_28")]
 static TAI1958_CAPS: LazyLock<gst::Caps> =
@@ -297,65 +289,6 @@ fn test_expected_uncompressed_output(location: &Path, width: u32, height: u32) {
             height,
             ..Default::default()
         },
-    );
-}
-
-fn check_generic_single_trak_file_structure(
-    location: &Path,
-    expected_major_brand: mp4_atom::FourCC,
-    expected_minor_version: u32,
-    expected_compatible_brands: Vec<mp4_atom::FourCC>,
-    expected_config: ExpectedConfiguration,
-) {
-    let mut required_top_level_boxes: Vec<mp4_atom::FourCC> = vec![
-        b"ftyp".into(),
-        b"free".into(),
-        b"mdat".into(),
-        b"moov".into(),
-    ];
-
-    let mut input = File::open(location).unwrap();
-    while let Ok(header) = mp4_atom::Header::read_from(&mut input) {
-        assert!(required_top_level_boxes.contains(&header.kind));
-        let pos = required_top_level_boxes
-            .iter()
-            .position(|&fourcc| fourcc == header.kind)
-            .unwrap_or_else(|| panic!("expected to find a matching fourcc {:?}", header.kind));
-        required_top_level_boxes.remove(pos);
-        match header.kind {
-            mp4_atom::Ftyp::KIND => {
-                let ftyp = mp4_atom::Ftyp::read_atom(&header, &mut input).unwrap();
-                check_ftyp_output(
-                    expected_major_brand,
-                    expected_minor_version,
-                    &expected_compatible_brands,
-                    ftyp,
-                );
-            }
-            mp4_atom::Moov::KIND => {
-                let moov = mp4_atom::Moov::read_atom(&header, &mut input).unwrap();
-                assert!(moov.meta.is_none());
-                assert!(moov.mvex.is_none());
-                assert!(moov.udta.is_none());
-                check_mvhd_sanity(&moov.mvhd, &expected_config);
-                check_trak_sanity(&moov.trak, &expected_config);
-            }
-            mp4_atom::Free::KIND => {
-                let free = mp4_atom::Free::read_atom(&header, &mut input).unwrap();
-                assert_eq!(free.zeroed.size, 0);
-            }
-            mp4_atom::Mdat::KIND => {
-                let mdat = mp4_atom::Mdat::read_atom(&header, &mut input).unwrap();
-                assert!(!mdat.data.is_empty());
-            }
-            _ => {
-                panic!("Unexpected top level box: {:?}", header.kind);
-            }
-        }
-    }
-    assert!(
-        required_top_level_boxes.is_empty(),
-        "expected all top level boxes to be found, but these were missed: {required_top_level_boxes:?}"
     );
 }
 
