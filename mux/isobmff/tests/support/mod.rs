@@ -9,7 +9,7 @@
 
 use std::{fs::File, path::Path};
 
-use mp4_atom::{Atom, ChannelStructure, ReadAtom as _, ReadFrom as _};
+use mp4_atom::{AnyAtom, Atom, ChannelStructure, ReadAtom as _, ReadFrom as _};
 
 pub fn init() {
     use std::sync::Once;
@@ -34,6 +34,10 @@ pub fn check_generic_single_trak_file_structure(
         b"mdat".into(),
         b"moov".into(),
     ];
+
+    if expected_config.gimi_security_markings_xml.is_some() {
+        required_top_level_boxes.push(b"meta".into());
+    }
 
     let mut input = File::open(location).unwrap();
     while let Ok(header) = mp4_atom::Header::read_from(&mut input) {
@@ -69,6 +73,10 @@ pub fn check_generic_single_trak_file_structure(
                 let mdat = mp4_atom::Mdat::read_atom(&header, &mut input).unwrap();
                 assert!(!mdat.data.is_empty());
             }
+            mp4_atom::Meta::KIND => {
+                let meta = mp4_atom::Meta::read_atom(&header, &mut input).unwrap();
+                check_file_meta_sanity(&meta, &expected_config);
+            }
             _ => {
                 panic!("Unexpected top level box: {:?}", header.kind);
             }
@@ -98,6 +106,13 @@ pub struct ExpectedConfiguration {
     pub codecs_len: u32,
     pub codecs: Vec<mp4_atom::Codec>,
     pub audio_channel_layout: u8,
+    pub num_suid_chunks: u32,
+    pub num_suid_entries: u32,
+    pub gimi_track_content_id: Option<&'static str>,
+    pub gimi_component_content_ids: &'static [&'static str],
+    pub check_gimi_cid: bool,
+    pub gimi_security_markings_xml: Option<&'static str>,
+    pub gimi_security_markings_content_id: Option<&'static str>,
 }
 
 impl Default for ExpectedConfiguration {
@@ -120,6 +135,13 @@ impl Default for ExpectedConfiguration {
             codecs_len: 1,
             codecs: Vec::new(),
             audio_channel_layout: 2,
+            gimi_track_content_id: None,
+            num_suid_entries: 0,
+            num_suid_chunks: 0,
+            gimi_component_content_ids: &[],
+            check_gimi_cid: false,
+            gimi_security_markings_xml: None,
+            gimi_security_markings_content_id: None,
         }
     }
 }
@@ -162,9 +184,175 @@ pub fn check_mvhd_sanity(mvhd: &mp4_atom::Mvhd, expected_config: &ExpectedConfig
     // TODO: assess remaining values for potential invariant
 }
 
+fn check_trak_meta_sanity(meta: &Option<mp4_atom::Meta>, expected_config: &ExpectedConfiguration) {
+    if expected_config.gimi_track_content_id.is_none()
+        && expected_config.gimi_component_content_ids.is_empty()
+    {
+        assert!(meta.is_none());
+        return;
+    }
+
+    let meta = meta.as_ref().unwrap();
+
+    assert_eq!(meta.hdlr.handler, b"null".into());
+
+    // iinf + iloc + idat
+    assert_eq!(meta.items.len(), 3);
+
+    let total_component_content_ids_len: u64 = expected_config
+        .gimi_component_content_ids
+        .iter()
+        .map(|s| s.len() as u64 + 1) // Add 1 for the NULL terminator
+        .sum();
+
+    let idat = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Idat::from_any_ref(a))
+        .unwrap();
+    assert_eq!(
+        idat.data.len(),
+        expected_config.gimi_track_content_id.unwrap().len()
+            + 1 // null termination
+            + 12 // headeer of TrackComponentContentIDList
+            + total_component_content_ids_len as usize
+    );
+
+    let iinf = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Iinf::from_any_ref(a))
+        .unwrap();
+    assert_eq!(iinf.item_infos.len(), 2);
+
+    let iloc = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Iloc::from_any_ref(a))
+        .unwrap();
+    assert_eq!(iloc.item_locations.len(), 2);
+
+    if let Some(gimi_track_content_id) = expected_config.gimi_track_content_id {
+        let infe = iinf.item_infos.iter().find(|i| {
+            i.item_type == Some(b"uri ".into())
+                && i.item_uri_type == Some("urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73".into())
+        });
+        let infe = infe.unwrap();
+
+        assert_eq!(infe.item_protection_index, 0);
+        assert_eq!(infe.item_type, Some(b"uri ".into()));
+        assert_eq!(infe.item_name, "TrackContentID");
+        assert!(infe.content_type.as_deref().is_none());
+        assert_eq!(
+            infe.item_uri_type,
+            Some("urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73".into())
+        );
+
+        let loc = iloc
+            .item_locations
+            .iter()
+            .find(|l| l.item_id == infe.item_id);
+        let loc = loc.unwrap();
+
+        assert_eq!(loc.construction_method, 1);
+        assert_eq!(loc.data_reference_index, 0);
+        assert_eq!(loc.base_offset, 0);
+        assert_eq!(loc.extents.len(), 1);
+        assert_eq!(loc.extents[0].item_reference_index, 0);
+        assert_eq!(loc.extents[0].offset, 0);
+        assert_eq!(
+            loc.extents[0].length,
+            gimi_track_content_id.len() as u64 + 1
+        );
+
+        if expected_config.check_gimi_cid {
+            assert_eq!(
+                &idat.data[loc.extents[0].offset as usize..loc.extents[0].length as usize - 1],
+                gimi_track_content_id.as_bytes()
+            );
+        }
+
+        // Check for null termination
+        assert_eq!(
+            idat.data[loc.extents[0].offset as usize + loc.extents[0].length as usize - 1],
+            0
+        );
+    }
+
+    if !expected_config.gimi_component_content_ids.is_empty() {
+        let infe = iinf.item_infos.iter().find(|i| {
+            i.item_type == Some(b"uri ".into())
+                && i.item_uri_type == Some("urn:uuid:fef58f02-43a6-5aaf-a891-099b1953d1f6".into())
+        });
+        let infe = infe.unwrap();
+
+        assert_eq!(infe.item_protection_index, 0);
+        assert_eq!(infe.item_type, Some(b"uri ".into()));
+        assert_eq!(infe.item_name, "TrackComponentContentIDList");
+        assert!(infe.content_type.as_deref().is_none());
+        assert_eq!(
+            infe.item_uri_type,
+            Some("urn:uuid:fef58f02-43a6-5aaf-a891-099b1953d1f6".into())
+        );
+
+        let loc = iloc
+            .item_locations
+            .iter()
+            .find(|l| l.item_id == infe.item_id);
+        let loc = loc.unwrap();
+
+        assert_eq!(loc.item_id, 2);
+        assert_eq!(loc.construction_method, 1);
+        assert_eq!(loc.data_reference_index, 0);
+        assert_eq!(loc.base_offset, 0);
+        assert_eq!(loc.extents.len(), 1);
+        assert_eq!(loc.extents[0].item_reference_index, 0);
+        assert_eq!(
+            loc.extents[0].offset,
+            expected_config.gimi_track_content_id.unwrap().len() as u64 + 1
+        );
+        assert_eq!(loc.extents[0].length, 12 + total_component_content_ids_len);
+
+        let data = &idat.data[loc.extents[0].offset as usize..][..loc.extents[0].length as usize];
+
+        // GIMI requires having exactly 1 sample entry
+        let (mut value, mut data) = data.split_at(4);
+        assert_eq!(u32::from_be_bytes(value.try_into().unwrap()), 1);
+
+        // its index is 0
+        (value, data) = data.split_at(4);
+        assert_eq!(u32::from_be_bytes(value.try_into().unwrap()), 0);
+
+        // number of component
+        (value, data) = data.split_at(4);
+        assert_eq!(
+            u32::from_be_bytes(value.try_into().unwrap()),
+            expected_config.gimi_component_content_ids.len() as u32
+        );
+
+        for c in expected_config.gimi_component_content_ids {
+            (value, data) = data.split_at(c.len());
+            if expected_config.check_gimi_cid {
+                assert_eq!(value, c.as_bytes())
+            };
+            assert_eq!(data[0], 0);
+            data = &data[1..];
+        }
+
+        // Make sure we've consumed everything in the idat
+        assert_eq!(data.len(), 0);
+
+        // Check for null termination again
+        assert_eq!(
+            idat.data[loc.extents[0].offset as usize + loc.extents[0].length as usize - 1],
+            0
+        );
+    }
+}
+
 pub fn check_trak_sanity(trak: &[mp4_atom::Trak], expected_config: &ExpectedConfiguration) {
     assert_eq!(trak.len(), 1);
-    assert!(trak[0].meta.is_none());
+    check_trak_meta_sanity(&trak[0].meta, expected_config);
     check_tkhd_sanity(&trak[0].tkhd, expected_config);
     if expected_config.is_fragmented {
         assert!(&trak[0].edts.is_none());
@@ -265,44 +453,62 @@ fn check_stbl_sanity(stbl: &mp4_atom::Stbl, expected_config: &ExpectedConfigurat
 }
 
 fn check_saio_sanity(saios: &Vec<mp4_atom::Saio>, expected_config: &ExpectedConfiguration) {
+    let mut num_saio = 0;
     if expected_config.num_tai_chunks != 0 {
-        assert_eq!(saios.len(), 1);
-        for saio in saios {
-            assert!(saio.aux_info.is_some());
-            assert_eq!(
-                saio.aux_info.as_ref().unwrap().aux_info_type,
-                b"stai".into()
-            );
+        num_saio += 1;
+    }
+    if expected_config.num_suid_chunks != 0 {
+        num_saio += 1;
+    }
+    assert_eq!(saios.len(), num_saio);
+
+    for saio in saios {
+        assert!(saio.aux_info.is_some());
+
+        if saio.aux_info.as_ref().unwrap().aux_info_type == mp4_atom::FourCC::new(b"stai") {
             assert_eq!(saio.aux_info.as_ref().unwrap().aux_info_type_parameter, 0);
             assert_eq!(saio.offsets.len(), expected_config.num_tai_chunks as usize);
-            let mut previous_offset = 0u64;
-            for offset in &saio.offsets {
-                // We check that the byte offsets are increasing
-                // This is different to checking that the timestamps are increasing
-                assert!(*offset > previous_offset);
-                previous_offset = *offset;
-            }
+        } else if saio.aux_info.as_ref().unwrap().aux_info_type == mp4_atom::FourCC::new(b"suid") {
+            assert_eq!(saio.aux_info.as_ref().unwrap().aux_info_type_parameter, 0);
+            assert_eq!(saio.offsets.len(), expected_config.num_suid_chunks as usize);
+        } else {
+            panic!("Unknown saio type");
         }
-    } else {
-        assert!(saios.is_empty());
+
+        let mut previous_offset = 0u64;
+        for offset in &saio.offsets {
+            // We check that the byte offsets are increasing
+            // This is different to checking that the timestamps are increasing
+            assert!(*offset > previous_offset);
+            previous_offset = *offset;
+        }
     }
 }
 
 fn check_saiz_sanity(saizs: &Vec<mp4_atom::Saiz>, expected_config: &ExpectedConfiguration) {
+    let mut num_saiz = 0;
     if expected_config.num_tai_timestamps != 0 {
-        assert_eq!(saizs.len(), 1);
-        for saiz in saizs {
-            assert!(saiz.aux_info.is_some());
-            assert_eq!(
-                saiz.aux_info.as_ref().unwrap().aux_info_type,
-                b"stai".into()
-            );
+        num_saiz += 1;
+    }
+    if expected_config.num_suid_entries != 0 {
+        num_saiz += 1;
+    }
+    assert_eq!(saizs.len(), num_saiz);
+
+    for saiz in saizs {
+        assert!(saiz.aux_info.is_some());
+
+        if saiz.aux_info.as_ref().unwrap().aux_info_type == mp4_atom::FourCC::new(b"stai") {
             assert_eq!(saiz.aux_info.as_ref().unwrap().aux_info_type_parameter, 0);
             assert_eq!(saiz.default_sample_info_size, 9);
             assert_eq!(saiz.sample_count, expected_config.num_tai_timestamps);
+        } else if saiz.aux_info.as_ref().unwrap().aux_info_type == mp4_atom::FourCC::new(b"suid") {
+            assert_eq!(saiz.aux_info.as_ref().unwrap().aux_info_type_parameter, 0);
+            assert_eq!(saiz.default_sample_info_size, 46);
+            assert_eq!(saiz.sample_count, expected_config.num_suid_entries);
+        } else {
+            panic!("Unknown saio type");
         }
-    } else {
-        assert!(saizs.is_empty());
     }
 }
 
@@ -333,60 +539,32 @@ fn check_stsd_sanity(stsd: &mp4_atom::Stsd, expected_config: &ExpectedConfigurat
         let codec = &stsd.codecs[0];
         match codec {
             mp4_atom::Codec::Avc1(avc1) => {
-                assert_eq!(avc1.visual.width, expected_config.width as u16);
-                assert_eq!(avc1.visual.height, expected_config.height as u16);
-                assert_eq!(avc1.visual.depth, 24);
                 assert_eq!(avc1.visual.compressor, "AVC Coding".into());
-                if expected_config.has_taic {
-                    assert!(avc1.taic.as_ref().is_some_and(|taic| {
-                        assert_eq!(taic.clock_type, expected_config.taic_clock_type.into());
-                        assert_eq!(taic.time_uncertainty, expected_config.taic_time_uncertainty);
-                        assert_eq!(taic.clock_drift_rate, 2147483647);
-                        assert_eq!(taic.clock_resolution, 1000);
-                        true
-                    }));
-                } else {
-                    assert!(avc1.taic.is_none());
-                }
-
-                assert!(
-                    avc1.pasp
-                        .as_ref()
-                        .is_some_and(|pasp| { pasp.h_spacing == 1 && pasp.v_spacing == 1 })
+                check_nal_codec(
+                    &avc1.visual,
+                    &avc1.taic,
+                    &avc1.pasp,
+                    &avc1.colr,
+                    expected_config,
                 );
-                assert!(avc1.colr.as_ref().is_some_and(|colr| {
-                    match colr {
-                        mp4_atom::Colr::Nclx {
-                            colour_primaries,
-                            transfer_characteristics,
-                            matrix_coefficients: _,
-                            full_range_flag,
-                        } => {
-                            assert_eq!(*colour_primaries, 6);
-                            assert_eq!(*transfer_characteristics, 6);
-                            assert!(!(*full_range_flag));
-                            true
-                        }
-                        mp4_atom::Colr::Nclc { .. } => {
-                            panic!("Incorrect colr type: nclc")
-                        }
-                        mp4_atom::Colr::Ricc { .. } => {
-                            panic!("Incorrect colr type: ricc")
-                        }
-                        mp4_atom::Colr::Prof { .. } => {
-                            panic!("Incorrect colr type: prof")
-                        }
-                        _ => {
-                            panic!("Incorrect colr type: {colr:?}")
-                        }
-                    }
-                }));
             }
-            mp4_atom::Codec::Hev1(_hev1) => {
-                // TODO: check HEVC codec (maybe shared?)
+            mp4_atom::Codec::Hev1(hev1) => {
+                check_nal_codec(
+                    &hev1.visual,
+                    &hev1.taic,
+                    &hev1.pasp,
+                    &hev1.colr,
+                    expected_config,
+                );
             }
-            mp4_atom::Codec::Hvc1(_hvc1) => {
-                // TODO: check HEVC codec (maybe shared?)
+            mp4_atom::Codec::Hvc1(hvc1) => {
+                check_nal_codec(
+                    &hvc1.visual,
+                    &hvc1.taic,
+                    &hvc1.pasp,
+                    &hvc1.colr,
+                    expected_config,
+                );
             }
             mp4_atom::Codec::Vp08(_vp08) => {
                 // TODO: check VP8 codec
@@ -726,6 +904,58 @@ fn check_visual_sample_entry_sanity(
     // TODO: assess remaining values for potential invariant
 }
 
+fn check_nal_codec(
+    visual: &mp4_atom::Visual,
+    taic: &Option<mp4_atom::Taic>,
+    pasp: &Option<mp4_atom::Pasp>,
+    colr: &Option<mp4_atom::Colr>,
+    expected_config: &ExpectedConfiguration,
+) {
+    assert_eq!(visual.width, expected_config.width as u16);
+    assert_eq!(visual.height, expected_config.height as u16);
+    assert_eq!(visual.depth, 24);
+    if expected_config.has_taic {
+        assert!(taic.as_ref().is_some_and(|taic| {
+            assert_eq!(taic.clock_type, expected_config.taic_clock_type.into());
+            assert_eq!(taic.time_uncertainty, expected_config.taic_time_uncertainty);
+            assert_eq!(taic.clock_drift_rate, 2147483647);
+            assert_eq!(taic.clock_resolution, 1000);
+            true
+        }));
+    } else {
+        assert!(taic.is_none());
+    }
+
+    assert!(
+        pasp.as_ref()
+            .is_some_and(|pasp| { pasp.h_spacing == 1 && pasp.v_spacing == 1 })
+    );
+    assert!(colr.as_ref().is_some_and(|colr| {
+        match colr {
+            mp4_atom::Colr::Nclx {
+                colour_primaries,
+                transfer_characteristics,
+                matrix_coefficients: _,
+                full_range_flag,
+            } => {
+                assert_eq!(*colour_primaries, 6);
+                assert_eq!(*transfer_characteristics, 6);
+                assert!(!(*full_range_flag));
+                true
+            }
+            mp4_atom::Colr::Nclc { profile: _ } => {
+                panic!("Incorrect colr type: nclc")
+            }
+            mp4_atom::Colr::Ricc { profile: _ } => {
+                panic!("Incorrect colr type: ricc")
+            }
+            mp4_atom::Colr::Prof { profile: _ } => {
+                panic!("Incorrect colr type: prof")
+            }
+        }
+    }));
+}
+
 fn check_stsz_sanity(stsz: &mp4_atom::Stsz, expected_config: &ExpectedConfiguration) {
     let samples = &stsz.samples;
     match samples {
@@ -750,4 +980,98 @@ fn check_stts_sanity(stts: &mp4_atom::Stts, expected_config: &ExpectedConfigurat
         assert!(!stts.entries.is_empty());
     }
     // TODO: see if there is anything generic about the stts entries we could check
+}
+
+fn check_file_meta_sanity(meta: &mp4_atom::Meta, expected_config: &ExpectedConfiguration) {
+    let gimi_security_markings_xml = expected_config.gimi_security_markings_xml.unwrap();
+
+    assert_eq!(meta.hdlr.handler, b"null".into());
+
+    // iinf + iloc + idat + iprp
+    assert_eq!(meta.items.len(), 4);
+
+    let idat = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Idat::from_any_ref(a))
+        .unwrap();
+    assert_eq!(
+        idat.data.len(),
+        gimi_security_markings_xml.len() + 1 // null termination
+    );
+
+    let iinf = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Iinf::from_any_ref(a))
+        .unwrap();
+    assert_eq!(iinf.item_infos.len(), 1);
+
+    let iloc = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Iloc::from_any_ref(a))
+        .unwrap();
+    assert_eq!(iloc.item_locations.len(), 1);
+
+    let iprp = meta
+        .items
+        .iter()
+        .find_map(|a| mp4_atom::Iprp::from_any_ref(a))
+        .unwrap();
+
+    let infe = iinf.item_infos.iter().find(|i| {
+        i.item_type == Some(b"mime".into())
+            && i.content_type == Some("application/nga-gimi-ism+xml".into())
+    });
+    let infe = infe.unwrap();
+
+    assert_eq!(infe.item_protection_index, 0);
+    assert_eq!(infe.item_type, Some(b"mime".into()));
+    assert_eq!(infe.item_name, "GimiSecurityMarkingXML");
+    assert_eq!(
+        infe.content_type,
+        Some("application/nga-gimi-ism+xml".into())
+    );
+
+    let loc = iloc
+        .item_locations
+        .iter()
+        .find(|l| l.item_id == infe.item_id);
+    let loc = loc.unwrap();
+
+    assert_eq!(loc.construction_method, 1);
+    assert_eq!(loc.data_reference_index, 0);
+    assert_eq!(loc.base_offset, 0);
+    assert_eq!(loc.extents.len(), 1);
+    assert_eq!(loc.extents[0].item_reference_index, 0);
+    assert_eq!(loc.extents[0].offset, 0);
+    assert_eq!(
+        loc.extents[0].length,
+        gimi_security_markings_xml.len() as u64 + 1
+    );
+
+    assert_eq!(
+        &idat.data[loc.extents[0].offset as usize..loc.extents[0].length as usize - 1],
+        gimi_security_markings_xml.as_bytes()
+    );
+
+    // Check for null termination
+    assert_eq!(
+        idat.data[loc.extents[0].offset as usize + loc.extents[0].length as usize - 1],
+        0
+    );
+
+    assert_eq!(iprp.ipco.properties.len(), 1);
+    // FIXME: Can't test for UUID boxes yet, needs to be added to mp4_atom
+
+    assert_eq!(iprp.ipma.len(), 1);
+    assert_eq!(iprp.ipma[0].item_properties.len(), 1);
+    assert_eq!(iprp.ipma[0].item_properties[0].item_id, 1);
+    assert_eq!(iprp.ipma[0].item_properties[0].associations.len(), 1);
+    assert!(!iprp.ipma[0].item_properties[0].associations[0].essential);
+    assert_eq!(
+        iprp.ipma[0].item_properties[0].associations[0].property_index,
+        1
+    );
 }
