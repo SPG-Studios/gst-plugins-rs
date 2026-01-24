@@ -344,13 +344,6 @@ impl Timeshift {
         use gst::QueryViewMut;
 
         match query.view_mut() {
-            QueryViewMut::Latency(q) => {
-                // We're effectively splitting the pipeline in two, so we don't care
-                // about upstream's latency (which might be != 0 as timeshift is usually
-                // used with live sources)
-                q.set(true, gst::ClockTime::ZERO, gst::ClockTime::NONE);
-                true
-            }
             QueryViewMut::Seeking(q) => {
                 if q.format() != gst::Format::Time {
                     return false;
