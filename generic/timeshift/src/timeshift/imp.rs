@@ -74,8 +74,10 @@ struct State {
     sent_caps: bool,
 
     sent_segment: bool,
-    /// Pending seek segment start and base times
-    pending_seek_segment: (Option<gst::ClockTime>, Option<gst::ClockTime>),
+    /// Current segment
+    segment: gst::Segment,
+    /// Pending seek segment to be pushed
+    pending_segment: Option<gst::Segment>,
     /// Whether a discontinuity is pending to be applied to the next buffer
     discont_pending: bool,
     /// Currently pending serialized query being processed (if any)
@@ -84,6 +86,9 @@ struct State {
 
 impl Default for State {
     fn default() -> Self {
+        let mut segment = gst::Segment::new();
+        segment.set_format(gst::Format::Time);
+
         State {
             buffer: None,
             total_written: 0,
@@ -92,7 +97,8 @@ impl Default for State {
             sent_stream_start: false,
             sent_caps: false,
             sent_segment: false,
-            pending_seek_segment: (gst::ClockTime::NONE, gst::ClockTime::NONE),
+            segment,
+            pending_segment: None,
             discont_pending: false,
             pending_query: None,
         }
@@ -176,10 +182,10 @@ impl Timeshift {
                 continue;
             }
 
-            if let (Some(start_time), Some(base_running_time)) = state.pending_seek_segment {
-                state.pending_seek_segment = (gst::ClockTime::NONE, gst::ClockTime::NONE);
+            if let Some(segment) = state.pending_segment.take() {
                 drop(state);
-                self.push_seek_segment(pad, start_time, base_running_time);
+                pad.push_event(gst::event::FlushStop::new(false));
+                pad.push_event(gst::event::Segment::new(&segment));
                 state = self.state.lock().unwrap();
             }
 
@@ -199,23 +205,6 @@ impl Timeshift {
 
             state = self.state.lock().unwrap();
         }
-    }
-
-    fn push_seek_segment(
-        &self,
-        pad: &gst::Pad,
-        start_time: gst::ClockTime,
-        base_running_time: gst::ClockTime,
-    ) {
-        pad.push_event(gst::event::FlushStop::new(false));
-
-        let mut segment = gst::Segment::new();
-        segment.set_format(gst::Format::Time);
-        segment.set_start(start_time);
-        segment.set_time(start_time);
-        segment.set_base(base_running_time);
-
-        pad.push_event(gst::event::Segment::new(&segment));
     }
 
     fn fetch_next_item(&self, state: &mut State) -> Option<(gst::MiniObject, bool)> {
@@ -426,29 +415,43 @@ impl Timeshift {
         use gst::EventView;
         match event.view() {
             EventView::Seek(e) => {
-                let (_rate, flags, start_type, start, _stop_type, _stop) = e.get();
-                if start.format() == gst::Format::Time && start_type == gst::SeekType::Set {
-                    let start_time = if let gst::GenericFormattedValue::Time(t) = start {
-                        t.unwrap_or(gst::ClockTime::ZERO)
-                    } else {
-                        gst::ClockTime::ZERO
-                    };
+                let (rate, flags, start_type, start, stop_type, stop) = e.get();
+
+                let state = self.state.lock().unwrap();
+                let mut segment = state.segment.clone();
+                drop(state);
+
+                if segment
+                    .do_seek(rate, flags, start_type, start, stop_type, stop)
+                    .unwrap_or(false)
+                {
+                    let position =
+                        if let gst::GenericFormattedValue::Time(Some(t)) = segment.start() {
+                            t
+                        } else {
+                            gst::ClockTime::ZERO
+                        };
 
                     if flags.contains(gst::SeekFlags::FLUSH) {
                         pad.push_event(gst::event::FlushStart::new());
                     }
 
-                    if self.perform_seek(start_time) {
+                    if self.perform_seek(position) {
                         let mut state = self.state.lock().unwrap();
 
                         if flags.contains(gst::SeekFlags::FLUSH) {
+                            segment.set_time(position);
                             let running_time = self
                                 .obj()
                                 .current_running_time()
                                 .unwrap_or(gst::ClockTime::ZERO);
+                            segment.set_base(running_time);
 
-                            state.pending_seek_segment = (Some(start_time), Some(running_time));
+                            state.segment = segment.clone();
+                            state.pending_segment = Some(segment);
                             state.discont_pending = true;
+                        } else {
+                            state.segment = segment;
                         }
 
                         self.cond.notify_all();
