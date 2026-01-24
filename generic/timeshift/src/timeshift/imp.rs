@@ -626,8 +626,9 @@ impl ObjectImpl for Timeshift {
             vec![
                 glib::ParamSpecUInt::builder("buffer-size")
                     .nick("Size")
-                    .blurb("Ring buffer size")
+                    .blurb("Ring buffer size, in number of items (buffers/events/queries)")
                     .default_value(DEFAULT_BUFFER_SIZE)
+                    .readwrite()
                     .build(),
             ]
         });
