@@ -82,6 +82,8 @@ struct State {
     discont_pending: bool,
     /// Currently pending serialized query being processed (if any)
     pending_query: Option<PendingQuery>,
+    /// Pending seek event to be serialized (if any)
+    pending_event: Option<gst::Event>,
 }
 
 impl Default for State {
@@ -101,6 +103,7 @@ impl Default for State {
             pending_segment: None,
             discont_pending: false,
             pending_query: None,
+            pending_event: None,
         }
     }
 }
@@ -186,6 +189,12 @@ impl Timeshift {
                 drop(state);
                 pad.push_event(gst::event::FlushStop::new(false));
                 pad.push_event(gst::event::Segment::new(&segment));
+                state = self.state.lock().unwrap();
+            }
+
+            if let Some(event) = state.pending_event.take() {
+                drop(state);
+                pad.push_event(event);
                 state = self.state.lock().unwrap();
             }
 
@@ -420,6 +429,44 @@ impl Timeshift {
                 let state = self.state.lock().unwrap();
                 let mut segment = state.segment.clone();
                 drop(state);
+
+                if flags.contains(gst::SeekFlags::INSTANT_RATE_CHANGE) {
+                    let current_rate = segment.rate();
+                    if (current_rate > 0.0 && rate < 0.0)
+                        || (current_rate < 0.0 && rate > 0.0)
+                        || start_type != gst::SeekType::None
+                        || stop_type != gst::SeekType::None
+                        || flags.contains(gst::SeekFlags::FLUSH)
+                    {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Instant rate change seeks only supported in the \
+                            same direction, without flushing and position change"
+                        );
+                        return false;
+                    }
+
+                    gst::debug!(
+                        CAT,
+                        imp = self,
+                        "Handling instant rate change from {current_rate} to {rate}"
+                    );
+
+                    let event = gst::event::InstantRateChange::builder(
+                        rate / current_rate,
+                        gst::SegmentFlags::from_bits_truncate(
+                            flags.bits() & gst::ffi::GST_SEGMENT_INSTANT_FLAGS as u32,
+                        ),
+                    )
+                    .seqnum(e.seqnum())
+                    .build();
+
+                    let mut state = self.state.lock().unwrap();
+                    state.segment.set_rate(rate);
+                    state.pending_event = Some(event);
+                    return true;
+                }
 
                 if segment
                     .do_seek(rate, flags, start_type, start, stop_type, stop)
