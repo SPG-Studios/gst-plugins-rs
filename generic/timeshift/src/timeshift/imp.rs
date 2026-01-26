@@ -420,6 +420,35 @@ impl Timeshift {
             EventView::Seek(e) => {
                 let (rate, flags, start_type, start, stop_type, stop) = e.get();
 
+                if start_type != gst::SeekType::None && start.format() != gst::Format::Time {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Seek start format {:?} not supported, only Time format is supported",
+                        start.format()
+                    );
+                    return false;
+                }
+
+                if stop_type != gst::SeekType::None && stop.format() != gst::Format::Time {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Seek stop format {:?} not supported, only Time format is supported",
+                        stop.format()
+                    );
+                    return false;
+                }
+
+                if !flags.contains(gst::SeekFlags::FLUSH | gst::SeekFlags::INSTANT_RATE_CHANGE) {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Only FLUSH and INSTANT_RATE_CHANGE seek flags are supported"
+                    );
+                    return false;
+                }
+
                 let state = self.state.lock().unwrap();
                 let mut segment = state.segment.clone();
                 drop(state);
