@@ -376,23 +376,18 @@ impl Timeshift {
         }
     }
 
-    fn perform_seek(&self, start: gst::ClockTime) -> bool {
-        let mut state = self.state.lock().unwrap();
-        let Some(rb) = state.buffer.as_ref() else {
-            return false;
-        };
+    fn find_seek_position(&self, start: gst::ClockTime) -> Option<u64> {
+        let state = self.state.lock().unwrap();
+        let rb = state.buffer.as_ref()?;
 
         let count = rb.occupied_len();
         if count == 0 {
-            return false;
+            return None;
         }
 
         let total_written = state.total_written;
         let start_valid = total_written.saturating_sub(count as u64);
 
-        let mut found_idx = None;
-
-        // Currently we fail to seek if no keyframe is found before start
         for i in (0..count).rev() {
             if let Some(item) = rb.get(i)
                 && let Ok(buffer) = item.clone().downcast::<gst::Buffer>()
@@ -400,24 +395,11 @@ impl Timeshift {
                 && pts <= start
                 && !buffer.flags().contains(gst::BufferFlags::DELTA_UNIT)
             {
-                found_idx = Some(i);
-                break;
+                return Some(start_valid + i as u64);
             }
         }
 
-        if let Some(idx) = found_idx {
-            state.playback_pos = start_valid + idx as u64;
-            gst::debug!(
-                CAT,
-                imp = self,
-                "Seeked to index {}, playback_pos {}",
-                idx,
-                state.playback_pos
-            );
-            return true;
-        }
-
-        false
+        None
     }
 
     fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
@@ -479,12 +461,19 @@ impl Timeshift {
                             gst::ClockTime::ZERO
                         };
 
-                    if flags.contains(gst::SeekFlags::FLUSH) {
-                        pad.push_event(gst::event::FlushStart::new());
-                    }
+                    if let Some(seek_pos) = self.find_seek_position(position) {
+                        if flags.contains(gst::SeekFlags::FLUSH) {
+                            pad.push_event(gst::event::FlushStart::new());
+                        }
 
-                    if self.perform_seek(position) {
                         let mut state = self.state.lock().unwrap();
+                        state.playback_pos = seek_pos;
+                        gst::debug!(
+                            CAT,
+                            imp = self,
+                            "Seeked to playback_pos {}",
+                            state.playback_pos
+                        );
 
                         if flags.contains(gst::SeekFlags::FLUSH) {
                             segment.set_time(position);
@@ -517,7 +506,7 @@ impl Timeshift {
         _pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::info!(
+        gst::debug!(
             CAT,
             imp = self,
             "Sink chain received buffer PTS: {:?}",
