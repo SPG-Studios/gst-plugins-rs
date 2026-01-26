@@ -108,13 +108,6 @@ impl Default for State {
     }
 }
 
-/// Result of processing an item from the ring buffer
-enum ItemResult {
-    Ok,
-    Continue,
-    Error,
-}
-
 pub struct Timeshift {
     sinkpad: gst::Pad,
     srcpad: gst::Pad,
@@ -222,13 +215,8 @@ impl Timeshift {
 
             drop(state);
 
-            match self.process_item(pad, item, is_discont) {
-                ItemResult::Continue => {
-                    state = self.state.lock().unwrap();
-                    continue;
-                }
-                ItemResult::Error => return,
-                ItemResult::Ok => {}
+            if self.process_item(pad, item, is_discont).is_err() {
+                return;
             }
 
             state = self.state.lock().unwrap();
@@ -275,7 +263,12 @@ impl Timeshift {
         item.map(|i| (i, is_discont))
     }
 
-    fn process_item(&self, pad: &gst::Pad, item: gst::MiniObject, is_discont: bool) -> ItemResult {
+    fn process_item(
+        &self,
+        pad: &gst::Pad,
+        item: gst::MiniObject,
+        is_discont: bool,
+    ) -> Result<(), ()> {
         if let Ok(buffer) = item.clone().downcast::<gst::Buffer>() {
             return self.process_buffer(pad, buffer, is_discont);
         }
@@ -288,7 +281,7 @@ impl Timeshift {
             return self.process_query(pad);
         }
 
-        ItemResult::Ok
+        Ok(())
     }
 
     fn process_buffer(
@@ -296,7 +289,7 @@ impl Timeshift {
         pad: &gst::Pad,
         mut buffer: gst::Buffer,
         is_discont: bool,
-    ) -> ItemResult {
+    ) -> Result<(), ()> {
         if is_discont {
             let buffer_ref = buffer.make_mut();
             buffer_ref.set_flags(gst::BufferFlags::DISCONT);
@@ -304,13 +297,13 @@ impl Timeshift {
 
         if let Err(err) = pad.push(buffer) {
             gst::error!(CAT, imp = self, "Failed to push buffer: {:?}", err);
-            return ItemResult::Error;
+            return Err(());
         }
 
-        ItemResult::Ok
+        Ok(())
     }
 
-    fn process_event(&self, pad: &gst::Pad, event: gst::Event) -> ItemResult {
+    fn process_event(&self, pad: &gst::Pad, event: gst::Event) -> Result<(), ()> {
         let is_caps = event.type_() == gst::EventType::Caps;
         pad.push_event(event);
 
@@ -327,13 +320,13 @@ impl Timeshift {
                     pad.push_event(gst::event::Segment::new(&segment));
                 }
             }
-            return ItemResult::Continue;
+            return Ok(());
         }
 
-        ItemResult::Ok
+        Ok(())
     }
 
-    fn process_query(&self, pad: &gst::Pad) -> ItemResult {
+    fn process_query(&self, pad: &gst::Pad) -> Result<(), ()> {
         let mut state = self.state.lock().unwrap();
         let pending_query = state.pending_query.take();
         drop(state);
@@ -354,7 +347,7 @@ impl Timeshift {
         }
 
         self.cond.notify_all();
-        ItemResult::Continue
+        Ok(())
     }
 
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
