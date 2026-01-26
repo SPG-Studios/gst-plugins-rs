@@ -440,7 +440,9 @@ impl Timeshift {
                     return false;
                 }
 
-                if !flags.contains(gst::SeekFlags::FLUSH | gst::SeekFlags::INSTANT_RATE_CHANGE) {
+                if !flags.contains(gst::SeekFlags::INSTANT_RATE_CHANGE)
+                    && !flags.contains(gst::SeekFlags::FLUSH)
+                {
                     gst::error!(
                         CAT,
                         imp = self,
