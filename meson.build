@@ -186,6 +186,7 @@ plugins = {
     'extra-deps': {'cairo-gobject': []},
   },
   'gopbuffer': {'library': 'libgstgopbuffer'},
+  'timeshift': {'library': 'libgsttimeshift'},
   'quinn': {
     'library': 'libgstquinn',
     'examples': [

@@ -99,6 +99,7 @@ default-members = [
     "generic/inter",
     "generic/gopbuffer",
     "generic/streamgrouper",
+    "generic/timeshift",
 
     "mux/isobmff",
 
