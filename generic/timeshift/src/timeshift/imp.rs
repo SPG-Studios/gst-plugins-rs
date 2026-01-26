@@ -201,6 +201,25 @@ impl Timeshift {
             let Some((item, is_discont)) = self.fetch_next_item(&mut state) else {
                 break;
             };
+
+            if let gst::GenericFormattedValue::Time(Some(stop)) = state.segment.stop()
+                && let Ok(buffer) = item.clone().downcast::<gst::Buffer>()
+                && let Some(pts) = buffer.pts()
+            {
+                let rate = state.segment.rate();
+                if (rate > 0.0 && pts >= stop) || (rate < 0.0 && pts <= stop) {
+                    gst::debug!(
+                        CAT,
+                        imp = self,
+                        "Segment stop reached at {}, sending EOS",
+                        pts
+                    );
+                    drop(state);
+                    pad.push_event(gst::event::Eos::new());
+                    return;
+                }
+            }
+
             drop(state);
 
             match self.process_item(pad, item, is_discont) {
