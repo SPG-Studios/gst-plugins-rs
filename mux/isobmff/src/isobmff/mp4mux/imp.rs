@@ -230,6 +230,10 @@ struct Stream {
     #[cfg(feature = "v1_28")]
     /// Optional GIMI content id
     gimi_content_id: Option<String>,
+
+    #[cfg(feature = "v1_28")]
+    /// Optional GIMI component content id
+    gimi_component_content_id: Vec<String>,
 }
 
 impl Stream {
@@ -1489,6 +1493,8 @@ impl MP4Mux {
             let mut time_uncertainty = TAIC_TIME_UNCERTAINTY_UNKNOWN;
             #[cfg(feature = "v1_28")]
             let mut gimi_content_id: Option<String> = None;
+            #[cfg(feature = "v1_28")]
+            let mut gimi_component_content_id: Vec<String> = vec![];
 
             pad.sticky_events_foreach(|ev| {
                 if let gst::EventView::Tag(ev) = ev.view() {
@@ -1641,6 +1647,11 @@ impl MP4Mux {
             let mut discard_header_buffers = false;
             let mut codec_specific_boxes = Vec::new();
             let mut chnl_layout_info = None;
+            let mut _components: usize = 0;
+
+            if s.name().starts_with("video/") || s.name().starts_with("image/") {
+                _components = 3;
+            }
 
             match s.name().as_str() {
                 "video/x-h264" | "video/x-h265" => {
@@ -1663,12 +1674,21 @@ impl MP4Mux {
                 "video/x-av1" => {
                     delta_frames = DeltaFrames::PredictiveOnly;
                 }
-                "image/jpeg"
-                | "video/x-raw"
-                | "video/x-bayer"
-                | "application/x-zlib-compressed"
+                "image/jpeg" | "video/x-bayer" => (),
+                "application/x-zlib-compressed"
                 | "application/x-deflate-compressed"
-                | "application/x-brotli-compressed" => (),
+                | "application/x-brotli-compressed" => {
+                    if let Ok(ocaps) = s.get::<gst::Caps>("original-caps")
+                        && let Ok(vinfo) = gst_video::VideoInfo::from_caps(&ocaps)
+                    {
+                        _components = vinfo.format_info().n_components() as usize;
+                    }
+                }
+                "video/x-raw" => {
+                    if let Ok(vinfo) = gst_video::VideoInfo::from_caps(&caps) {
+                        _components = vinfo.format_info().n_components() as usize;
+                    }
+                }
                 "audio/mpeg" => {
                     if !s.has_field_with_type("codec_data", gst::Buffer::static_type()) {
                         gst::error!(CAT, obj = pad, "Received caps without codec_data");
@@ -1781,8 +1801,14 @@ impl MP4Mux {
             }
 
             #[cfg(feature = "v1_28")]
-            if _settings.is_gimi && gimi_content_id.is_none() {
-                gimi_content_id = Some(generate_gimi_content_id());
+            if _settings.is_gimi {
+                if gimi_content_id.is_none() {
+                    gimi_content_id = Some(generate_gimi_content_id());
+                }
+
+                while gimi_component_content_id.len() < _components {
+                    gimi_component_content_id.push(generate_gimi_content_id());
+                }
             }
 
             #[cfg(feature = "v1_28")]
@@ -1825,6 +1851,8 @@ impl MP4Mux {
                 last_tai_timestamp: 0,
                 #[cfg(feature = "v1_28")]
                 gimi_content_id,
+                #[cfg(feature = "v1_28")]
+                gimi_component_content_id,
             });
         }
 
@@ -2637,6 +2665,8 @@ impl AggregatorImpl for MP4Mux {
                     chnl_layout_info: stream.chnl_layout_info.clone(),
                     #[cfg(feature = "v1_28")]
                     gimi_content_id: stream.gimi_content_id,
+                    #[cfg(feature = "v1_28")]
+                    gimi_component_content_id: stream.gimi_component_content_id,
                 });
             }
 

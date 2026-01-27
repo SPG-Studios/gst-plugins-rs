@@ -240,6 +240,32 @@ fn write_trak(
             meta_idat.extend([0]);
         }
 
+        if !stream.gimi_component_content_id.is_empty() {
+            let offset = meta_idat.len() as u32;
+
+            // Always one sample entry in GIMI
+            meta_idat.extend(1u32.to_be_bytes());
+
+            // Index is therefore always 0 in GIMI
+            meta_idat.extend(0u32.to_be_bytes());
+
+            // Number of components
+            meta_idat.extend((stream.gimi_component_content_id.len() as u32).to_be_bytes());
+
+            for c in stream.gimi_component_content_id.iter() {
+                meta_idat.extend(c.as_bytes());
+                meta_idat.extend([0]);
+            }
+
+            meta_entries.push(ItemInfoEntry {
+                offset,
+                // URN for TrackComponentContentIDList defined by GIMI
+                uri: "urn:uuid:fef58f02-43a6-5aaf-a891-099b1953d1f6",
+                name: "TrackComponentContentIDList",
+                length: meta_idat.len() as u32 - offset,
+            });
+        }
+
         if !meta_entries.is_empty() {
             write_full_box(v, b"meta", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
                 write_track_meta(v, &meta_entries, &meta_idat)

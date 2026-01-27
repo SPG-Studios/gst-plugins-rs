@@ -4085,6 +4085,8 @@ impl FMP4Mux {
                     chnl_layout_info: s.chnl_layout_info.clone(),
                     #[cfg(feature = "v1_28")]
                     gimi_content_id: None,
+                    #[cfg(feature = "v1_28")]
+                    gimi_component_content_id: vec![],
                 }
             })
             .collect::<Vec<_>>();

@@ -486,6 +486,10 @@ pub(crate) struct TrackConfiguration {
     /// GIMI (NGA-0076) Track Content ID
     #[cfg(feature = "v1_28")]
     pub(crate) gimi_content_id: Option<String>,
+
+    /// GIMI (NGA-0076) Component Track Content ID
+    #[cfg(feature = "v1_28")]
+    pub(crate) gimi_component_content_id: Vec<String>,
 }
 
 /// Returns the caps for all uncompressed video formats that `isobmff` muxers support.
