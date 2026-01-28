@@ -193,6 +193,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         tags::register::<PrecisionClockTypeTag>();
         tags::register::<PrecisionClockTimeUncertaintyNanosecondsTag>();
         tags::register::<GimiTrackContentIDTag>();
+        tags::register::<GimiComponentContentIDTag>();
     }
     Ok(())
 }
@@ -205,6 +206,9 @@ pub enum PrecisionClockTypeTag {}
 
 #[cfg(feature = "v1_28")]
 pub enum GimiTrackContentIDTag {}
+
+#[cfg(feature = "v1_28")]
+pub enum GimiComponentContentIDTag {}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum DeltaFrames {
@@ -776,6 +780,21 @@ impl CustomTag<'_> for GimiTrackContentIDTag {
     const FLAG: gst::TagFlag = gst::TagFlag::Meta;
     const NICK: &'static glib::GStr = glib::gstr!("gimi-track-content-id");
     const DESCRIPTION: &'static glib::GStr = glib::gstr!(
-        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) ContentID"
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Track ContentID"
+    );
+}
+
+#[cfg(feature = "v1_28")]
+impl<'a> Tag<'a> for GimiComponentContentIDTag {
+    type TagType = gst::Structure;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-component-content-id");
+}
+
+#[cfg(feature = "v1_28")]
+impl CustomTag<'_> for GimiComponentContentIDTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-component-content-id");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Component ContentID"
     );
 }

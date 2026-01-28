@@ -1647,7 +1647,6 @@ impl MP4Mux {
                 _ => unreachable!(),
             }
 
-	    
             // Check if language or orientation tags have already been
             // received
             let mut stream_orientation = Default::default();
@@ -1790,6 +1789,18 @@ impl MP4Mux {
 		    if let Some(tag_value) = ev.tag().get::<crate::isobmff::GimiTrackContentIDTag>() {
 			gimi_content_id = Some(tag_value.get().to_owned());
 		    }
+
+		    #[cfg(feature = "v1_28")]
+		    if let Some(gimi_component_content_id_s) = ev.tag().get::<crate::isobmff::GimiComponentContentIDTag>().map(|v| v.get()) {
+			for c in 0.._components {
+			    if let Ok(id) = gimi_component_content_id_s.get::<String>(c.to_string()) {
+				gimi_component_content_id.push(id)
+			    } else {
+				gimi_component_content_id.push(generate_gimi_content_id());
+			    }
+			}
+		    }
+
 
                 }
                 std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
