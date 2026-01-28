@@ -1478,153 +1478,6 @@ impl MP4Mux {
             .into_iter()
             .map(|pad| pad.downcast::<crate::isobmff::BaseMP4MuxPad>().unwrap())
         {
-            // Check if language or orientation tags have already been
-            // received
-            let mut stream_orientation = Default::default();
-            let mut global_orientation = Default::default();
-            let mut language_code = None;
-            let mut avg_bitrate = None;
-            let mut max_bitrate = None;
-            #[cfg(feature = "v1_28")]
-            let mut tai_clock_info = None;
-            #[cfg(feature = "v1_28")]
-            let mut clock_type = TaicClockType::Unknown;
-            #[cfg(feature = "v1_28")]
-            let mut time_uncertainty = TAIC_TIME_UNCERTAINTY_UNKNOWN;
-            #[cfg(feature = "v1_28")]
-            let mut gimi_content_id: Option<String> = None;
-            #[cfg(feature = "v1_28")]
-            let mut gimi_component_content_id: Vec<String> = vec![];
-
-            pad.sticky_events_foreach(|ev| {
-                if let gst::EventView::Tag(ev) = ev.view() {
-                    let tag = ev.tag();
-                    if let Some(lang) = tag.get::<gst::tags::LanguageCode>() {
-                        let lang = lang.get();
-                        gst::trace!(
-                            CAT,
-                            obj = pad,
-                            "Received language code from tags: {:?}",
-                            lang
-                        );
-
-                        // There is no header field for global
-                        // language code, maybe because it does not
-                        // really make sense, global language tags are
-                        // considered to be stream local
-                        if tag.scope() == gst::TagScope::Global {
-                            gst::info!(
-                                CAT,
-                                obj = pad,
-                                "Language tags scoped 'global' are considered stream tags",
-                            );
-                        }
-                        language_code = Stream::parse_language_code(lang);
-                    }
-                    if let Some(orientation) = tag.get::<gst::tags::ImageOrientation>() {
-                        gst::trace!(
-                            CAT,
-                            obj = pad,
-                            "Received image orientation from tags: {:?}",
-                            orientation.get(),
-                        );
-
-                        if tag.scope() == gst::TagScope::Global {
-                            global_orientation = TransformMatrix::from_tag(self, ev);
-                        } else {
-                            stream_orientation = Some(TransformMatrix::from_tag(self, ev));
-                        }
-                    }
-                    if let Some(bitrate) = tag
-                        .get::<gst::tags::MaximumBitrate>()
-                        .filter(|br| br.get() > 0 && br.get() < u32::MAX)
-                    {
-                        let bitrate = bitrate.get();
-                        gst::trace!(
-                            CAT,
-                            obj = pad,
-                            "Received maximum bitrate from tags: {:?}",
-                            bitrate
-                        );
-
-                        if tag.scope() == gst::TagScope::Global {
-                            gst::info!(
-                                CAT,
-                                obj = pad,
-                                "Bitrate tags scoped 'global' are considered stream tags",
-                            );
-                        }
-                        max_bitrate = Some(bitrate);
-                    }
-                    if let Some(bitrate) = tag
-                        .get::<gst::tags::Bitrate>()
-                        .filter(|br| br.get() > 0 && br.get() < u32::MAX)
-                    {
-                        let bitrate = bitrate.get();
-                        gst::trace!(CAT, obj = pad, "Received bitrate from tags: {:?}", bitrate);
-
-                        if tag.scope() == gst::TagScope::Global {
-                            gst::info!(
-                                CAT,
-                                obj = pad,
-                                "Bitrate tags scoped 'global' are considered stream tags",
-                            );
-                        }
-                        avg_bitrate = Some(bitrate);
-                    }
-		    #[cfg(feature = "v1_28")]
-                    if let Some(tag_value) = ev.tag().get::<crate::isobmff::PrecisionClockTypeTag>() {
-                        let clock_type_str = tag_value.get();
-                        gst::debug!(
-                            CAT,
-                            obj = pad,
-                            "Received TAI clock type from tags: {:?}",
-                            clock_type_str
-                        );
-                        clock_type = match clock_type_str.parse() {
-                            Ok(t) => t,
-                            Err(err) => {
-                                gst::warning!(CAT, imp = self, "error parsing TAIClockType tag value: {}", err);
-                                TaicClockType::Unknown
-                            }
-                        };
-                        if tag.scope() == gst::TagScope::Global {
-                            gst::info!(
-                                CAT,
-                                obj = pad,
-                                "TAI clock tags scoped 'global' are treated as if they were stream tags.",
-                            );
-                        }
-                    }
-		    #[cfg(feature = "v1_28")]
-                    if let Some(tag_value) = ev
-                        .tag()
-                        .get::<crate::isobmff::PrecisionClockTimeUncertaintyNanosecondsTag>()
-                    {
-                        time_uncertainty = tag_value.get();
-                        gst::debug!(
-                            CAT,
-                            obj = pad,
-                            "Received TAI clock uncertainty from tags: {:?}",
-                            time_uncertainty
-                        );
-                        if tag.scope() == gst::TagScope::Global {
-                            gst::info!(
-                                    CAT,
-                                obj = pad,
-                                "TAI clock tags scoped 'global' are treated as if they were stream tags.",
-                            );
-                        }
-                    }
-		    #[cfg(feature = "v1_28")]
-		    if let Some(tag_value) = ev.tag().get::<crate::isobmff::GimiTrackContentIDTag>() {
-			gimi_content_id = Some(tag_value.get().to_owned());
-		    }
-
-                }
-                std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
-            });
-
             let caps = match pad.current_caps() {
                 Some(caps) => caps,
                 None => {
@@ -1632,12 +1485,6 @@ impl MP4Mux {
                     continue;
                 }
             };
-
-            #[cfg(feature = "v1_28")]
-            if _settings.with_precision_timestamps {
-                // TODO: set remaining parts if there are tags implemented
-                tai_clock_info = Some(TaiClockInfo::new(clock_type, time_uncertainty));
-            }
 
             gst::info!(CAT, obj = pad, "Configuring caps {caps:?}");
 
@@ -1798,6 +1645,160 @@ impl MP4Mux {
                 }
                 "application/x-onvif-metadata" => (),
                 _ => unreachable!(),
+            }
+
+	    
+            // Check if language or orientation tags have already been
+            // received
+            let mut stream_orientation = Default::default();
+            let mut global_orientation = Default::default();
+            let mut language_code = None;
+            let mut avg_bitrate = None;
+            let mut max_bitrate = None;
+            #[cfg(feature = "v1_28")]
+            let mut tai_clock_info = None;
+            #[cfg(feature = "v1_28")]
+            let mut clock_type = TaicClockType::Unknown;
+            #[cfg(feature = "v1_28")]
+            let mut time_uncertainty = TAIC_TIME_UNCERTAINTY_UNKNOWN;
+            #[cfg(feature = "v1_28")]
+            let mut gimi_content_id: Option<String> = None;
+            #[cfg(feature = "v1_28")]
+            let mut gimi_component_content_id: Vec<String> = vec![];
+
+            pad.sticky_events_foreach(|ev| {
+                if let gst::EventView::Tag(ev) = ev.view() {
+                    let tag = ev.tag();
+                    if let Some(lang) = tag.get::<gst::tags::LanguageCode>() {
+                        let lang = lang.get();
+                        gst::trace!(
+                            CAT,
+                            obj = pad,
+                            "Received language code from tags: {:?}",
+                            lang
+                        );
+
+                        // There is no header field for global
+                        // language code, maybe because it does not
+                        // really make sense, global language tags are
+                        // considered to be stream local
+                        if tag.scope() == gst::TagScope::Global {
+                            gst::info!(
+                                CAT,
+                                obj = pad,
+                                "Language tags scoped 'global' are considered stream tags",
+                            );
+                        }
+                        language_code = Stream::parse_language_code(lang);
+                    }
+                    if let Some(orientation) = tag.get::<gst::tags::ImageOrientation>() {
+                        gst::trace!(
+                            CAT,
+                            obj = pad,
+                            "Received image orientation from tags: {:?}",
+                            orientation.get(),
+                        );
+
+                        if tag.scope() == gst::TagScope::Global {
+                            global_orientation = TransformMatrix::from_tag(self, ev);
+                        } else {
+                            stream_orientation = Some(TransformMatrix::from_tag(self, ev));
+                        }
+                    }
+                    if let Some(bitrate) = tag
+                        .get::<gst::tags::MaximumBitrate>()
+                        .filter(|br| br.get() > 0 && br.get() < u32::MAX)
+                    {
+                        let bitrate = bitrate.get();
+                        gst::trace!(
+                            CAT,
+                            obj = pad,
+                            "Received maximum bitrate from tags: {:?}",
+                            bitrate
+                        );
+
+                        if tag.scope() == gst::TagScope::Global {
+                            gst::info!(
+                                CAT,
+                                obj = pad,
+                                "Bitrate tags scoped 'global' are considered stream tags",
+                            );
+                        }
+                        max_bitrate = Some(bitrate);
+                    }
+                    if let Some(bitrate) = tag
+                        .get::<gst::tags::Bitrate>()
+                        .filter(|br| br.get() > 0 && br.get() < u32::MAX)
+                    {
+                        let bitrate = bitrate.get();
+                        gst::trace!(CAT, obj = pad, "Received bitrate from tags: {:?}", bitrate);
+
+                        if tag.scope() == gst::TagScope::Global {
+                            gst::info!(
+                                CAT,
+                                obj = pad,
+                                "Bitrate tags scoped 'global' are considered stream tags",
+                            );
+                        }
+                        avg_bitrate = Some(bitrate);
+                    }
+		    #[cfg(feature = "v1_28")]
+                    if let Some(tag_value) = ev.tag().get::<crate::isobmff::PrecisionClockTypeTag>() {
+                        let clock_type_str = tag_value.get();
+                        gst::debug!(
+                            CAT,
+                            obj = pad,
+                            "Received TAI clock type from tags: {:?}",
+                            clock_type_str
+                        );
+                        clock_type = match clock_type_str.parse() {
+                            Ok(t) => t,
+                            Err(err) => {
+                                gst::warning!(CAT, imp = self, "error parsing TAIClockType tag value: {}", err);
+                                TaicClockType::Unknown
+                            }
+                        };
+                        if tag.scope() == gst::TagScope::Global {
+                            gst::info!(
+                                CAT,
+                                obj = pad,
+                                "TAI clock tags scoped 'global' are treated as if they were stream tags.",
+                            );
+                        }
+                    }
+		    #[cfg(feature = "v1_28")]
+                    if let Some(tag_value) = ev
+                        .tag()
+                        .get::<crate::isobmff::PrecisionClockTimeUncertaintyNanosecondsTag>()
+                    {
+                        time_uncertainty = tag_value.get();
+                        gst::debug!(
+                            CAT,
+                            obj = pad,
+                            "Received TAI clock uncertainty from tags: {:?}",
+                            time_uncertainty
+                        );
+                        if tag.scope() == gst::TagScope::Global {
+                            gst::info!(
+                                    CAT,
+                                obj = pad,
+                                "TAI clock tags scoped 'global' are treated as if they were stream tags.",
+                            );
+                        }
+                    }
+		    #[cfg(feature = "v1_28")]
+		    if let Some(tag_value) = ev.tag().get::<crate::isobmff::GimiTrackContentIDTag>() {
+			gimi_content_id = Some(tag_value.get().to_owned());
+		    }
+
+                }
+                std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+            });
+
+            #[cfg(feature = "v1_28")]
+            if _settings.with_precision_timestamps {
+                // TODO: set remaining parts if there are tags implemented
+                tai_clock_info = Some(TaiClockInfo::new(clock_type, time_uncertainty));
             }
 
             #[cfg(feature = "v1_28")]
