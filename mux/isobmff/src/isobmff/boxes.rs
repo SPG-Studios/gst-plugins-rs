@@ -135,6 +135,8 @@ pub(crate) fn create_moov(
 
     if cfg.variant == Variant::ONVIF {
         write_onvif_metabox(cfg, &mut v)?;
+    } else if cfg.gimi_security_markings_xml.is_some() {
+        write_gimi_metabox(cfg, &mut v)?;
     }
 
     Ok(gst::Buffer::from_mut_slice(v))
@@ -199,11 +201,15 @@ const TKHD_FLAGS_TRACK_ENABLED: u32 = 0x1;
 const TKHD_FLAGS_TRACK_IN_MOVIE: u32 = 0x2;
 const TKHD_FLAGS_TRACK_IN_PREVIEW: u32 = 0x4;
 
-#[cfg(feature = "v1_28")]
+enum ItemInfoEntryType<'a> {
+    Uri(&'a str),
+    Mime(&'a str),
+}
+
 struct ItemInfoEntry<'a> {
     offset: u32,
     length: u32,
-    uri: &'a str,
+    item_type: ItemInfoEntryType<'a>,
     name: &'a str,
 }
 
@@ -231,7 +237,7 @@ fn write_trak(
         if let Some(ref gimi_content_id) = stream.gimi_content_id {
             meta_entries.push(ItemInfoEntry {
                 offset: meta_idat.len() as u32,
-                uri: "urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73",
+                item_type: ItemInfoEntryType::Uri("urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73"),
                 length: (gimi_content_id.len() + 1) as u32,
                 name: "TrackContentID",
             });
@@ -260,7 +266,7 @@ fn write_trak(
             meta_entries.push(ItemInfoEntry {
                 offset,
                 // URN for TrackComponentContentIDList defined by GIMI
-                uri: "urn:uuid:fef58f02-43a6-5aaf-a891-099b1953d1f6",
+                item_type: ItemInfoEntryType::Uri("urn:uuid:fef58f02-43a6-5aaf-a891-099b1953d1f6"),
                 name: "TrackComponentContentIDList",
                 length: meta_idat.len() as u32 - offset,
             });
@@ -1246,7 +1252,6 @@ fn write_track_meta(
     Ok(())
 }
 
-#[cfg(feature = "v1_28")]
 fn write_iinf(v: &mut Vec<u8>, meta_entries: &[ItemInfoEntry]) -> Result<(), Error> {
     v.extend((meta_entries.len() as u16).to_be_bytes());
 
@@ -1259,16 +1264,35 @@ fn write_iinf(v: &mut Vec<u8>, meta_entries: &[ItemInfoEntry]) -> Result<(), Err
             // item_protection, 0 as unprotected
             v.extend(0u16.to_be_bytes());
             // item_type
-            v.extend(b"uri ");
+            match entry.item_type {
+                ItemInfoEntryType::Uri(_) => {
+                    v.extend(b"uri ");
+                }
+                ItemInfoEntryType::Mime(_) => {
+                    v.extend(b"mime");
+                }
+            }
 
             // item name
             v.extend(entry.name.as_bytes());
             v.extend([0u8]);
 
-            // URN for the specific entry
-            v.extend(entry.uri.as_bytes());
-            // nul termination
-            v.extend([0u8]);
+            match entry.item_type {
+                ItemInfoEntryType::Uri(uri) => {
+                    // URN for the specific entry
+                    v.extend(uri.as_bytes());
+                    // nul termination
+                    v.extend([0u8]);
+                }
+                ItemInfoEntryType::Mime(mime) => {
+                    // URN for the specific entry
+                    v.extend(mime.as_bytes());
+                    // nul termination
+                    v.extend([0u8]);
+                    // No content encoding
+                    v.extend([0u8]);
+                }
+            }
 
             Ok(())
         })?;
@@ -1277,7 +1301,6 @@ fn write_iinf(v: &mut Vec<u8>, meta_entries: &[ItemInfoEntry]) -> Result<(), Err
     Ok(())
 }
 
-#[cfg(feature = "v1_28")]
 fn write_iloc(v: &mut Vec<u8>, meta_entries: &[ItemInfoEntry]) -> Result<(), Error> {
     // offset size is 4 (at the start) (4 bits)
     // length is 4 (the whole box) (4 bits)
@@ -2593,6 +2616,75 @@ pub(crate) fn write_onvif_metabox(
         })?;
 
         write_cstb(cfg, v)
+    })?;
+    Ok(())
+}
+
+pub(crate) fn write_gimi_metabox(
+    cfg: PresentationConfiguration,
+    v: &mut Vec<u8>,
+) -> Result<(), Error> {
+    write_full_box(v, b"meta", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+        write_full_box(v, b"hdlr", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+            write_hdlr_box(v, b"null", b"MetadataHandler")
+        })?;
+
+        let gimi_security_markings_xml = cfg.gimi_security_markings_xml.unwrap();
+        let meta_entries = &[ItemInfoEntry {
+            offset: 0,
+            item_type: ItemInfoEntryType::Mime("application/nga-gimi-ism+xml"),
+            length: (gimi_security_markings_xml.0.len() + 1) as u32,
+            name: "GimiSecurityMarkingXML",
+        }];
+
+        let mut meta_idat = Vec::new();
+        meta_idat.extend(gimi_security_markings_xml.0.as_bytes());
+        // nul terminated string
+        meta_idat.extend([0]);
+
+        write_full_box(v, b"iinf", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+            write_iinf(v, meta_entries)
+        })?;
+
+        write_full_box(v, b"iloc", FULL_BOX_VERSION_1, FULL_BOX_FLAGS_NONE, |v| {
+            write_iloc(v, meta_entries)
+        })?;
+
+        write_box(v, b"idat", |v| {
+            v.extend(meta_idat);
+            Ok(())
+        })?;
+
+        write_box(v, b"iprp", |v| {
+            write_box(v, b"ipco", |v| {
+                write_box(v, b"uuid", |v| {
+                    v.extend([
+                        0x26, 0x1e, 0xf3, 0x74, 0x1d, 0x97, 0x5b, 0xba, 0xac, 0xbd, 0x9d, 0x2c,
+                        0x8e, 0xa7, 0x35, 0x22,
+                    ]);
+                    v.extend(gimi_security_markings_xml.1.as_bytes());
+                    // nul terminated string
+                    v.extend([0]);
+                    Ok(())
+                })
+            })?;
+            write_full_box(v, b"ipma", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+                // Entry count
+                v.extend(1u32.to_be_bytes());
+
+                // item ID .. 1 for now, as we have only 1
+                // 16 bits as version==0
+                v.extend(1u16.to_be_bytes());
+                // association_count = 1
+                v.extend(1u8.to_be_bytes());
+                // essential bit == 0, property index is 1
+                v.extend(1u8.to_be_bytes());
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+
+        Ok(())
     })?;
     Ok(())
 }

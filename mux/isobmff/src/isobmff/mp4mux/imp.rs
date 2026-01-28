@@ -406,6 +406,9 @@ struct State {
 
     /// Size of the `mdat` as written so far.
     mdat_size: u64,
+
+    /// Optional GIMI Security Markings XML and ContentID
+    gimi_security_markings_xml: Option<(String, String)>,
 }
 
 impl State {
@@ -1472,6 +1475,8 @@ impl MP4Mux {
     ) -> Result<(), gst::FlowError> {
         gst::info!(CAT, imp = self, "Creating streams");
 
+        state.gimi_security_markings_xml = None;
+
         for pad in self
             .obj()
             .sink_pads()
@@ -1664,6 +1669,7 @@ impl MP4Mux {
             let mut gimi_content_id: Option<String> = None;
             #[cfg(feature = "v1_28")]
             let mut gimi_component_content_id: Vec<String> = vec![];
+            #[cfg(feature = "v1_28")]
 
             pad.sticky_events_foreach(|ev| {
                 if let gst::EventView::Tag(ev) = ev.view() {
@@ -1801,7 +1807,15 @@ impl MP4Mux {
 			}
 		    }
 
-
+		    if let Some(gimi_security_markings_xml) = ev.tag().get::<crate::isobmff::GimiSecurityMarkingsXMLTag>().map(|v| v.get().to_owned()) {
+			let gimi_security_markings_content_id =
+			    if let Some(gimi_security_markings_content_id) =  ev.tag().get::<crate::isobmff::GimiSecurityMarkingsContentIDTag>().map(|v| v.get().to_owned()) {
+				gimi_security_markings_content_id
+			    } else {
+				generate_gimi_content_id()
+			    };
+			state.gimi_security_markings_xml = Some((gimi_security_markings_xml, gimi_security_markings_content_id));
+		    }
                 }
                 std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
             });
@@ -2584,6 +2598,7 @@ impl AggregatorImpl for MP4Mux {
                     stream.image_sequence_mode(),
                     settings.with_precision_timestamps,
                     settings.is_gimi,
+                    state.gimi_security_markings_xml.is_some(),
                     extra_brands,
                 );
 
@@ -2692,6 +2707,10 @@ impl AggregatorImpl for MP4Mux {
                     write_mehd: false,
                     duration: None,
                     write_edts: false,
+                    gimi_security_markings_xml: state
+                        .gimi_security_markings_xml
+                        .as_ref()
+                        .map(|(a, b)| (a.as_ref(), b.as_ref())),
                 },
                 0,
                 None,

@@ -12,7 +12,6 @@ use std::sync::LazyLock;
 
 use gst::glib;
 use gst::prelude::*;
-#[cfg(feature = "v1_28")]
 use gst::tags;
 use num_integer::Integer;
 
@@ -195,6 +194,12 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         tags::register::<GimiTrackContentIDTag>();
         tags::register::<GimiComponentContentIDTag>();
     }
+    if !tags::tag_exists(GimiSecurityMarkingsXMLTag::TAG_NAME) {
+        tags::register::<GimiSecurityMarkingsXMLTag>();
+    }
+    if !tags::tag_exists(GimiSecurityMarkingsContentIDTag::TAG_NAME) {
+        tags::register::<GimiSecurityMarkingsContentIDTag>();
+    }
     Ok(())
 }
 
@@ -209,6 +214,10 @@ pub enum GimiTrackContentIDTag {}
 
 #[cfg(feature = "v1_28")]
 pub enum GimiComponentContentIDTag {}
+
+pub enum GimiSecurityMarkingsXMLTag {}
+
+pub enum GimiSecurityMarkingsContentIDTag {}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum DeltaFrames {
@@ -376,7 +385,7 @@ impl Variant {
 }
 
 #[derive(Debug)]
-pub(crate) struct PresentationConfiguration {
+pub(crate) struct PresentationConfiguration<'a> {
     pub(crate) variant: Variant,
     pub(crate) update: bool,
 
@@ -392,9 +401,12 @@ pub(crate) struct PresentationConfiguration {
 
     /// Whether to write edts box
     pub(crate) write_edts: bool,
+
+    /// Optional GIMI Security Markings XML
+    pub(crate) gimi_security_markings_xml: Option<(&'a str, &'a str)>,
 }
 
-impl PresentationConfiguration {
+impl PresentationConfiguration<'_> {
     pub(crate) fn to_timescale(&self) -> u32 {
         if self.movie_timescale > 0 {
             self.movie_timescale
@@ -796,5 +808,31 @@ impl CustomTag<'_> for GimiComponentContentIDTag {
     const NICK: &'static glib::GStr = glib::gstr!("gimi-component-content-id");
     const DESCRIPTION: &'static glib::GStr = glib::gstr!(
         "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Component ContentID"
+    );
+}
+
+impl<'a> Tag<'a> for GimiSecurityMarkingsXMLTag {
+    type TagType = &'a str;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-security-markings-xml");
+}
+
+impl CustomTag<'_> for GimiSecurityMarkingsXMLTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-security-markings-xml");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Security Markings XML"
+    );
+}
+
+impl<'a> Tag<'a> for GimiSecurityMarkingsContentIDTag {
+    type TagType = &'a str;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-security-markings-content-id");
+}
+
+impl CustomTag<'_> for GimiSecurityMarkingsContentIDTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-security-markings-content-id");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Security Markings XML Content ID"
     );
 }

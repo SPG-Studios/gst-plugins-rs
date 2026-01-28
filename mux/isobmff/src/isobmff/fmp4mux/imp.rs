@@ -4105,6 +4105,7 @@ impl FMP4Mux {
             write_mehd: settings.write_mehd,
             duration: if at_eos { duration } else { None },
             write_edts,
+            gimi_security_markings_xml: None,
         })
         .map_err(|err| {
             gst::error!(CAT, imp = self, "Failed to create FMP4 header: {}", err);

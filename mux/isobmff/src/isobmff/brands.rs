@@ -308,6 +308,7 @@ pub(crate) fn brands_from_variant_and_caps<'a>(
     image_sequence_mode: bool,
     with_precision_timestamps: bool,
     is_gimi: bool,
+    has_gimi_security_markings_xml: bool,
     extra_brands: &[[u8; 4]],
 ) -> (u32, [u8; 4], Vec<[u8; 4]>) {
     let mut major_brand = *b"iso6";
@@ -412,6 +413,10 @@ pub(crate) fn brands_from_variant_and_caps<'a>(
     if is_gimi {
         compatible_brands.insert(*b"geo1");
         compatible_brands.insert(*b"unif");
+    }
+
+    if has_gimi_security_markings_xml {
+        compatible_brands.insert(*b"sm01");
     }
 
     (
