@@ -810,6 +810,8 @@ impl ElementImpl for Timeshift {
 trait ConsumerExt {
     type Item;
 
+    /// Read an item from the ring buffer at a specific index where 0 is the
+    /// eldest and occupied_len() - 1 is the newest
     fn get(&self, index: usize) -> Option<&Self::Item>;
 }
 
