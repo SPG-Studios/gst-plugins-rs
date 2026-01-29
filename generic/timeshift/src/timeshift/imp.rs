@@ -22,8 +22,8 @@
  * a ring buffer. It enables seeking when used in a pipeline with non-seekable
  * live sources.
  *
- * # Example launch line
- * gst-launch-1.0 udpsrc ! decodebin ! timeshift ! autovideosink
+ * # Example usage
+ * gst-play-1.0 udp://127.0.0.1:8000 --videosink="(timeshift ! autovideosink)"
  *
  *
  */
