@@ -53,12 +53,6 @@ impl Default for Settings {
     }
 }
 
-/// Wrapper for queries stored in the ring buffer that allows tracking results
-struct PendingQuery {
-    query: gst::Query,
-    result: Option<bool>,
-}
-
 struct State {
     /// Ring buffer storing buffers and serialized events and queries
     buffer: Option<Box<HeapRb<gst::MiniObject>>>,
@@ -80,10 +74,12 @@ struct State {
     pending_segment: Option<gst::Segment>,
     /// Whether a discontinuity is pending to be applied to the next buffer
     discont_pending: bool,
-    /// Currently pending serialized query being processed (if any)
-    pending_query: Option<PendingQuery>,
-    /// Pending seek event to be serialized (if any)
-    pending_event: Option<gst::Event>,
+    /// Result of the last serialized query
+    serialized_query_result: Option<bool>,
+    /// PTS of the oldest buffer in the ring buffer (cached for seeking queries)
+    oldest_buffer_pts: Option<gst::ClockTime>,
+    /// PTS of the newest buffer in the ring buffer (cached for seeking queries)
+    newest_buffer_pts: Option<gst::ClockTime>,
 }
 
 impl Default for State {
@@ -102,8 +98,9 @@ impl Default for State {
             segment,
             pending_segment: None,
             discont_pending: false,
-            pending_query: None,
-            pending_event: None,
+            serialized_query_result: None,
+            oldest_buffer_pts: None,
+            newest_buffer_pts: None,
         }
     }
 }
@@ -183,12 +180,7 @@ impl Timeshift {
                 pad.push_event(gst::event::FlushStop::new(false));
                 pad.push_event(gst::event::Segment::new(&segment));
                 state = self.state.lock().unwrap();
-            }
-
-            if let Some(event) = state.pending_event.take() {
-                drop(state);
-                pad.push_event(event);
-                state = self.state.lock().unwrap();
+                continue;
             }
 
             let Some((item, is_discont)) = self.fetch_next_item(&mut state) else {
@@ -213,10 +205,28 @@ impl Timeshift {
                 }
             }
 
+            let is_eos = item
+                .clone()
+                .downcast::<gst::Event>()
+                .map(|e| e.type_() == gst::EventType::Eos)
+                .unwrap_or(false);
+
             drop(state);
 
-            if self.process_item(pad, item, is_discont).is_err() {
-                return;
+            match self.process_item(pad, item, is_discont) {
+                Err(gst::FlowError::Flushing) => {
+                    gst::debug!(CAT, imp = self, "Pad flushing, dropping item");
+                }
+                Err(e) => {
+                    gst::error!(CAT, imp = self, "Error processing ring buffer item: {}", e);
+                    break;
+                }
+                _ => {
+                    if is_eos {
+                        gst::debug!(CAT, imp = self, "EOS sent, stopping task");
+                        return;
+                    }
+                }
             }
 
             state = self.state.lock().unwrap();
@@ -268,20 +278,22 @@ impl Timeshift {
         pad: &gst::Pad,
         item: gst::MiniObject,
         is_discont: bool,
-    ) -> Result<(), ()> {
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
         if let Ok(buffer) = item.clone().downcast::<gst::Buffer>() {
             return self.process_buffer(pad, buffer, is_discont);
         }
 
-        if let Ok(event) = item.clone().downcast::<gst::Event>() {
-            return self.process_event(pad, event);
+        if let Ok(event) = item.clone().downcast::<gst::Event>()
+            && !self.process_event(pad, event)
+        {
+            return Err(gst::FlowError::Error);
         }
 
-        if item.downcast::<gst::Query>().is_ok() {
-            return self.process_query(pad);
+        if let Ok(query) = item.downcast::<gst::Query>() {
+            self.process_query(pad, query);
         }
 
-        Ok(())
+        Ok(gst::FlowSuccess::Ok)
     }
 
     fn process_buffer(
@@ -289,23 +301,20 @@ impl Timeshift {
         pad: &gst::Pad,
         mut buffer: gst::Buffer,
         is_discont: bool,
-    ) -> Result<(), ()> {
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
         if is_discont {
             let buffer_ref = buffer.make_mut();
             buffer_ref.set_flags(gst::BufferFlags::DISCONT);
         }
 
-        if let Err(err) = pad.push(buffer) {
-            gst::error!(CAT, imp = self, "Failed to push buffer: {:?}", err);
-            return Err(());
-        }
-
-        Ok(())
+        pad.push(buffer)
     }
 
-    fn process_event(&self, pad: &gst::Pad, event: gst::Event) -> Result<(), ()> {
+    fn process_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         let is_caps = event.type_() == gst::EventType::Caps;
-        pad.push_event(event);
+        if !pad.push_event(event) {
+            return false;
+        }
 
         if is_caps {
             let mut state = self.state.lock().unwrap();
@@ -313,41 +322,29 @@ impl Timeshift {
                 state.sent_caps = true;
                 if !state.sent_segment {
                     state.sent_segment = true;
-                    drop(state);
-
                     let mut segment = gst::Segment::new();
                     segment.set_format(gst::Format::Time);
-                    pad.push_event(gst::event::Segment::new(&segment));
+                    state.pending_segment = Some(segment);
                 }
             }
-            return Ok(());
         }
 
-        Ok(())
+        true
     }
 
-    fn process_query(&self, pad: &gst::Pad) -> Result<(), ()> {
+    fn process_query(&self, pad: &gst::Pad, mut query: gst::Query) {
+        let query_ref = query.make_mut();
+        let result = pad.peer_query(query_ref);
+        gst::debug!(
+            CAT,
+            imp = self,
+            "Processed serialized query, result: {}",
+            result
+        );
+
         let mut state = self.state.lock().unwrap();
-        let pending_query = state.pending_query.take();
-        drop(state);
-
-        if let Some(mut pending) = pending_query {
-            let query = pending.query.make_mut();
-            let result = pad.peer_query(query);
-            pending.result = Some(result);
-            gst::debug!(
-                CAT,
-                imp = self,
-                "Processed serialized query, result: {}",
-                result
-            );
-
-            let mut state = self.state.lock().unwrap();
-            state.pending_query = Some(pending);
-        }
-
+        state.serialized_query_result = Some(result);
         self.cond.notify_all();
-        Ok(())
     }
 
     fn src_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
@@ -360,28 +357,33 @@ impl Timeshift {
                 }
 
                 let state = self.state.lock().unwrap();
-                if let Some(rb) = state.buffer.as_ref() {
-                    let count = rb.occupied_len();
-                    if count > 0 {
-                        let tail = (0..count).find_map(|i| {
-                            rb.get(i)
-                                .and_then(|m| m.clone().downcast::<gst::Buffer>().ok())
-                        });
-
-                        let head = (0..count).rev().find_map(|i| {
-                            rb.get(i)
-                                .and_then(|m| m.clone().downcast::<gst::Buffer>().ok())
-                        });
-
-                        if let (Some(tail_buf), Some(head_buf)) = (tail, head)
-                            && let (Some(start), Some(end)) = (tail_buf.pts(), head_buf.pts())
-                        {
-                            q.set(true, start, end);
-                            return true;
-                        }
-                    }
+                if let (Some(start), Some(end)) = (state.oldest_buffer_pts, state.newest_buffer_pts)
+                {
+                    q.set(true, start, end);
+                    return true;
                 }
                 q.set(false, gst::ClockTime::NONE, gst::ClockTime::NONE);
+                true
+            }
+            QueryViewMut::Position(q) => {
+                if q.format() != gst::Format::Time {
+                    return false;
+                }
+
+                let running_time = self.obj().current_running_time();
+
+                if let Some(rt) = running_time {
+                    let state = self.state.lock().unwrap();
+
+                    let position = state.segment.position_from_running_time(rt);
+                    q.set(position);
+                    return true;
+                }
+
+                // If the clock isn't running yet (paused/ready) we return the last known
+                // segment position
+                let state = self.state.lock().unwrap();
+                q.set(state.segment.position());
                 true
             }
             _ => gst::Pad::query_default(pad, Some(&*self.obj()), query),
@@ -604,19 +606,39 @@ impl Timeshift {
         _pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::debug!(
-            CAT,
-            imp = self,
-            "Sink chain received buffer PTS: {:?}",
-            buffer.pts()
-        );
+        let pts = buffer.pts();
+
+        gst::debug!(CAT, imp = self, "Sink chain received buffer PTS: {:?}", pts);
+
+        if pts.is_none() {
+            gst::error!(
+                CAT,
+                imp = self,
+                "Received buffer without PTS, non-timestamped buffers are not supported"
+            );
+            return Err(gst::FlowError::NotSupported);
+        }
 
         let mut state = self.state.lock().unwrap();
-        let Some(rb) = state.buffer.as_mut() else {
-            return Err(gst::FlowError::NotNegotiated);
+        let oldest_pts = {
+            let Some(rb) = state.buffer.as_mut() else {
+                return Err(gst::FlowError::NotNegotiated);
+            };
+
+            rb.push_overwrite(buffer.upcast());
+
+            (0..rb.occupied_len()).find_map(|i| {
+                rb.get(i)
+                    .and_then(|item| item.clone().downcast::<gst::Buffer>().ok())
+                    .and_then(|b| b.pts())
+            })
         };
-        rb.push_overwrite(buffer.upcast());
+
         state.total_written += 1;
+
+        state.newest_buffer_pts = pts;
+        state.oldest_buffer_pts = oldest_pts;
+
         self.cond.notify_all();
         Ok(gst::FlowSuccess::Ok)
     }
@@ -641,37 +663,25 @@ impl Timeshift {
 
             let mut state = self.state.lock().unwrap();
 
-            if state.buffer.is_none() {
+            let Some(rb) = state.buffer.as_mut() else {
                 return false;
-            }
+            };
 
             let query_owned = query.to_owned();
-            state.pending_query = Some(PendingQuery {
-                query: query_owned.clone(),
-                result: None,
-            });
-
-            // Push a marker query to the ring buffer to maintain serialization order,
-            // and then wait for it to be processed
-            let rb = state.buffer.as_mut().unwrap();
             rb.push_overwrite(query_owned.upcast());
             state.total_written += 1;
+            state.serialized_query_result = None;
             self.cond.notify_all();
 
             loop {
-                if let Some(ref pending) = state.pending_query {
-                    if let Some(result) = pending.result {
-                        state.pending_query = None;
-                        gst::debug!(
-                            CAT,
-                            imp = self,
-                            "Serialized query completed with result: {}",
-                            result
-                        );
-                        return result;
-                    }
-                } else {
-                    return false;
+                if let Some(result) = state.serialized_query_result.take() {
+                    gst::debug!(
+                        CAT,
+                        imp = self,
+                        "Serialized query completed with result: {}",
+                        result
+                    );
+                    return result;
                 }
 
                 state = self.cond.wait(state).unwrap();
