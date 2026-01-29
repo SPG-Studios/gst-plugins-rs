@@ -488,8 +488,63 @@ impl Timeshift {
                     .build();
 
                     let mut state = self.state.lock().unwrap();
+
+                    let position = if let Some(rb) = state.buffer.as_ref() {
+                        let count = rb.occupied_len() as u64;
+                        let start_valid = state.total_written.saturating_sub(count);
+                        let offset = state.playback_pos.saturating_sub(start_valid);
+
+                        let mut found_pts = None;
+
+                        // Look forward from the current playback position until we find a timestamped buffer
+                        for i in offset..count {
+                            if let Some(item) = rb.get(i as usize)
+                                && let Ok(buf) = item.clone().downcast::<gst::Buffer>()
+                                && let Some(pts) = buf.pts()
+                            {
+                                found_pts = Some(pts);
+                                break;
+                            }
+                        }
+
+                        match found_pts {
+                            Some(pts) => pts,
+                            None => {
+                                // We couldn't find a buffer ahead. Fall back to segment's position
+                                if let gst::GenericFormattedValue::Time(Some(pos)) =
+                                    segment.position()
+                                {
+                                    gst::warning!(
+                                        CAT,
+                                        imp = self,
+                                        "No future buffer found for pivot. Using last known position: {}",
+                                        pos
+                                    );
+                                    pos
+                                } else {
+                                    // There's no valid (time format) position in the segment, just fail
+                                    gst::error!(
+                                        CAT,
+                                        imp = self,
+                                        "Cannot perform instant rate change: No buffer found and no segment position."
+                                    );
+                                    return false;
+                                }
+                            }
+                        }
+                    } else {
+                        return false;
+                    };
+
+                    let running_time = segment.to_running_time(position);
+
+                    state.segment.set_start(position);
+                    state.segment.set_time(position);
+                    state.segment.set_base(running_time);
                     state.segment.set_rate(rate);
-                    state.pending_event = Some(event);
+
+                    drop(state);
+                    pad.push_event(event);
                     return true;
                 }
 
