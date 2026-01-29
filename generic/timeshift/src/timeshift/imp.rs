@@ -41,7 +41,7 @@ use std::sync::{Condvar, LazyLock, Mutex};
 const DEFAULT_BUFFER_SIZE: u32 = 512;
 
 struct Settings {
-    /// Size of the ring buffer
+    /// Size of the ring buffer in terms of items (buffers/events/queries)
     buffer_size: u32,
 }
 
