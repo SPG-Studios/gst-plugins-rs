@@ -643,7 +643,7 @@ impl Timeshift {
         Ok(gst::FlowSuccess::Ok)
     }
 
-    fn sink_event(&self, _pad: &gst::Pad, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         gst::info!(CAT, imp = self, "Sink received event: {:?}", event);
         if event.is_serialized() {
             let mut state = self.state.lock().unwrap();
@@ -653,6 +653,8 @@ impl Timeshift {
             rb.push_overwrite(event.upcast());
             state.total_written += 1;
             self.cond.notify_all();
+        } else {
+            return gst::Pad::event_default(pad, Some(&*self.obj()), event);
         }
         true
     }
