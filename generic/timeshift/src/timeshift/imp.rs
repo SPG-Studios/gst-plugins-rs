@@ -23,7 +23,7 @@
  * live sources.
  *
  * # Example usage
- * gst-play-1.0 udp://127.0.0.1:8000 --videosink="(timeshift ! autovideosink)"
+ * gst-play-1.0 udp://127.0.0.1:8000 --videosink="(capsfilter caps="video/x-raw" ! timeshift ! videoconvert ! autovideosink)"
  *
  *
  */
