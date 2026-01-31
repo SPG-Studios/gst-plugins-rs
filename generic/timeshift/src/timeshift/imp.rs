@@ -442,9 +442,7 @@ impl Timeshift {
                     return false;
                 }
 
-                if !flags.contains(gst::SeekFlags::INSTANT_RATE_CHANGE)
-                    && !flags.contains(gst::SeekFlags::FLUSH)
-                {
+                if !flags.contains(gst::SeekFlags::FLUSH) {
                     gst::error!(
                         CAT,
                         imp = self,
@@ -456,99 +454,6 @@ impl Timeshift {
                 let state = self.state.lock().unwrap();
                 let mut segment = state.segment.clone();
                 drop(state);
-
-                if flags.contains(gst::SeekFlags::INSTANT_RATE_CHANGE) {
-                    let current_rate = segment.rate();
-                    if (current_rate > 0.0 && rate < 0.0)
-                        || (current_rate < 0.0 && rate > 0.0)
-                        || start_type != gst::SeekType::None
-                        || stop_type != gst::SeekType::None
-                        || flags.contains(gst::SeekFlags::FLUSH)
-                    {
-                        gst::error!(
-                            CAT,
-                            imp = self,
-                            "Instant rate change seeks only supported in the \
-                            same direction, without flushing and position change"
-                        );
-                        return false;
-                    }
-
-                    gst::debug!(
-                        CAT,
-                        imp = self,
-                        "Handling instant rate change from {current_rate} to {rate}"
-                    );
-
-                    let event = gst::event::InstantRateChange::builder(
-                        rate / current_rate,
-                        gst::SegmentFlags::from_bits_truncate(
-                            flags.bits() & gst::ffi::GST_SEGMENT_INSTANT_FLAGS as u32,
-                        ),
-                    )
-                    .seqnum(e.seqnum())
-                    .build();
-
-                    let mut state = self.state.lock().unwrap();
-
-                    let position = if let Some(rb) = state.buffer.as_ref() {
-                        let count = rb.occupied_len() as u64;
-                        let start_valid = state.total_written.saturating_sub(count);
-                        let offset = state.playback_pos.saturating_sub(start_valid);
-
-                        let mut found_pts = None;
-
-                        // Look forward from the current playback position until we find a timestamped buffer
-                        for i in offset..count {
-                            if let Some(item) = rb.get(i as usize)
-                                && let Ok(buf) = item.clone().downcast::<gst::Buffer>()
-                                && let Some(pts) = buf.pts()
-                            {
-                                found_pts = Some(pts);
-                                break;
-                            }
-                        }
-
-                        match found_pts {
-                            Some(pts) => pts,
-                            None => {
-                                // We couldn't find a buffer ahead. Fall back to segment's position
-                                if let gst::GenericFormattedValue::Time(Some(pos)) =
-                                    segment.position()
-                                {
-                                    gst::warning!(
-                                        CAT,
-                                        imp = self,
-                                        "No future buffer found for pivot. Using last known position: {}",
-                                        pos
-                                    );
-                                    pos
-                                } else {
-                                    // There's no valid (time format) position in the segment, just fail
-                                    gst::error!(
-                                        CAT,
-                                        imp = self,
-                                        "Cannot perform instant rate change: No buffer found and no segment position."
-                                    );
-                                    return false;
-                                }
-                            }
-                        }
-                    } else {
-                        return false;
-                    };
-
-                    let running_time = segment.to_running_time(position);
-
-                    state.segment.set_start(position);
-                    state.segment.set_time(position);
-                    state.segment.set_base(running_time);
-                    state.segment.set_rate(rate);
-
-                    drop(state);
-                    pad.push_event(event);
-                    return true;
-                }
 
                 if segment
                     .do_seek(rate, flags, start_type, start, stop_type, stop)
