@@ -5,15 +5,16 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use image::Limits;
 use image::{
     AnimationDecoder, DynamicImage, Frame, GenericImageView, ImageDecoder, ImageFormat, ImageReader,
 };
 use num_rational::Ratio;
 
-#[cfg(feature = "gif")]
-use image::codecs::gif::GifDecoder;
-#[cfg(feature = "webp")]
-use image::codecs::webp::WebPDecoder;
+// #[cfg(feature = "gif")]
+// use image::codecs::gif::GifDecoder;
+// #[cfg(feature = "webp")]
+// use image::codecs::webp::WebPDecoder;
 
 use std::io::Cursor;
 use std::sync::{LazyLock, Mutex};
@@ -52,6 +53,7 @@ pub struct ImageRsDecoder {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
     state: Mutex<State>,
+    limit: Mutex<u64>,
 }
 
 impl ImageRsDecoder {
@@ -73,7 +75,29 @@ impl ImageRsDecoder {
     fn render_single_frame(&self, image: DynamicImage) -> Result<(), gst::ErrorMessage> {
         let wh = image.dimensions();
 
-        let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgba, wh.0, wh.1)
+        let fmt = match image.color() {
+            image::ColorType::Rgb8 => gst_video::VideoFormat::Rgb,
+            image::ColorType::Rgba8 => gst_video::VideoFormat::Rgba,
+            image::ColorType::L8 => gst_video::VideoFormat::Gray8,
+            #[cfg(target_endian = "little")]
+            image::ColorType::L16 => gst_video::VideoFormat::Gray16Le,
+            #[cfg(target_endian = "big")]
+            image::ColorType::L16 => gst_video::VideoFormat::Gray16Be,
+            #[cfg(target_endian = "little")]
+            image::ColorType::Rgba16 => gst_video::VideoFormat::Rgba64Le,
+            #[cfg(target_endian = "big")]
+            image::ColorType::Rgba16 => gst_video::VideoFormat::Rgba64Be,
+            v => {
+                gst::element_warning!(
+                    self.obj(),
+                    gst::StreamError::Decode,
+                            ["Unknown format {:?}, converting to RGBA", v]
+                );
+                gst_video::VideoFormat::Rgba
+            }
+        };
+
+        let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
             .fps((0, 1))
             .build()
             .unwrap()
@@ -85,11 +109,11 @@ impl ImageRsDecoder {
         let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
         let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
 
-        let mut out_buf = if image.color() == image::ColorType::Rgba8 {
-            gst::Buffer::from_slice(Wrapper(image))
-        } else {
+        let mut out_buf = if fmt == gst_video::VideoFormat::Rgba {
             let image_rgba8 = image.to_rgba8();
             gst::Buffer::from_slice(Wrapper(DynamicImage::from(image_rgba8)))
+        } else {
+            gst::Buffer::from_slice(Wrapper(image))
         };
         {
             let out_buf_mut = out_buf.get_mut().unwrap();
@@ -111,6 +135,7 @@ impl ImageRsDecoder {
         Ok(())
     }
 
+    #[allow(unused)]
     fn render_many_frames<'a>(
         &self,
         decoder: impl AnimationDecoder<'a> + ImageDecoder,
@@ -274,29 +299,48 @@ impl ImageRsDecoder {
         }?;
 
         match reader.format() {
-            #[cfg(feature = "gif")]
-            Some(ImageFormat::Gif) => {
-                let decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error_msg!(
-                        gst::StreamError::Decode,
-                        ["Failed decoding GIF container: {}", v]
-                    )
-                })?;
+            // #[cfg(feature = "gif")]
+            // Some(ImageFormat::Gif) => {
+            //     let mut limits = Limits::default();
+            //     limits.max_alloc = Some(*self.limit.lock().unwrap());
+            //     let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
+            //         gst::error_msg!(
+            //             gst::StreamError::Decode,
+            //             ["Failed decoding GIF container: {}", v]
+            //         )
+            //     })?;
+            //     decoder.set_limits(limits).map_err(|v| {
+            //         gst::error_msg!(
+            //             gst::StreamError::Decode,
+            //             ["Failed setting memory limits: {}", v]
+            //         )
+            //     })?;
 
-                self.render_many_frames(decoder)?;
-            }
-            #[cfg(feature = "webp")]
-            Some(ImageFormat::WebP) => {
-                let decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error_msg!(
-                        gst::StreamError::Decode,
-                        ["Failed decoding AVIF container: {}", v]
-                    )
-                })?;
+            //     self.render_many_frames(decoder)?;
+            // }
+            // #[cfg(feature = "webp")]
+            // Some(ImageFormat::WebP) => {
+            //     let mut limits = Limits::default();
+            //     limits.max_alloc = Some(*self.limit.lock().unwrap());
+            //     let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
+            //         gst::error_msg!(
+            //             gst::StreamError::Decode,
+            //             ["Failed decoding AVIF container: {}", v]
+            //         )
+            //     })?;
+            //     decoder.set_limits(limits).map_err(|v| {
+            //         gst::error_msg!(
+            //             gst::StreamError::Decode,
+            //             ["Failed setting memory limits: {}", v]
+            //         )
+            //     })?;
 
-                self.render_many_frames(decoder)?;
-            }
+            //     self.render_many_frames(decoder)?;
+            // }
             Some(_) => {
+                let mut limits = Limits::default();
+                limits.max_alloc = Some(*self.limit.lock().unwrap());
+                reader.limits(limits);
                 let image = reader.decode().map_err(|v| {
                     gst::error_msg!(
                         gst::StreamError::Decode,
@@ -388,6 +432,7 @@ impl ObjectSubclass for ImageRsDecoder {
             srcpad,
             sinkpad,
             state: Mutex::new(State::default()),
+            limit: Mutex::new(64),
         }
     }
 }
@@ -399,6 +444,40 @@ impl ObjectImpl for ImageRsDecoder {
         let obj = self.obj();
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.srcpad).unwrap();
+    }
+
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            vec![glib::ParamSpecUInt64::builder("limit")
+                .nick("Memory allocation limits")
+                .blurb("Allows using up to value in MB for decoding. Useful for preventing denial of service.")
+                .minimum(64)
+                .default_value(128)
+                .mutable_ready()
+                .build()]
+        });
+
+        PROPERTIES.as_ref()
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "limit" => {
+                let mut setting = self.limit.lock().unwrap();
+                *setting = value.get::<u64>().expect("type checked upstream");
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "limit" => {
+                let setting = self.limit.lock().unwrap();
+                setting.to_value()
+            }
+            name => panic!("No getter for {name}"),
+        }
     }
 }
 
@@ -485,6 +564,8 @@ impl ElementImpl for ImageRsDecoder {
 
             let caps = gst_video::VideoCapsBuilder::new()
                 .format(gst_video::VideoFormat::Rgba)
+                // Still image -- APNG et al. are disabled
+                .field("framerate", gst::Fraction::new(0, 1))
                 .build();
 
             let src_pad_template = gst::PadTemplate::new(
