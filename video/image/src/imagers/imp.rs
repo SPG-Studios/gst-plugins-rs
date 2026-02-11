@@ -85,7 +85,12 @@ impl ImageRsDecoder {
         let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
         let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
 
-        let mut out_buf = gst::Buffer::from_slice(Wrapper(image));
+        let mut out_buf = if image.color() == image::ColorType::Rgba8 {
+            gst::Buffer::from_slice(Wrapper(image))
+        } else {
+            let image_rgba8 = image.to_rgba8();
+            gst::Buffer::from_slice(Wrapper(DynamicImage::from(image_rgba8)))
+        };
         {
             let out_buf_mut = out_buf.get_mut().unwrap();
             out_buf_mut.set_pts(gst::ClockTime::ZERO);
@@ -140,6 +145,7 @@ impl ImageRsDecoder {
                 (d.to_integer() as u64).mseconds()
             };
 
+            // AnimatedEncoder doesn't support anything other than RGBA
             let mut out_buf = gst::Buffer::from_slice(Wrapper2(frame));
             {
                 let out_buf_mut = out_buf.get_mut().unwrap();
