@@ -6,15 +6,16 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
-use image::{
-    AnimationDecoder, DynamicImage, Frame, GenericImageView, ImageDecoder, ImageFormat, ImageReader,
-};
+use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
+#[cfg(any(feature = "gif", feature = "webp"))]
+use image::{AnimationDecoder, Frame, ImageDecoder};
+#[cfg(any(feature = "gif", feature = "webp"))]
 use num_rational::Ratio;
 
-// #[cfg(feature = "gif")]
-// use image::codecs::gif::GifDecoder;
-// #[cfg(feature = "webp")]
-// use image::codecs::webp::WebPDecoder;
+#[cfg(feature = "gif")]
+use image::codecs::gif::GifDecoder;
+#[cfg(feature = "webp")]
+use image::codecs::webp::WebPDecoder;
 
 use std::io::Cursor;
 use std::sync::{LazyLock, Mutex};
@@ -41,8 +42,10 @@ impl AsRef<[u8]> for Wrapper {
     }
 }
 
+#[cfg(any(feature = "gif", feature = "webp"))]
 struct Wrapper2(Frame);
 
+#[cfg(any(feature = "gif", feature = "webp"))]
 impl AsRef<[u8]> for Wrapper2 {
     fn as_ref(&self) -> &[u8] {
         self.0.buffer()
@@ -135,7 +138,7 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    #[allow(unused)]
+    #[cfg(any(feature = "gif", feature = "webp"))]
     fn render_many_frames<'a>(
         &self,
         decoder: impl AnimationDecoder<'a> + ImageDecoder,
@@ -299,44 +302,44 @@ impl ImageRsDecoder {
         }?;
 
         match reader.format() {
-            // #[cfg(feature = "gif")]
-            // Some(ImageFormat::Gif) => {
-            //     let mut limits = Limits::default();
-            //     limits.max_alloc = Some(*self.limit.lock().unwrap());
-            //     let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
-            //         gst::error_msg!(
-            //             gst::StreamError::Decode,
-            //             ["Failed decoding GIF container: {}", v]
-            //         )
-            //     })?;
-            //     decoder.set_limits(limits).map_err(|v| {
-            //         gst::error_msg!(
-            //             gst::StreamError::Decode,
-            //             ["Failed setting memory limits: {}", v]
-            //         )
-            //     })?;
+            #[cfg(feature = "gif")]
+            Some(ImageFormat::Gif) => {
+                let mut limits = Limits::default();
+                limits.max_alloc = Some(*self.limit.lock().unwrap());
+                let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
+                    gst::error_msg!(
+                        gst::StreamError::Decode,
+                        ["Failed decoding GIF container: {}", v]
+                    )
+                })?;
+                decoder.set_limits(limits).map_err(|v| {
+                    gst::error_msg!(
+                        gst::StreamError::Decode,
+                        ["Failed setting memory limits: {}", v]
+                    )
+                })?;
 
-            //     self.render_many_frames(decoder)?;
-            // }
-            // #[cfg(feature = "webp")]
-            // Some(ImageFormat::WebP) => {
-            //     let mut limits = Limits::default();
-            //     limits.max_alloc = Some(*self.limit.lock().unwrap());
-            //     let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
-            //         gst::error_msg!(
-            //             gst::StreamError::Decode,
-            //             ["Failed decoding AVIF container: {}", v]
-            //         )
-            //     })?;
-            //     decoder.set_limits(limits).map_err(|v| {
-            //         gst::error_msg!(
-            //             gst::StreamError::Decode,
-            //             ["Failed setting memory limits: {}", v]
-            //         )
-            //     })?;
+                self.render_many_frames(decoder)?;
+            }
+            #[cfg(feature = "webp")]
+            Some(ImageFormat::WebP) => {
+                let mut limits = Limits::default();
+                limits.max_alloc = Some(*self.limit.lock().unwrap());
+                let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
+                    gst::error_msg!(
+                        gst::StreamError::Decode,
+                        ["Failed decoding AVIF container: {}", v]
+                    )
+                })?;
+                decoder.set_limits(limits).map_err(|v| {
+                    gst::error_msg!(
+                        gst::StreamError::Decode,
+                        ["Failed setting memory limits: {}", v]
+                    )
+                })?;
 
-            //     self.render_many_frames(decoder)?;
-            // }
+                self.render_many_frames(decoder)?;
+            }
             Some(_) => {
                 let mut limits = Limits::default();
                 limits.max_alloc = Some(*self.limit.lock().unwrap());
