@@ -397,7 +397,7 @@ impl ImageRsDecoder {
 
 #[glib::object_subclass]
 impl ObjectSubclass for ImageRsDecoder {
-    const NAME: &'static str = "GstRsImageDecoder";
+    const NAME: &'static str = "ObjectSubclass";
     type Type = super::ImageRsDecoder;
     type ParentType = gst::Element;
 

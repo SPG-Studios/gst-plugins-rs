@@ -10,9 +10,11 @@
 use gst::glib;
 
 mod imagers;
+mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     imagers::register(plugin)?;
+    overlay::register(plugin)?;
     Ok(())
 }
 
