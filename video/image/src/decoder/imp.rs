@@ -420,7 +420,7 @@ impl ImageRsDecoder {
 #[glib::object_subclass]
 impl ObjectSubclass for ImageRsDecoder {
     const NAME: &'static str = "ObjectSubclass";
-    type Type = super::ImageRsDecoder;
+    type Type = super::Decoder;
     type ParentType = gst::Element;
 
     fn with_class(klass: &Self::Class) -> Self {
