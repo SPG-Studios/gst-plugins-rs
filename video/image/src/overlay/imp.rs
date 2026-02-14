@@ -47,6 +47,7 @@ pub struct ImageRsOverlay {
     settings: Mutex<Settings>,
 }
 
+#[allow(unused)]
 fn supported_formats() -> impl IntoIterator<Item = gst_video::VideoFormat> {
     [
         gst_video::VideoFormat::Rgb,
@@ -116,7 +117,6 @@ impl ImageRsOverlay {
             settings.offset_x, settings.offset_y,
             settings.relative_x * 100.0, settings.relative_y * 100.0,
             settings.overlay_width, settings.overlay_height
-
         );
 
         let mut rect = gst_video::VideoOverlayRectangle::new_raw(overlay_pixels, x, y, width as u32, height as u32, gst_video::VideoOverlayFormatFlags::empty());
@@ -393,7 +393,7 @@ impl ElementImpl for ImageRsOverlay {
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let caps = gst_video::VideoCapsBuilder::new()
-                .format_list(supported_formats())
+                .format_list(gst_video::VideoFormat::iter_any())
                 .build();
 
             let sink_pad_template = gst::PadTemplate::new(
@@ -500,11 +500,11 @@ impl BaseTransformImpl for ImageRsOverlay {
         let mut other_caps = caps.clone();
         if direction == gst::PadDirection::Src {
             for s in other_caps.make_mut().iter_mut() {
-                s.set("format", gst::List::new(supported_formats()));
+                s.set("format", gst::List::new(gst_video::VideoFormat::iter_any()));
             }
         } else {
             for s in other_caps.make_mut().iter_mut() {
-                s.set("format", gst::List::new(supported_formats()));
+                s.set("format", gst::List::new(gst_video::VideoFormat::iter_any()));
             }
         };
 

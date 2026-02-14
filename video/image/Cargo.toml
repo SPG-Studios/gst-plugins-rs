@@ -27,10 +27,10 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
+default = ["v1_24", "bmp", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
 static = []
 capi = []
-doc = ["gst/v1_26"]
-default = ["bmp", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
+doc = []
 avif = ["image/avif"]
 bmp = ["image/bmp"]
 dds = ["image/dds"]
@@ -46,6 +46,7 @@ qoi = ["image/qoi"]
 tga = ["image/tga"]
 tiff = ["image/tiff"]
 webp = ["image/webp"]
+v1_24 = ["gst-video/v1_24"]
 
 [package.metadata.capi]
 min_version = "0.9.21"

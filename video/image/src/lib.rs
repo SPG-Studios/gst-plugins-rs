@@ -10,10 +10,12 @@
 use gst::glib;
 
 mod decoder;
+#[cfg(feature = "v1_24")]
 mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     decoder::register(plugin)?;
+    #[cfg(feature = "v1_24")]
     overlay::register(plugin)?;
     Ok(())
 }
