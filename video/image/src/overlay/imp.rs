@@ -196,7 +196,7 @@ impl ImageRsOverlay {
 #[glib::object_subclass]
 impl ObjectSubclass for ImageRsOverlay {
     const NAME: &'static str = "GstImageRsOverlay";
-    type Type = super::ImageRsOverlay;
+    type Type = super::Overlay;
     type ParentType = gst_video::VideoFilter;
 }
 

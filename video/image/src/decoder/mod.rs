@@ -7,7 +7,7 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct ImageRsDecoder(ObjectSubclass<imp::ImageRsDecoder>) @extends gst::Element, gst::Object;
+    pub struct Decoder(ObjectSubclass<imp::ImageRsDecoder>) @extends gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -15,6 +15,6 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         Some(plugin),
         "imagersdec",
         gst::Rank::PRIMARY,
-        ImageRsDecoder::static_type(),
+        Decoder::static_type(),
     )
 }

@@ -7,7 +7,7 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct ImageRsOverlay(ObjectSubclass<imp::ImageRsOverlay>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
+    pub struct Overlay(ObjectSubclass<imp::ImageRsOverlay>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -15,6 +15,6 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         Some(plugin),
         "imagersoverlay",
         gst::Rank::PRIMARY,
-        ImageRsOverlay::static_type(),
+        Overlay::static_type(),
     )
 }
