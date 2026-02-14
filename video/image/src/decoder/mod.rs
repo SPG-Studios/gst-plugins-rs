@@ -14,7 +14,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "imagersdec",
-        gst::Rank::PRIMARY,
+        gst::Rank::SECONDARY + 1,
         Decoder::static_type(),
     )
 }
