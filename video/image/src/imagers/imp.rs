@@ -29,6 +29,12 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 #[derive(Default)]
+struct Settings {
+    max_size: u64,
+    max_alloc: u64,
+}
+
+#[derive(Default)]
 struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
@@ -55,8 +61,8 @@ impl AsRef<[u8]> for Wrapper2 {
 pub struct ImageRsDecoder {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
+    settings: Mutex<Settings>,
     state: Mutex<State>,
-    limit: Mutex<u64>,
 }
 
 impl ImageRsDecoder {
@@ -68,11 +74,22 @@ impl ImageRsDecoder {
         gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
 
         let mut state = self.state.lock().unwrap();
+        let settings = self.settings.lock().unwrap();
 
-        state.total_size += buffer.size();
-        state.buffers.push(buffer);
+        if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size {
+            state.total_size += buffer.size();
+            state.buffers.push(buffer);
 
-        Ok(gst::FlowSuccess::Ok)
+            Ok(gst::FlowSuccess::Ok)
+        } else {
+            gst::error!(
+                CAT,
+                obj = pad,
+                "Exhausted memory limit of {:?} bytes",
+                settings.max_size
+            );
+            Err(gst::FlowError::Error)
+        }
     }
 
     fn render_single_frame(&self, image: DynamicImage) -> Result<(), gst::ErrorMessage> {
@@ -94,7 +111,7 @@ impl ImageRsDecoder {
                 gst::element_warning!(
                     self.obj(),
                     gst::StreamError::Decode,
-                            ["Unknown format {:?}, converting to RGBA", v]
+                    ["Unknown format {:?}, converting to RGBA", v]
                 );
                 gst_video::VideoFormat::Rgba
             }
@@ -341,9 +358,14 @@ impl ImageRsDecoder {
                 self.render_many_frames(decoder)?;
             }
             Some(_) => {
-                let mut limits = Limits::default();
-                limits.max_alloc = Some(*self.limit.lock().unwrap());
-                reader.limits(limits);
+                {
+                    let settings = self.settings.lock().unwrap();
+                    if settings.max_alloc != 0 {
+                        let mut limits = Limits::default();
+                        limits.max_alloc = Some(settings.max_alloc);
+                        reader.limits(limits);
+                    }
+                }
                 let image = reader.decode().map_err(|v| {
                     gst::error_msg!(
                         gst::StreamError::Decode,
@@ -435,7 +457,7 @@ impl ObjectSubclass for ImageRsDecoder {
             srcpad,
             sinkpad,
             state: Mutex::new(State::default()),
-            limit: Mutex::new(64),
+            settings: Mutex::new(Settings::default()),
         }
     }
 }
@@ -451,13 +473,21 @@ impl ObjectImpl for ImageRsDecoder {
 
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
-            vec![glib::ParamSpecUInt64::builder("limit")
-                .nick("Memory allocation limits")
-                .blurb("Allows using up to value in MB for decoding. Useful for preventing denial of service.")
-                .minimum(64)
-                .default_value(128)
-                .mutable_ready()
-                .build()]
+            vec![
+                glib::ParamSpecUInt64::builder("max-size-bytes")
+                    .nick("Max. size (kB)")
+                    .blurb("Max. amount of data to buffer (bytes, 0=disable)")
+                    .default_value(10 * 1024 * 1024)
+                    .mutable_ready()
+                    .build(),
+
+                glib::ParamSpecUInt64::builder("max-alloc-bytes")
+                    .nick("Memory allocation limits")
+                    .blurb("Max. amount of data to allocate for decoding (bytes, 0=disable)")
+                    .default_value(0)
+                    .mutable_ready()
+                    .build()
+            ]
         });
 
         PROPERTIES.as_ref()
@@ -465,9 +495,13 @@ impl ObjectImpl for ImageRsDecoder {
 
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
         match pspec.name() {
-            "limit" => {
-                let mut setting = self.limit.lock().unwrap();
-                *setting = value.get::<u64>().expect("type checked upstream");
+            "max-alloc-bytes" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.max_alloc = value.get::<u64>().expect("type checked upstream");
+            },
+            "max-size-bytes" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.max_size = value.get::<u64>().expect("type checked upstream");
             }
             _ => unimplemented!(),
         }
@@ -475,10 +509,14 @@ impl ObjectImpl for ImageRsDecoder {
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
         match pspec.name() {
-            "limit" => {
-                let setting = self.limit.lock().unwrap();
-                setting.to_value()
-            }
+            "max-alloc-bytes" => {
+                let settings = self.settings.lock().unwrap();
+                settings.max_alloc.to_value()
+            },
+            "max-size-bytes" => {
+                let settings = self.settings.lock().unwrap();
+                settings.max_size.to_value()
+            },
             name => panic!("No getter for {name}"),
         }
     }
