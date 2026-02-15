@@ -31,6 +31,7 @@ struct State {
     frame: Cea608Frame,
     previous_text: Option<(gst::ClockTime, String)>,
     index: u64,
+    is_live: Option<bool>,
 }
 
 impl Default for State {
@@ -42,6 +43,7 @@ impl Default for State {
             frame: Cea608Frame::new(),
             previous_text: None,
             index: 1,
+            is_live: None,
         }
     }
 }
@@ -62,12 +64,38 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 impl Cea608ToTt {
+    fn is_live(&self) -> bool {
+        if let Some(is_live) = self.state.borrow().is_live {
+            return is_live;
+        }
+
+        let mut query = gst::query::Latency::new();
+
+        gst::debug!(CAT, imp = self, "Querying upstream latency");
+
+        if self.sinkpad.peer_query(&mut query) {
+            let (live, _, _) = query.result();
+            self.state.borrow_mut().is_live = Some(live);
+            gst::info!(
+                CAT,
+                imp = self,
+                "operating in {} mode",
+                if live { "live" } else { "non-live" }
+            );
+            live
+        } else {
+            false
+        }
+    }
+
     fn sink_chain(
         &self,
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
+
+        let live = self.is_live();
 
         let mut state = self.state.borrow_mut();
         let format = match state.format {
@@ -129,7 +157,11 @@ impl Cea608ToTt {
                         {
                             // only in some specific circumstances do we want to actually change
                             // our generated text
-                            state.previous_text.replace((buffer_pts, text))
+                            if !live {
+                                state.previous_text.replace((buffer_pts, text))
+                            } else {
+                                Some((buffer_pts, text))
+                            }
                         } else {
                             return Ok(gst::FlowSuccess::Ok);
                         }
@@ -149,7 +181,11 @@ impl Cea608ToTt {
             return Ok(gst::FlowSuccess::Ok);
         };
 
-        let duration = buffer_pts.saturating_sub(previous_text.0);
+        let duration = if !live {
+            Some(buffer_pts.saturating_sub(previous_text.0))
+        } else {
+            gst::ClockTime::NONE
+        };
 
         let (timestamp, text) = previous_text;
 
@@ -165,8 +201,22 @@ impl Cea608ToTt {
         };
 
         let buffer = match format {
-            Format::Vtt => Self::create_vtt_buffer(timestamp, duration, text),
-            Format::Srt => Self::create_srt_buffer(timestamp, duration, state.index, text),
+            Format::Vtt => {
+                if let Some(duration) = duration {
+                    Self::create_vtt_buffer(timestamp, duration, text)
+                } else {
+                    gst::error!(CAT, obj = pad, "cannot produce VTT live");
+                    return Err(gst::FlowError::Error);
+                }
+            }
+            Format::Srt => {
+                if let Some(duration) = duration {
+                    Self::create_srt_buffer(timestamp, duration, state.index, text)
+                } else {
+                    gst::error!(CAT, obj = pad, "cannot produce SRT live");
+                    return Err(gst::FlowError::Error);
+                }
+            }
             Format::Raw => Self::create_raw_buffer(timestamp, duration, text),
         };
         state.index += 1;
@@ -175,6 +225,8 @@ impl Cea608ToTt {
         if let Some(header_buffer) = header_buffer {
             self.srcpad.push(header_buffer)?;
         }
+
+        gst::debug!(CAT, imp = self, "pushing {buffer:?}");
 
         self.srcpad.push(buffer)
     }
@@ -272,7 +324,7 @@ impl Cea608ToTt {
 
     fn create_raw_buffer(
         timestamp: gst::ClockTime,
-        duration: gst::ClockTime,
+        duration: Option<gst::ClockTime>,
         text: String,
     ) -> gst::Buffer {
         let mut buffer = gst::Buffer::from_mut_slice(text.into_bytes());
@@ -370,9 +422,7 @@ impl Cea608ToTt {
                             state.index,
                             text,
                         ),
-                        Format::Raw => {
-                            Self::create_raw_buffer(timestamp, gst::ClockTime::ZERO, text)
-                        }
+                        Format::Raw => Self::create_raw_buffer(timestamp, None, text),
                     };
                     state.index += 1;
                     drop(state);

@@ -27,6 +27,7 @@ fn test_parse() {
     let data = include_bytes!("dn2018-1217.scc").as_ref();
 
     let mut h = gst_check::Harness::new_parse("sccparse ! cea608tott");
+    h.set_live(false);
     h.set_src_caps_str("application/x-scc");
     h.set_sink_caps_str("text/x-raw");
 
@@ -120,4 +121,84 @@ fn test_parse() {
             .field("format", "utf8")
             .build()
     );
+}
+
+fn new_timed_buffer<T: AsRef<[u8]> + Send + 'static>(
+    slice: T,
+    timestamp: ClockTime,
+    duration: ClockTime,
+) -> gst::buffer::Buffer {
+    let mut buf = gst::Buffer::from_slice(slice);
+    let buf_ref = buf.get_mut().unwrap();
+    buf_ref.set_pts(timestamp);
+    buf_ref.set_duration(duration);
+    buf
+}
+
+#[test]
+fn test_live() {
+    init();
+    let mut h = gst_check::Harness::new_parse("cea608tott");
+    h.set_live(true);
+    h.set_sink_caps_str("text/x-raw, format=utf8");
+    h.set_src_caps_str("closedcaption/x-cea-608, format=raw");
+
+    let input: [(ClockTime, ClockTime, [u8; 2usize]); 7] = [
+        (
+            1_000_000_000.nseconds(),
+            33_333_333.nseconds(),
+            [0x94, 0x20],
+        ), /* resume_caption_loading */
+        (
+            1_033_333_333.nseconds(),
+            33_333_334.nseconds(),
+            [0x94, 0xae],
+        ), /* erase_non_displayed_memory */
+        (
+            1_066_666_667.nseconds(),
+            33_333_333.nseconds(),
+            [0x94, 0x70],
+        ), /* preamble */
+        (
+            1_100_000_000.nseconds(),
+            33_333_333.nseconds(),
+            [0xc8, 0xe5],
+        ), /* H e */
+        (
+            1_133_333_333.nseconds(),
+            33_333_334.nseconds(),
+            [0xec, 0xec],
+        ), /* l l */
+        (
+            1_166_666_667.nseconds(),
+            33_333_333.nseconds(),
+            [0xef, 0x80],
+        ), /* o, nil */
+        (
+            1_200_000_000.nseconds(),
+            33_333_333.nseconds(),
+            [0x94, 0x2f],
+        ), /* end_of_caption */
+    ];
+
+    for (pts, duration, data) in input {
+        let buf = new_timed_buffer(data, pts, duration);
+
+        assert_eq!(h.push(buf), Ok(gst::FlowSuccess::Ok));
+    }
+
+    // When live, the element will output text as soon as it needs to be
+    // displayed on screen, and will not assign a duration to it
+
+    let buf = h.try_pull().unwrap();
+    assert_eq!(
+        buf.pts().unwrap(),
+        1_200_000_000.nseconds(),
+        "Unexpected PTS",
+    );
+    assert_eq!(buf.duration(), gst::ClockTime::NONE, "Unexpected duration",);
+
+    let data = buf.map_readable().unwrap();
+    let s = std::str::from_utf8(&data).unwrap_or_else(|_| panic!("Non-UTF8 data"));
+    assert_eq!("Hello", s, "Unexpected data");
 }
