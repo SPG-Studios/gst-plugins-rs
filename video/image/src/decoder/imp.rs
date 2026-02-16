@@ -484,7 +484,7 @@ impl ObjectImpl for ImageRsDecoder {
                 glib::ParamSpecUInt64::builder("max-alloc-bytes")
                     .nick("Memory allocation limits")
                     .blurb("Max. amount of data to allocate for decoding (bytes, 0=disable)")
-                    .default_value(0)
+                    .default_value(128 * 1024 * 1024)
                     .mutable_ready()
                     .build()
             ]
