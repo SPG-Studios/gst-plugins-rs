@@ -88,7 +88,7 @@ impl ImageRsOverlay {
         }
 
         if settings.alpha == 0.0 || state.image == None {
-            return state;
+            return;
         }
 
         let overlay_pixels = state.image.as_ref().unwrap();
@@ -433,41 +433,6 @@ impl BaseTransformImpl for ImageRsOverlay {
         }
         if set_passthrough {
             self.obj().set_passthrough(state.composition.is_none());
-        }
-    }
-
-    fn transform_caps(
-        &self,
-        direction: gst::PadDirection,
-        caps: &gst::Caps,
-        filter: Option<&gst::Caps>,
-    ) -> Option<gst::Caps> {
-        let mut other_caps = caps.clone();
-        if direction == gst::PadDirection::Src {
-            for s in other_caps.make_mut().iter_mut() {
-                s.set("format", gst::List::new(gst_video::VideoFormat::iter_any()));
-            }
-        } else {
-            for s in other_caps.make_mut().iter_mut() {
-                s.set("format", gst::List::new(gst_video::VideoFormat::iter_any()));
-            }
-        };
-
-        gst::debug!(
-            CAT,
-            imp = self,
-            "Transformed caps from {} to {} in direction {:?}",
-            caps,
-            other_caps,
-            direction
-        );
-
-        // In the end we need to filter the caps through an optional filter caps to get rid of any
-        // unwanted caps.
-        if let Some(filter) = filter {
-            Some(filter.intersect_with_mode(&other_caps, gst::CapsIntersectMode::First))
-        } else {
-            Some(other_caps)
         }
     }
 }
