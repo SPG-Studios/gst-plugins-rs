@@ -96,34 +96,50 @@ impl ImageRsOverlay {
         let width: i64 = settings.overlay_width.max(overlay_meta.width()).into();
         let height: i64 = settings.overlay_height.max(overlay_meta.height()).into();
 
-        let x: i32 = if settings.offset_x < 0 {
-            video_width + settings.offset_x as i64 - width + (settings.relative_x * video_width as f64) as i64
+        let x = if settings.offset_x < 0 {
+            video_width + settings.offset_x as i64 - width
+                + (settings.relative_x * video_width as f64) as i64
         } else {
             settings.offset_x as i64 + (settings.relative_x * video_width as f64) as i64
-        }.try_into().unwrap();
-        let y: i32 = if settings.offset_y < 0 {
-            video_height + settings.offset_y as i64 - height + (settings.relative_y * video_height as f64) as i64
+        }
+        .clamp(i32::MIN as i64, i32::MAX as i64);
+        let y = if settings.offset_y < 0 {
+            video_height + settings.offset_y as i64 - height
+                + (settings.relative_y * video_height as f64) as i64
         } else {
             settings.offset_y as i64 + (settings.relative_y * video_height as f64) as i64
-        }.try_into().unwrap();
+        }
+        .clamp(i32::MIN as i64, i32::MAX as i64);
 
         gst::debug!(
             CAT,
             imp = self,
             "overlay image dimensions: {} x {}, alpha={}",
-            overlay_meta.width(), overlay_meta.height(), settings.alpha
+            overlay_meta.width(),
+            overlay_meta.height(),
+            settings.alpha
         );
 
         gst::debug!(
             CAT,
             imp = self,
             "properties: x,y: {},{} ({}%,{}%) - WxH: {}x{}",
-            settings.offset_x, settings.offset_y,
-            settings.relative_x * 100.0, settings.relative_y * 100.0,
-            settings.overlay_width, settings.overlay_height
+            settings.offset_x,
+            settings.offset_y,
+            settings.relative_x * 100.0,
+            settings.relative_y * 100.0,
+            settings.overlay_width,
+            settings.overlay_height
         );
 
-        let mut rect = gst_video::VideoOverlayRectangle::new_raw(overlay_pixels, x, y, width as u32, height as u32, gst_video::VideoOverlayFormatFlags::empty());
+        let mut rect = gst_video::VideoOverlayRectangle::new_raw(
+            overlay_pixels,
+            x as i32,
+            y as i32,
+            width as u32,
+            height as u32,
+            gst_video::VideoOverlayFormatFlags::empty(),
+        );
         if settings.alpha != 1.0 {
             rect.get_mut().unwrap().set_global_alpha(settings.alpha);
         }
@@ -154,7 +170,8 @@ impl ImageRsOverlay {
             let width = argb_image.width();
             let height = argb_image.height();
             let cwh_stride = argb_image.as_flat_samples_u8().unwrap().strides_cwh();
-            let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(); 4];
+            // RGBA is a single plane
+            let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
             let pixel = if cfg!(target_endian = "big") {
                 gst_video::VideoFormat::Bgra
             } else {
@@ -167,7 +184,6 @@ impl ImageRsOverlay {
         };
         let mut buffer = gst::Buffer::from_slice(Wrapper(argb_image));
 
-        // FIXME: are these offsets correct?
         gst_video::VideoMeta::add_full(
             buffer.get_mut().unwrap(),
             gst_video::VideoFrameFlags::empty(),
@@ -445,7 +461,7 @@ impl VideoFilterImpl for ImageRsOverlay {
         outcaps: &gst::Caps,
         out_info: &gst_video::VideoInfo,
     ) -> Result<(), gst::LoggableError> {
-        gst::info!(CAT, imp = self, "caps: {}", incaps);
+        gst::info!(CAT, imp = self, "caps: {incaps}");
         self.parent_set_info(incaps, in_info, outcaps, out_info)
     }
 

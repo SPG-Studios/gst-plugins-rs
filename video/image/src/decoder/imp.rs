@@ -40,19 +40,19 @@ struct State {
     total_size: usize,
 }
 
-struct Wrapper(DynamicImage);
+struct DynamicImageWrapper(DynamicImage);
 
-impl AsRef<[u8]> for Wrapper {
+impl AsRef<[u8]> for DynamicImageWrapper {
     fn as_ref(&self) -> &[u8] {
         self.0.as_bytes()
     }
 }
 
 #[cfg(any(feature = "gif", feature = "webp"))]
-struct Wrapper2(Frame);
+struct AnimatedImageWrapper(Frame);
 
 #[cfg(any(feature = "gif", feature = "webp"))]
-impl AsRef<[u8]> for Wrapper2 {
+impl AsRef<[u8]> for AnimatedImageWrapper {
     fn as_ref(&self) -> &[u8] {
         self.0.buffer()
     }
@@ -131,9 +131,9 @@ impl ImageRsDecoder {
 
         let mut out_buf = if fmt == gst_video::VideoFormat::Rgba {
             let image_rgba8 = image.to_rgba8();
-            gst::Buffer::from_slice(Wrapper(DynamicImage::from(image_rgba8)))
+            gst::Buffer::from_slice(DynamicImageWrapper(DynamicImage::from(image_rgba8)))
         } else {
-            gst::Buffer::from_slice(Wrapper(image))
+            gst::Buffer::from_slice(DynamicImageWrapper(image))
         };
         {
             let out_buf_mut = out_buf.get_mut().unwrap();
@@ -191,7 +191,7 @@ impl ImageRsDecoder {
             };
 
             // AnimatedEncoder doesn't support anything other than RGBA
-            let mut out_buf = gst::Buffer::from_slice(Wrapper2(frame));
+            let mut out_buf = gst::Buffer::from_slice(AnimatedImageWrapper(frame));
             {
                 let out_buf_mut = out_buf.get_mut().unwrap();
                 out_buf_mut.set_pts(prev_timestamp);
@@ -419,7 +419,7 @@ impl ImageRsDecoder {
 
 #[glib::object_subclass]
 impl ObjectSubclass for ImageRsDecoder {
-    const NAME: &'static str = "ObjectSubclass";
+    const NAME: &'static str = "GstImageRsDecoder";
     type Type = super::Decoder;
     type ParentType = gst::Element;
 
