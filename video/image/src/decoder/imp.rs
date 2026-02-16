@@ -6,9 +6,9 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
-use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
 #[cfg(any(feature = "gif", feature = "webp"))]
 use image::{AnimationDecoder, Frame, ImageDecoder};
+use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
 #[cfg(any(feature = "gif", feature = "webp"))]
 use num_rational::Ratio;
 
@@ -76,7 +76,8 @@ impl ImageRsDecoder {
         let mut state = self.state.lock().unwrap();
         let settings = self.settings.lock().unwrap();
 
-        if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size {
+        if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size
+        {
             state.total_size += buffer.size();
             state.buffers.push(buffer);
 
@@ -480,13 +481,12 @@ impl ObjectImpl for ImageRsDecoder {
                     .default_value(10 * 1024 * 1024)
                     .mutable_ready()
                     .build(),
-
                 glib::ParamSpecUInt64::builder("max-alloc-bytes")
                     .nick("Memory allocation limits")
                     .blurb("Max. amount of data to allocate for decoding (bytes, 0=disable)")
                     .default_value(128 * 1024 * 1024)
                     .mutable_ready()
-                    .build()
+                    .build(),
             ]
         });
 
@@ -498,7 +498,7 @@ impl ObjectImpl for ImageRsDecoder {
             "max-alloc-bytes" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.max_alloc = value.get::<u64>().expect("type checked upstream");
-            },
+            }
             "max-size-bytes" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.max_size = value.get::<u64>().expect("type checked upstream");
@@ -512,11 +512,11 @@ impl ObjectImpl for ImageRsDecoder {
             "max-alloc-bytes" => {
                 let settings = self.settings.lock().unwrap();
                 settings.max_alloc.to_value()
-            },
+            }
             "max-size-bytes" => {
                 let settings = self.settings.lock().unwrap();
                 settings.max_size.to_value()
-            },
+            }
             name => panic!("No getter for {name}"),
         }
     }
