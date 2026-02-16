@@ -8,7 +8,7 @@ use gst::subclass::prelude::*;
 use gst_base::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
-use image::ImageReader;
+use image::{DynamicImage, ImageReader};
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -160,16 +160,14 @@ impl ImageRsOverlay {
         settings: &MutexGuard<'a, Settings>,
     ) {
         let reader = ImageReader::open(&settings.location).unwrap();
-        let image = reader.decode().unwrap();
-        let argb_image = if image.color() == image::ColorType::Rgba8 {
-            image
-        } else {
-            image::DynamicImage::from(image.to_rgba8())
+        let argb_image = match reader.decode().unwrap() {
+            image::DynamicImage::ImageRgba8(v) => v,
+            v => v.to_rgba8()
         };
         let format = {
             let width = argb_image.width();
             let height = argb_image.height();
-            let cwh_stride = argb_image.as_flat_samples_u8().unwrap().strides_cwh();
+            let cwh_stride = argb_image.as_flat_samples().strides_cwh();
             // RGBA is a single plane
             let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
             let pixel = if cfg!(target_endian = "big") {
@@ -182,7 +180,7 @@ impl ImageRsOverlay {
                 .build()
                 .unwrap()
         };
-        let mut buffer = gst::Buffer::from_slice(Wrapper(argb_image));
+        let mut buffer = gst::Buffer::from_slice(Wrapper(DynamicImage::from(argb_image)));
 
         gst_video::VideoMeta::add_full(
             buffer.get_mut().unwrap(),
