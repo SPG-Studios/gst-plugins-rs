@@ -368,11 +368,16 @@ impl ImageRsDecoder {
 
         drop(state);
 
+        let mut limits = Limits::default();
+        {
+            let settings = self.settings.lock().unwrap();
+            if settings.max_alloc != 0 {
+                limits.max_alloc = Some(settings.max_alloc);
+            }
+        }
         match reader.format() {
             #[cfg(feature = "gif")]
             Some(ImageFormat::Gif) => {
-                let mut limits = Limits::default();
-                limits.max_alloc = Some(*self.limit.lock().unwrap());
                 let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
                     gst::error_msg!(
                         gst::StreamError::Decode,
@@ -390,8 +395,6 @@ impl ImageRsDecoder {
             }
             #[cfg(feature = "webp")]
             Some(ImageFormat::WebP) => {
-                let mut limits = Limits::default();
-                limits.max_alloc = Some(*self.limit.lock().unwrap());
                 let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
                     gst::error_msg!(
                         gst::StreamError::Decode,
@@ -408,14 +411,7 @@ impl ImageRsDecoder {
                 self.render_many_frames(decoder)?;
             }
             Some(_) => {
-                {
-                    let settings = self.settings.lock().unwrap();
-                    if settings.max_alloc != 0 {
-                        let mut limits = Limits::default();
-                        limits.max_alloc = Some(settings.max_alloc);
-                        reader.limits(limits);
-                    }
-                }
+                reader.limits(limits);
                 let image = reader.decode().map_err(|v| {
                     gst::error_msg!(
                         gst::StreamError::Decode,
