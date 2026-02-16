@@ -12,6 +12,7 @@ option('csound', type: 'feature', value: 'auto', description: 'Build csound plug
 option('demucs', type: 'feature', value: 'auto', description: 'Build demucs plugin')
 option('elevenlabs', type: 'feature', value: 'auto', description: 'Build elevenlabs plugin')
 option('lewton', type: 'feature', value: 'auto', description: 'Build lewton plugin')
+option('parakeet', type: 'feature', value: 'auto', description: 'Build parakeet plugin')
 option('spotify', type: 'feature', value: 'auto', description: 'Build spotify plugin')
 option('speechmatics', type: 'feature', value: 'auto', description: 'Build speechmatics plugin')
 option('whisper', type: 'feature', value: 'auto', description: 'Build whisper plugin')

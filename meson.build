@@ -76,6 +76,7 @@ plugins = {
   'csound': {},
   'demucs': {'library': 'libgstdemucs'},
   'lewton': {'library': 'libgstlewton'},
+  'parakeet': {'library': 'libgstparakeet'},
   'spotify': {'library': 'libgstspotify'},
 
   'file': {'library': 'libgstrsfile'},

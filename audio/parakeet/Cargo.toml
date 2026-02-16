@@ -1,0 +1,58 @@
+[package]
+name = "gst-plugin-parakeet"
+version.workspace = true
+authors = ["Mathieu Duponchelle <mathieu@centricular.com>"]
+repository.workspace = true
+license = "MPL-2.0"
+description = "GStreamer Parakeet plugin"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gst = { workspace = true, features = ["v1_20"] }
+gst-base.workspace = true
+gst-audio = { workspace = true, features = ["v1_16"] }
+parakeet-rs = { version = "0.3.4", features = ["sortformer"] }
+byte-slice-cast = "1.0"
+
+[lib]
+name = "gstparakeet"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+gst-plugin-version-helper.workspace = true
+
+[features]
+default = ["cpu", "ort-defaults"]
+static = []
+capi = []
+doc = ["gst/v1_18"]
+
+# Re-export parakeet-rs features
+cpu = ["parakeet-rs/cpu"]
+ort-defaults = ["parakeet-rs/ort-defaults"]
+cuda = ["parakeet-rs/cuda"]
+tensorrt = ["parakeet-rs/tensorrt"]
+coreml = ["parakeet-rs/coreml"]
+directml = ["parakeet-rs/directml"]
+migraphx = ["parakeet-rs/migraphx"]
+openvino = ["parakeet-rs/openvino"]
+webgpu = ["parakeet-rs/webgpu"]
+nnapi = ["parakeet-rs/nnapi"]
+load-dynamic = ["parakeet-rs/load-dynamic"]
+preload-dylibs = ["parakeet-rs/preload-dylibs"]
+
+[package.metadata.capi]
+min_version = "0.9.21"
+
+[package.metadata.capi.header]
+enabled = false
+
+[package.metadata.capi.library]
+install_subdir = "gstreamer-1.0"
+versioning = false
+import_library = false
+
+[package.metadata.capi.pkg_config]
+requires_private = "gstreamer-1.0, gstreamer-base-1.0, gstreamer-audio-1.0, gobject-2.0, glib-2.0, gmodule-2.0"

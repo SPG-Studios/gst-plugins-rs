@@ -127,6 +127,8 @@ You will find the following plugins in this repository:
 
     - `lewton`: A Vorbis decoder based on the [lewton](https://github.com/RustAudio/lewton) library.
 
+    - `parakeet`: Speech diarization using [parakeet](https://github.com/altunenes/parakeet-rs)
+
     - `speechmatics`:
 
       - `speechmaticstranscriber`: Speech to text transcription using [Speechmatics](https://www.speechmatics.com/speech-to-text)
