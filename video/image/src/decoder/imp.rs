@@ -452,6 +452,7 @@ impl ObjectSubclass for ImageRsDecoder {
                     |dec| dec.src_event(pad, event),
                 )
             })
+            .flags(gst::PadFlags::FIXED_CAPS)
             .build();
 
         Self {
