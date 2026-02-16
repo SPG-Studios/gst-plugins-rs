@@ -263,100 +263,60 @@ impl ObjectImpl for ImageRsOverlay {
     }
 
     fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        let settings = self.settings.lock().unwrap();
         match pspec.name() {
-            "location" => {
-                let settings = self.settings.lock().unwrap();
-                settings.location.to_value()
-            }
-            "offset-x" => {
-                let settings = self.settings.lock().unwrap();
-                settings.offset_x.to_value()
-            }
-            "offset-y" => {
-                let settings = self.settings.lock().unwrap();
-                settings.offset_y.to_value()
-            }
-            "relative-x" => {
-                let settings = self.settings.lock().unwrap();
-                settings.relative_x.to_value()
-            }
-            "relative-y" => {
-                let settings = self.settings.lock().unwrap();
-                settings.relative_y.to_value()
-            }
-            "overlay-width" => {
-                let settings = self.settings.lock().unwrap();
-                settings.overlay_width.to_value()
-            }
-            "overlay-height" => {
-                let settings = self.settings.lock().unwrap();
-                settings.overlay_height.to_value()
-            }
-            "alpha" => {
-                let settings = self.settings.lock().unwrap();
-                settings.alpha.to_value()
-            }
+            "location" => settings.location.to_value(),
+            "offset-x" => settings.offset_x.to_value(),
+            "offset-y" => settings.offset_y.to_value(),
+            "relative-x" => settings.relative_x.to_value(),
+            "relative-y" => settings.relative_y.to_value(),
+            "overlay-width" => settings.overlay_width.to_value(),
+            "overlay-height" => settings.overlay_height.to_value(),
+            "alpha" => settings.alpha.to_value(),
             _ => unimplemented!(),
         }
     }
 
     fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        let mut state = self.state.lock().unwrap();
+        let mut settings = self.settings.lock().unwrap();
         match pspec.name() {
             "location" => {
-                {
-                    let mut state = self.state.lock().unwrap();
-                    let mut settings = self.settings.lock().unwrap();
-                    let value = value.get().expect("type checked upstream");
-                    settings.location = value;
-                    state.update_composition = true;
-                }
-                self.load_image().expect("FIXME: this cannot fail here");
+                let value = value.get().expect("type checked upstream");
+                settings.location = value;
+                state.update_composition = true;
             }
             "offset-x" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.offset_x = value;
                 state.update_composition = true;
             }
             "offset-y" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.offset_y = value;
                 state.update_composition = true;
             }
             "relative-x" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.relative_x = value;
                 state.update_composition = true;
             }
             "relative-y" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.relative_y = value;
                 state.update_composition = true;
             }
             "overlay-width" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.overlay_width = value;
                 state.update_composition = true;
             }
             "overlay-height" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.overlay_height = value;
                 state.update_composition = true;
             }
             "alpha" => {
-                let mut state = self.state.lock().unwrap();
-                let mut settings = self.settings.lock().unwrap();
                 let value = value.get().expect("type checked upstream");
                 settings.alpha = value;
                 state.update_composition = true;
