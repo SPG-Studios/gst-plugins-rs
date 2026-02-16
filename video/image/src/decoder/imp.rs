@@ -603,10 +603,17 @@ impl ElementImpl for ImageRsDecoder {
             )
             .unwrap();
 
+            let pixel = if cfg!(target_endian = "big") {
+                gst_video::VideoFormat::Bgra
+            } else {
+                gst_video::VideoFormat::Argb
+            };
+
             let caps = gst_video::VideoCapsBuilder::new()
-                .format(gst_video::VideoFormat::Rgba)
-                // Still image -- APNG et al. are disabled
-                .field("framerate", gst::Fraction::new(0, 1))
+                .format(pixel)
+                .width_range(1..i32::MAX)
+                .height_range(1..i32::MAX)
+                .framerate(gst::Fraction::new(0, i32::MAX))
                 .build();
 
             let src_pad_template = gst::PadTemplate::new(
