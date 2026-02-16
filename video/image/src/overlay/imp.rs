@@ -25,6 +25,7 @@ pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 #[derive(Default)]
 struct State {
     composition: Option<gst_video::VideoOverlayComposition>,
+    location: String,
     image: Option<gst::Buffer>,
     update_composition: bool,
 }
@@ -73,8 +74,11 @@ impl AsRef<[u8]> for Wrapper {
 }
 
 impl ImageRsOverlay {
-    fn update_composition<'a>(&'a self, mut state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
-        let settings = self.settings.lock().unwrap();
+    fn update_composition<'a>(
+        &'a self,
+        state: &mut MutexGuard<'a, State>,
+        settings: &MutexGuard<'a, Settings>,
+    ) {
         let in_info = self.obj().input_video_info().unwrap();
         let video_width: i64 = in_info.width().into();
         let video_height: i64 = in_info.height().into();
@@ -132,22 +136,15 @@ impl ImageRsOverlay {
             }
         };
         state.update_composition = false;
-
-        state
     }
 
-    fn load_image(&self) -> Result<(), gst::ErrorMessage> {
-        let settings = self.settings.lock().unwrap();
-        let mut state = self.state.lock().unwrap();
-        let reader = ImageReader::open(&settings.location).map_err(|v| {
-            gst::error_msg!(
-                gst::StreamError::Decode,
-                ["Failed to open image for overlay: {}", v]
-            )
-        })?;
-        let image = reader.decode().map_err(|v| {
-            gst::error_msg!(gst::StreamError::Decode, ["Failed to decode image: {}", v])
-        })?;
+    fn load_image<'a>(
+        &'a self,
+        state: &mut MutexGuard<'a, State>,
+        settings: &MutexGuard<'a, Settings>,
+    ) {
+        let reader = ImageReader::open(&settings.location).unwrap();
+        let image = reader.decode().unwrap();
         let argb_image = if image.color() == image::ColorType::Rgba8 {
             image
         } else {
@@ -180,16 +177,11 @@ impl ImageRsOverlay {
             format.offset(),
             format.stride(),
         )
-        .map_err(|v| {
-            gst::error_msg!(
-                gst::StreamError::Decode,
-                ["Failed to set GstVideoMeta: {}", v]
-            )
-        })?;
+        .unwrap();
 
+        state.location = settings.location.clone();
         state.image = Some(buffer);
         state.update_composition = true;
-        Ok(())
     }
 }
 
@@ -446,18 +438,12 @@ impl BaseTransformImpl for ImageRsOverlay {
         let settings = self.settings.lock().unwrap();
 
         if !&settings.location.is_empty() {
-            match self.load_image() {
-                Ok(()) => {
-                    self.obj().set_passthrough(false);
-                    Ok(())
-                }
-                Err(v) => Err(v),
-            }
+            self.obj().set_passthrough(false);
         } else {
             gst::warning!(CAT, imp = self, "no image location set, doing nothing");
             self.obj().set_passthrough(true);
-            Ok(())
         }
+        Ok(())
     }
 
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
@@ -477,15 +463,14 @@ impl BaseTransformImpl for ImageRsOverlay {
 
         let mut set_passthrough = false;
         let mut state = self.state.lock().unwrap();
-        {
-            let s = self.state.lock().unwrap();
-            let o = self.obj();
-            let _lock = o.as_ref().object_lock();
-            if s.update_composition {
-                state = self.update_composition(state);
-                set_passthrough = true;
-            }
-        };
+        let settings = self.settings.lock().unwrap();
+        if state.location != settings.location {
+            self.load_image(&mut state, &settings);
+        }
+        if state.update_composition {
+            self.update_composition(&mut state, &settings);
+            set_passthrough = true;
+        }
         if set_passthrough {
             self.obj().set_passthrough(state.composition.is_none());
         }
