@@ -65,6 +65,54 @@ pub struct ImageRsDecoder {
     state: Mutex<State>,
 }
 
+fn mimetypes() -> impl IntoIterator<Item = &'static str> {
+    [
+        // FIXME upstream: AVIF also supports animations
+        // but needs image-rs support
+        #[cfg(feature = "avif")]
+        "image/avif",
+        #[cfg(any(feature = "bmp", feature = "ico"))]
+        "image/bmp",
+        #[cfg(any(feature = "bmp", feature = "ico"))]
+        "image/x-MS-bmp",
+        #[cfg(feature = "dds")]
+        "image/vnd-ms.dds",
+        #[cfg(feature = "dds")]
+        "image/x-direct-draw-surface",
+        #[cfg(feature = "exr")]
+        "image/exr",
+        #[cfg(feature = "ff")]
+        "image/x-farbfeld",
+        #[cfg(feature = "gif")]
+        "image/gif",
+        #[cfg(feature = "ico")]
+        "image/x-icon",
+        #[cfg(feature = "jpeg")]
+        // FIXME upstream: doesn't support MJPEG
+        "image/jpeg",
+        #[cfg(any(feature = "png", feature = "ico"))]
+        "image/png",
+        #[cfg(feature = "pnm")]
+        "image/x-portable-anymap",
+        #[cfg(feature = "pnm")]
+        "image/x-portable-bitmap",
+        #[cfg(feature = "pnm")]
+        "image/x-portable-graymap",
+        #[cfg(feature = "pnm")]
+        "image/x-portable-pixmap",
+        #[cfg(feature = "qoi")]
+        "image/qoi",
+        #[cfg(feature = "tga")]
+        "image/x-targa",
+        #[cfg(feature = "tga")]
+        "image/x-tga",
+        #[cfg(feature = "tiff")]
+        "image/tiff",
+        #[cfg(feature = "webp")]
+        "image/webp",
+    ]
+}
+
 impl ImageRsDecoder {
     fn sink_chain(
         &self,
@@ -386,6 +434,44 @@ impl ImageRsDecoder {
         Ok(())
     }
 
+    fn get_capslist(&self, filter: Option<&gst::CapsRef>) -> gst::Caps {
+        let mut capslist = gst::Caps::new_empty();
+        {
+            let capslist = capslist.get_mut().unwrap();
+            for mime in mimetypes() {
+                capslist.append_structure(gst::Structure::new_empty(mime));
+            }
+        }
+
+        let tmpl_caps = ImageRsDecoder::pad_templates()[1].caps();
+        let mut return_caps = capslist.intersect(tmpl_caps);
+
+        match filter {
+            Some(f) => {
+                if !return_caps.is_empty() {
+                    return_caps = return_caps.intersect(f);
+                }
+            }
+            None => {}
+        }
+
+        return_caps
+    }
+
+    fn query_event(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
+        use gst::QueryViewMut;
+
+        match query.view_mut() {
+            QueryViewMut::Caps(q) => {
+                let filter = q.filter();
+                let caps = self.get_capslist(filter);
+                q.set_result(&caps);
+                true
+            }
+            _ => gst::Pad::query_default(pad, Some(&*self.obj()), query),
+        }
+    }
+
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
 
@@ -429,6 +515,13 @@ impl ObjectSubclass for ImageRsDecoder {
                     parent,
                     || false,
                     |dec| dec.sink_event(pad, event),
+                )
+            })
+            .query_function(|pad, parent, query| {
+                ImageRsDecoder::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |dec| dec.query_event(pad, query),
                 )
             })
             .build();
@@ -524,57 +617,11 @@ impl ElementImpl for ImageRsDecoder {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
-            let mimetypes = vec![
-                // FIXME upstream: AVIF also supports animations
-                // but needs image-rs support
-                #[cfg(feature = "avif")]
-                "image/avif",
-                #[cfg(any(feature = "bmp", feature = "ico"))]
-                "image/bmp",
-                #[cfg(any(feature = "bmp", feature = "ico"))]
-                "image/x-MS-bmp",
-                #[cfg(feature = "dds")]
-                "image/vnd-ms.dds",
-                #[cfg(feature = "dds")]
-                "image/x-direct-draw-surface",
-                #[cfg(feature = "exr")]
-                "image/exr",
-                #[cfg(feature = "ff")]
-                "image/x-farbfeld",
-                #[cfg(feature = "gif")]
-                "image/gif",
-                #[cfg(feature = "ico")]
-                "image/x-icon",
-                #[cfg(feature = "jpeg")]
-                // FIXME upstream: doesn't support MJPEG
-                "image/jpeg",
-                #[cfg(any(feature = "png", feature = "ico"))]
-                "image/png",
-                #[cfg(feature = "pnm")]
-                "image/x-portable-anymap",
-                #[cfg(feature = "pnm")]
-                "image/x-portable-bitmap",
-                #[cfg(feature = "pnm")]
-                "image/x-portable-graymap",
-                #[cfg(feature = "pnm")]
-                "image/x-portable-pixmap",
-                #[cfg(feature = "qoi")]
-                "image/qoi",
-                #[cfg(feature = "tga")]
-                "image/x-targa",
-                #[cfg(feature = "tga")]
-                "image/x-tga",
-                #[cfg(feature = "tiff")]
-                "image/tiff",
-                #[cfg(feature = "webp")]
-                "image/webp",
-            ];
-
             let mut caps = gst::Caps::new_empty();
             {
                 let caps = caps.get_mut().unwrap();
 
-                for mimetype in mimetypes {
+                for mimetype in mimetypes() {
                     caps.append(gst::Caps::new_empty_simple(mimetype));
                 }
             }
