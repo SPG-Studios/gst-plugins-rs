@@ -17,8 +17,9 @@ use image::codecs::gif::GifDecoder;
 #[cfg(feature = "webp")]
 use image::codecs::webp::WebPDecoder;
 
+use std::collections::VecDeque;
 use std::io::Cursor;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -36,17 +37,15 @@ struct Settings {
 
 #[derive(Default)]
 struct State {
+    last_timestamp: Option<gst::ClockTime>,
     buffers: Vec<gst::Buffer>,
     format_from_caps: Option<image::ImageFormat>,
     total_size: usize,
-}
-
-struct DynamicImageWrapper(DynamicImage);
-
-impl AsRef<[u8]> for DynamicImageWrapper {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
+    in_fps: (i32, i32),
+    info: Option<gst_video::VideoInfo>,
+    pool: Option<gst::BufferPool>,
+    pending_events: VecDeque<gst::Event>,
+    packetized: bool,
 }
 
 #[cfg(any(feature = "gif", feature = "webp"))]
@@ -115,7 +114,7 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
 }
 
 impl ImageRsDecoder {
-    fn sink_chain(
+    fn dec_chain(
         &self,
         pad: &gst::Pad,
         buffer: gst::Buffer,
@@ -125,10 +124,23 @@ impl ImageRsDecoder {
         let mut state = self.state.lock().unwrap();
         let settings = self.settings.lock().unwrap();
 
+        let timestamp = buffer.pts();
+        match timestamp {
+            Some(v) => state.last_timestamp = Some(v),
+            _ => {}
+        };
+
+        gst::log!(CAT, imp = self, "buffer with ts: {timestamp:?}");
+
         if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size
         {
+            gst::log! (CAT, imp = self, "Writing buffer size {}", buffer.size());
             state.total_size += buffer.size();
             state.buffers.push(buffer);
+
+            if state.packetized {
+                return self.decode(state);
+            }
 
             Ok(gst::FlowSuccess::Ok)
         } else {
@@ -142,8 +154,69 @@ impl ImageRsDecoder {
         }
     }
 
-    fn render_single_frame(&self, image: DynamicImage) -> Result<(), gst::ErrorMessage> {
+    fn setup_pool<'a>(&'a self, state: &mut MutexGuard<'a, State>) -> Result<(), gst::FlowError> {
+        /* try to get a bufferpool now */
+        /* find a pool for the negotiated caps now */
+        let target = self.srcpad.current_caps();
+        let mut pool: Option<gst::BufferPool>;
+        let size: u32;
+        let min: u32;
+        let max: u32;
+
+        if let Some(v) = target.as_ref() {
+            let mut query = gst::query::Allocation::new(Some(&v), true);
+            if !self.srcpad.peer_query(query.query_mut()) {
+                /* not a problem, we use the query defaults */
+                gst::debug!(CAT, imp = self, "ALLOCATION query failed");
+            }
+
+            match query.allocation_pools().nth(0) {
+                Some(v) => {
+                    /* we got configuration from our peer, parse them */
+                    pool = v.0;
+                    size = v.1;
+                    min = v.2;
+                    max = v.3;
+                },
+                None => {
+                    pool = None;
+                    size = state.info.as_ref().unwrap().size().try_into().unwrap();
+                    min = 0;
+                    max = 0;
+                }
+            }
+        } else {
+            gst::element_error!(self.obj(), gst::StreamError::Failed, ["Cannot allocate buffer pool"]);
+            return Err(gst::FlowError::Error);
+        }
+
+        if pool == None {
+            /* we did not get a pool, make one ourselves then */
+            pool = Some(gst::BufferPool::new());
+        }
+
+        let mut config = pool.as_ref().unwrap().config();
+        config.set_params(target.as_ref(), size, min, max);
+        pool.as_ref().expect("Buffer must be inactive").set_config(config).unwrap();
+
+        if let Some(v) = state.pool.as_ref() {
+            let _ = v.set_active(false);
+            state.pool = None;
+        }
+        state.pool = pool;
+
+        /* and activate */
+        state.pool.as_ref().unwrap().set_active(true).unwrap();
+
+        Ok(())
+    }
+
+    fn render_single_frame(&self, image: DynamicImage, fps: (i32, i32)) -> Result<(), gst::FlowError> {
+        let mut state = self.state.lock().unwrap();
+
         let wh = image.dimensions();
+
+        let mut needs_conversion = false;
 
         let fmt = match image.color() {
             image::ColorType::Rgb8 => gst_video::VideoFormat::Rgb,
@@ -161,44 +234,83 @@ impl ImageRsDecoder {
                 gst::element_warning!(
                     self.obj(),
                     gst::StreamError::Decode,
-                    ["Unknown format {:?}, converting to RGBA", v]
+                    ["Format {:?} not supported, converting to RGBA", v]
                 );
+                needs_conversion = true;
                 gst_video::VideoFormat::Rgba
             }
         };
 
-        let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
-            .fps((0, 1))
-            .build()
-            .unwrap()
-            .to_caps()
-            .unwrap();
+        if state.info.is_none() {
+            gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
 
-        let segment = gst::FormattedSegment::<gst::ClockTime>::new();
+            let info =  gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
+                .fps(fps)
+                .build()
+                .map_err(|v| {
+                    gst::element_error!(
+                        self.obj(),
+                        gst::StreamError::Decode,
+                        ["Format {} with {}x{} @ {:?} not supported: {v}", fmt, wh.0, wh.1, fps]
+                    );
+                    gst::FlowError::Error
+                })?;
 
-        let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
-        let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
+            state.info = Some(info);
 
-        let mut out_buf = if fmt == gst_video::VideoFormat::Rgba {
-            let image_rgba8 = image.to_rgba8();
-            gst::Buffer::from_slice(DynamicImageWrapper(DynamicImage::from(image_rgba8)))
-        } else {
-            gst::Buffer::from_slice(DynamicImageWrapper(image))
-        };
-        {
-            let out_buf_mut = out_buf.get_mut().unwrap();
-            out_buf_mut.set_pts(gst::ClockTime::ZERO);
-            out_buf_mut.set_duration(gst::ClockTime::MAX);
+            {
+                let caps = state.info.as_ref().unwrap().to_caps().unwrap();
+                let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
+            }
+
+            self.setup_pool(&mut state)?;
+
+            for l in state.pending_events.drain(..) {
+                self.srcpad.push_event(l);
+            }
         }
 
-        match self.srcpad.push(out_buf) {
+        // FIXME: this should be validated
+        assert_eq!(state.info.as_ref().unwrap().format(), fmt);
+
+        let mut outbuf = state.pool.as_ref().unwrap().acquire_buffer(None)?;
+
+        {
+            let outbuf = outbuf.get_mut().unwrap();
+            outbuf.set_pts(state.last_timestamp);
+            outbuf.set_duration(None);
+
+            if needs_conversion {
+                let image_rgba8 = image.to_rgba8();
+                if let Err(v) = outbuf.copy_from_slice(0, image_rgba8.as_raw()) {
+                    gst::element_error!(
+                        self.obj(),
+                        gst::StreamError::Decode,
+                        ["Mismatched buffer size: image {:?}, copied {v} bytes", image_rgba8.as_flat_samples().extents()]);
+                    return Err(gst::FlowError::Error);
+                }
+            } else {
+                if let Err(v) = outbuf.copy_from_slice(0, image.as_bytes()) {
+                    gst::element_error!(
+                        self.obj(),
+                        gst::StreamError::Decode,
+                        ["Mismatched buffer size: image {:?} {:?}, copied {v} bytes", image.color(), image.dimensions()]);
+                    return Err(gst::FlowError::Error);
+                }
+            }
+        }
+
+        gst::debug!(CAT, imp = self, "pushing... {} bytes", outbuf.size());
+
+        match self.srcpad.push(outbuf) {
             Ok(_) => (),
-            Err(gst::FlowError::Flushing) | Err(gst::FlowError::Eos) => (),
             Err(flow) => {
-                return Err(gst::error_msg!(
+                gst::element_error!(
+                    self.obj(),
                     gst::StreamError::Failed,
                     ["Failed to push buffers: {:?}", flow]
-                ));
+                );
+                return Err(flow)
             }
         }
 
@@ -334,14 +446,14 @@ impl ImageRsDecoder {
         }
     }
 
-    fn decode(&self) -> Result<(), gst::ErrorMessage> {
-        let mut state = self.state.lock().unwrap();
-
+    fn decode<'a>(&'a self, mut state: MutexGuard<'a, State>) -> Result<gst::FlowSuccess, gst::FlowError> {
         if state.buffers.is_empty() {
-            return Err(gst::error_msg!(
+            gst::element_error!(
+                self.obj(),
                 gst::StreamError::Decode,
-                ["No valid frames decoded before end of stream"]
-            ));
+                ["No buffers found"]
+            );
+            return Err(gst::FlowError::Error);
         }
 
         let mut buf = Vec::with_capacity(state.total_size);
@@ -349,6 +461,7 @@ impl ImageRsDecoder {
         for buffer in state.buffers.drain(..) {
             buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
         }
+        state.total_size = 0;
 
         let cursor = Cursor::new(buf);
         let mut reader = ImageReader::new(cursor);
@@ -359,12 +472,16 @@ impl ImageRsDecoder {
                 reader
             }
             None => reader.with_guessed_format().map_err(|v| {
-                gst::error_msg!(
+                gst::element_error!(
+                    self.obj(),
                     gst::StreamError::Decode,
-                    ["No caps available, failed guessing format: {}", v]
-                )
+                    ["No caps available, failed guessing format: {v}"]
+                );
+                gst::FlowError::Error
             })?,
         };
+
+        let fps = state.in_fps;
 
         drop(state);
 
@@ -379,16 +496,20 @@ impl ImageRsDecoder {
             #[cfg(feature = "gif")]
             Some(ImageFormat::Gif) => {
                 let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error_msg!(
+                    gst::element_error!(
+                        self.obj(),
                         gst::StreamError::Decode,
-                        ["Failed decoding GIF container: {}", v]
-                    )
+                        ["Failed decoding GIF container: {v}"]
+                    );
+                    gst::FlowError::Error
                 })?;
                 decoder.set_limits(limits).map_err(|v| {
-                    gst::error_msg!(
+                    gst::element_error!(
+                        self.obj(),
                         gst::StreamError::Decode,
-                        ["Failed setting memory limits: {}", v]
-                    )
+                        ["Failed setting memory limits: {v}"]
+                    );
+                    gst::FlowError::Error
                 })?;
 
                 self.render_many_frames(decoder)?;
@@ -396,16 +517,20 @@ impl ImageRsDecoder {
             #[cfg(feature = "webp")]
             Some(ImageFormat::WebP) => {
                 let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error_msg!(
+                    gst::element_error!(
+                        self.obj(),
                         gst::StreamError::Decode,
-                        ["Failed decoding AVIF container: {}", v]
-                    )
+                        ["Failed decoding WebP container: {v}"]
+                    );
+                    gst::FlowError::Error
                 })?;
                 decoder.set_limits(limits).map_err(|v| {
-                    gst::error_msg!(
+                    gst::element_error!(
+                        self.obj(),
                         gst::StreamError::Decode,
-                        ["Failed setting memory limits: {}", v]
-                    )
+                        ["Failed setting memory limits: {v}"]
+                    );
+                    gst::FlowError::Error
                 })?;
 
                 self.render_many_frames(decoder)?;
@@ -413,22 +538,26 @@ impl ImageRsDecoder {
             Some(_) => {
                 reader.limits(limits);
                 let image = reader.decode().map_err(|v| {
-                    gst::error_msg!(
+                    gst::element_error!(
+                        self.obj(),
                         gst::StreamError::Decode,
-                        ["Failed decoding still image: {}", v]
-                    )
+                        ["Failed decoding single image: {v}"]
+                    );
+                    gst::FlowError::Error
                 })?;
-                self.render_single_frame(image)?;
+                self.render_single_frame(image, fps)?;
             }
             None => {
-                gst::error_msg!(
+                gst::element_error!(
+                    self.obj(),
                     gst::StreamError::Decode,
                     ["Failed reading for format detection"]
                 );
+                return Err(gst::FlowError::Error);
             }
         }
 
-        Ok(())
+        Ok(gst::FlowSuccess::Ok)
     }
 
     fn get_capslist(&self, filter: Option<&gst::CapsRef>) -> gst::Caps {
@@ -471,29 +600,68 @@ impl ImageRsDecoder {
 
     fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
         use gst::EventView;
-
         gst::log!(CAT, obj = pad, "Handling event {:?}", event);
+
+        let mut event_replace: Option<gst::Event> = None;
+        let mut ret = true;
+        let mut forward = true;
+
         match event.view() {
-            EventView::FlushStop(..) => {
-                let mut state = self.state.lock().unwrap();
-                *state = State::default();
-                gst::Pad::event_default(pad, Some(&*self.obj()), event)
-            }
-            EventView::Eos(..) => {
-                if let Err(err) = self.decode() {
-                    self.post_error_message(err);
-                }
-                gst::Pad::event_default(pad, Some(&*self.obj()), event)
-            }
-            EventView::Segment(..) => true,
             EventView::Caps(v) => {
                 if let Err(err) = self.set_format_from_caps(v) {
                     self.post_error_message(err);
                 }
-                gst::Pad::event_default(pad, Some(&*self.obj()), event)
+                forward = false;
             }
-            _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
+            EventView::Eos(..) => {
+                let state = self.state.lock().unwrap();
+                match self.decode(state) {
+                    Ok(_) => {},
+                    Err(v) => match v {
+                        gst::FlowError::Flushing | gst::FlowError::Eos | gst::FlowError::NotLinked => {},
+                        _ => {
+                            forward = false;
+                            ret = false;
+                        }
+                    }
+                };
+            }
+            EventView::FlushStop(..) => {
+                let mut state = self.state.lock().unwrap();
+                state.pending_events.clear();
+            }
+            EventView::Segment(v) => {
+                let mut state = self.state.lock().unwrap();
+                let segment = v.segment();
+                state.packetized = segment.format() != gst::Format::Bytes;
+                if segment.format() != gst::Format::Time {
+                    let seqnum = event.seqnum();
+                    let mut output_segment = gst::Segment::new();
+                    output_segment.reset_with_format(gst::Format::Time);
+                    event_replace = Some(gst::event::Segment::builder(&output_segment).seqnum(seqnum).build())
+                }
+            }
+            _ => {},
+        };
+
+        if forward {
+            if !self.srcpad.has_current_caps() &&
+                event.is_serialized()
+                && event.type_() > gst::EventType::Caps
+                && event.type_() != gst::EventType::FlushStop
+                && event.type_() != gst::EventType::Eos {
+                ret = true;
+                let mut state = self.state.lock().unwrap();
+                match event_replace {
+                    Some(v) => state.pending_events.push_front(v),
+                    None => state.pending_events.push_front(event)
+                };
+            } else {
+                ret = gst::Pad::event_default(pad, Some(&*self.obj()), event);
+            }
         }
+
+        ret
     }
 }
 
@@ -510,7 +678,7 @@ impl ObjectSubclass for ImageRsDecoder {
                 ImageRsDecoder::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |dec| dec.sink_chain(pad, buffer),
+                    |dec| dec.dec_chain(pad, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
@@ -670,10 +838,26 @@ impl ElementImpl for ImageRsDecoder {
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
         gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
-        if transition == gst::StateChange::PausedToReady {
-            *self.state.lock().unwrap() = State::default();
+        let mut state = self.state.lock().unwrap();
+
+        if transition == gst::StateChange::ReadyToPaused {
+            /* default to single image mode, setcaps function might not be called */
+            state.in_fps = (0, 1);
+            state.info = None;
         }
 
-        self.parent_change_state(transition)
+        let v = self.parent_change_state(transition)?;
+
+        if transition == gst::StateChange::PausedToReady {
+            state.in_fps = (0, 0);
+            if let Some(pool) = &state.pool {
+                let _ = pool.set_active(false);
+                state.pool = None;
+            }
+            state.pending_events.clear();
+            // FIXME: close reader here?
+        }
+
+        Ok(v)
     }
 }
