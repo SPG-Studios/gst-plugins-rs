@@ -134,7 +134,7 @@ impl ImageRsDecoder {
 
         if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size
         {
-            gst::log! (CAT, imp = self, "Writing buffer size {}", buffer.size());
+            gst::log!(CAT, imp = self, "Writing buffer size {}", buffer.size());
             state.total_size += buffer.size();
             state.buffers.push(buffer);
 
@@ -177,7 +177,7 @@ impl ImageRsDecoder {
                     size = v.1;
                     min = v.2;
                     max = v.3;
-                },
+                }
                 None => {
                     pool = None;
                     size = state.info.as_ref().unwrap().size().try_into().unwrap();
@@ -186,7 +186,11 @@ impl ImageRsDecoder {
                 }
             }
         } else {
-            gst::element_error!(self.obj(), gst::StreamError::Failed, ["Cannot allocate buffer pool"]);
+            gst::element_error!(
+                self.obj(),
+                gst::StreamError::Failed,
+                ["Cannot allocate buffer pool"]
+            );
             return Err(gst::FlowError::Error);
         }
 
@@ -197,7 +201,10 @@ impl ImageRsDecoder {
 
         let mut config = pool.as_ref().unwrap().config();
         config.set_params(target.as_ref(), size, min, max);
-        pool.as_ref().expect("Buffer must be inactive").set_config(config).unwrap();
+        pool.as_ref()
+            .expect("Buffer must be inactive")
+            .set_config(config)
+            .unwrap();
 
         if let Some(v) = state.pool.as_ref() {
             let _ = v.set_active(false);
@@ -211,7 +218,11 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    fn render_single_frame(&self, image: DynamicImage, fps: (i32, i32)) -> Result<(), gst::FlowError> {
+    fn render_single_frame(
+        &self,
+        image: DynamicImage,
+        fps: (i32, i32),
+    ) -> Result<(), gst::FlowError> {
         let mut state = self.state.lock().unwrap();
 
         let wh = image.dimensions();
@@ -219,8 +230,14 @@ impl ImageRsDecoder {
         let mut needs_conversion = false;
 
         let fmt = match image.color() {
+            #[cfg(target_endian = "little")]
             image::ColorType::Rgb8 => gst_video::VideoFormat::Rgb,
+            #[cfg(target_endian = "big")]
+            image::ColorType::Rgb8 => gst_video::VideoFormat::Bgr,
+            #[cfg(target_endian = "little")]
             image::ColorType::Rgba8 => gst_video::VideoFormat::Rgba,
+            #[cfg(target_endian = "big")]
+            image::ColorType::Rgba8 => gst_video::VideoFormat::Bgra,
             image::ColorType::L8 => gst_video::VideoFormat::Gray8,
             #[cfg(target_endian = "little")]
             image::ColorType::L16 => gst_video::VideoFormat::Gray16Le,
@@ -237,21 +254,32 @@ impl ImageRsDecoder {
                     ["Format {:?} not supported, converting to RGBA", v]
                 );
                 needs_conversion = true;
-                gst_video::VideoFormat::Rgba
+
+                if cfg!(target_endian = "little") {
+                    gst_video::VideoFormat::Rgba
+                } else {
+                    gst_video::VideoFormat::Bgra
+                }
             }
         };
 
         if state.info.is_none() {
             gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
 
-            let info =  gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
+            let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps(fps)
                 .build()
                 .map_err(|v| {
                     gst::element_error!(
                         self.obj(),
                         gst::StreamError::Decode,
-                        ["Format {} with {}x{} @ {:?} not supported: {v}", fmt, wh.0, wh.1, fps]
+                        [
+                            "Format {} with {}x{} @ {:?} not supported: {v}",
+                            fmt,
+                            wh.0,
+                            wh.1,
+                            fps
+                        ]
                     );
                     gst::FlowError::Error
                 })?;
@@ -286,7 +314,11 @@ impl ImageRsDecoder {
                     gst::element_error!(
                         self.obj(),
                         gst::StreamError::Decode,
-                        ["Mismatched buffer size: image {:?}, copied {v} bytes", image_rgba8.as_flat_samples().extents()]);
+                        [
+                            "Mismatched buffer size: image {:?}, copied {v} bytes",
+                            image_rgba8.as_flat_samples().extents()
+                        ]
+                    );
                     return Err(gst::FlowError::Error);
                 }
             } else {
@@ -294,7 +326,12 @@ impl ImageRsDecoder {
                     gst::element_error!(
                         self.obj(),
                         gst::StreamError::Decode,
-                        ["Mismatched buffer size: image {:?} {:?}, copied {v} bytes", image.color(), image.dimensions()]);
+                        [
+                            "Mismatched buffer size: image {:?} {:?}, copied {v} bytes",
+                            image.color(),
+                            image.dimensions()
+                        ]
+                    );
                     return Err(gst::FlowError::Error);
                 }
             }
@@ -310,7 +347,7 @@ impl ImageRsDecoder {
                     gst::StreamError::Failed,
                     ["Failed to push buffers: {:?}", flow]
                 );
-                return Err(flow)
+                return Err(flow);
             }
         }
 
@@ -377,7 +414,7 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage>{
+    fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         match caps.structure() {
             Some(mime) => {
                 let mut state = self.state.lock().unwrap();
@@ -388,16 +425,22 @@ impl ImageRsDecoder {
 
                     // The ICO format support enables PNG and BMP as transitive deps
                     #[cfg(any(feature = "bmp", feature = "ico"))]
-                    "image/bmp" | "image/x-MS-bmp" => state.format_from_caps = Some(image::ImageFormat::Bmp),
+                    "image/bmp" | "image/x-MS-bmp" => {
+                        state.format_from_caps = Some(image::ImageFormat::Bmp)
+                    }
 
                     #[cfg(feature = "dds")]
-                    "image/vnd-ms.dds" | "image/x-direct-draw-surface" => state.format_from_caps = Some(image::ImageFormat::Dds),
+                    "image/vnd-ms.dds" | "image/x-direct-draw-surface" => {
+                        state.format_from_caps = Some(image::ImageFormat::Dds)
+                    }
 
                     #[cfg(feature = "exr")]
                     "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::Exr),
 
                     #[cfg(feature = "ff")]
-                    "image/x-farbfeld" => state.format_from_caps = Some(image::ImageFormat::Farbfeld),
+                    "image/x-farbfeld" => {
+                        state.format_from_caps = Some(image::ImageFormat::Farbfeld)
+                    }
 
                     #[cfg(feature = "gif")]
                     "image/gif" => state.format_from_caps = Some(image::ImageFormat::Gif),
@@ -424,7 +467,9 @@ impl ImageRsDecoder {
                     "image/qoi" => state.format_from_caps = Some(ImageFormat::Bmp),
 
                     #[cfg(feature = "tga")]
-                    "image/x-targa" | "image/x-tga" => state.format_from_caps = Some(ImageFormat::Tga),
+                    "image/x-targa" | "image/x-tga" => {
+                        state.format_from_caps = Some(ImageFormat::Tga)
+                    }
 
                     #[cfg(feature = "tiff")]
                     "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
@@ -432,10 +477,12 @@ impl ImageRsDecoder {
                     #[cfg(feature = "webp")]
                     "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
 
-                    v => return Err(gst::error_msg!(
+                    v => {
+                        return Err(gst::error_msg!(
                             gst::StreamError::CodecNotFound,
                             ["Unknown mimetype {v}"]
-                    )),
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -446,13 +493,12 @@ impl ImageRsDecoder {
         }
     }
 
-    fn decode<'a>(&'a self, mut state: MutexGuard<'a, State>) -> Result<gst::FlowSuccess, gst::FlowError> {
+    fn decode<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, State>,
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
         if state.buffers.is_empty() {
-            gst::element_error!(
-                self.obj(),
-                gst::StreamError::Decode,
-                ["No buffers found"]
-            );
+            gst::element_error!(self.obj(), gst::StreamError::Decode, ["No buffers found"]);
             return Err(gst::FlowError::Error);
         }
 
@@ -616,14 +662,16 @@ impl ImageRsDecoder {
             EventView::Eos(..) => {
                 let state = self.state.lock().unwrap();
                 match self.decode(state) {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(v) => match v {
-                        gst::FlowError::Flushing | gst::FlowError::Eos | gst::FlowError::NotLinked => {},
+                        gst::FlowError::Flushing
+                        | gst::FlowError::Eos
+                        | gst::FlowError::NotLinked => {}
                         _ => {
                             forward = false;
                             ret = false;
                         }
-                    }
+                    },
                 };
             }
             EventView::FlushStop(..) => {
@@ -638,23 +686,28 @@ impl ImageRsDecoder {
                     let seqnum = event.seqnum();
                     let mut output_segment = gst::Segment::new();
                     output_segment.reset_with_format(gst::Format::Time);
-                    event_replace = Some(gst::event::Segment::builder(&output_segment).seqnum(seqnum).build())
+                    event_replace = Some(
+                        gst::event::Segment::builder(&output_segment)
+                            .seqnum(seqnum)
+                            .build(),
+                    )
                 }
             }
-            _ => {},
+            _ => {}
         };
 
         if forward {
-            if !self.srcpad.has_current_caps() &&
-                event.is_serialized()
+            if !self.srcpad.has_current_caps()
+                && event.is_serialized()
                 && event.type_() > gst::EventType::Caps
                 && event.type_() != gst::EventType::FlushStop
-                && event.type_() != gst::EventType::Eos {
+                && event.type_() != gst::EventType::Eos
+            {
                 ret = true;
                 let mut state = self.state.lock().unwrap();
                 match event_replace {
                     Some(v) => state.pending_events.push_front(v),
-                    None => state.pending_events.push_front(event)
+                    None => state.pending_events.push_front(event),
                 };
             } else {
                 ret = gst::Pad::event_default(pad, Some(&*self.obj()), event);
