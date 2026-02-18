@@ -6,10 +6,10 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
-use image_extras;
 #[cfg(any(feature = "gif", feature = "webp"))]
 use image::{AnimationDecoder, Frame, ImageDecoder};
 use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
+use image_extras;
 #[cfg(any(feature = "gif", feature = "webp"))]
 use num_rational::Ratio;
 
@@ -249,7 +249,7 @@ impl ImageRsDecoder {
         &'a self,
         image: DynamicImage,
         mut state: MutexGuard<'a, State>,
-        settings: MutexGuard<'a, Settings>
+        settings: MutexGuard<'a, Settings>,
     ) -> Result<(), gst::FlowError> {
         let wh = image.dimensions();
 

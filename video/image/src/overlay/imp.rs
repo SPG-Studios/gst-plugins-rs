@@ -163,7 +163,7 @@ impl ImageRsOverlay {
         let reader = ImageReader::open(&settings.location).unwrap();
         let argb_image = match reader.decode().unwrap() {
             image::DynamicImage::ImageRgba8(v) => v,
-            v => v.to_rgba8()
+            v => v.to_rgba8(),
         };
         let format = {
             let width = argb_image.width();
