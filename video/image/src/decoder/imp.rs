@@ -39,6 +39,7 @@ struct Settings {
 struct State {
     last_timestamp: Option<gst::ClockTime>,
     buffers: Vec<gst::Buffer>,
+    caps: Option<gst::Caps>,
     format_from_caps: Option<image::ImageFormat>,
     total_size: usize,
     in_fps: (i32, i32),
@@ -157,13 +158,12 @@ impl ImageRsDecoder {
     fn setup_pool<'a>(&'a self, state: &mut MutexGuard<'a, State>) -> Result<(), gst::FlowError> {
         /* try to get a bufferpool now */
         /* find a pool for the negotiated caps now */
-        let target = self.srcpad.current_caps();
         let mut pool: Option<gst::BufferPool>;
         let size: u32;
         let min: u32;
         let max: u32;
 
-        if let Some(v) = target.as_ref() {
+        if let Some(v) = state.caps.as_ref() {
             let mut query = gst::query::Allocation::new(Some(&v), true);
             if !self.srcpad.peer_query(query.query_mut()) {
                 /* not a problem, we use the query defaults */
@@ -200,7 +200,7 @@ impl ImageRsDecoder {
         }
 
         let mut config = pool.as_ref().unwrap().config();
-        config.set_params(target.as_ref(), size, min, max);
+        config.set_params(state.caps.as_ref(), size, min, max);
         pool.as_ref()
             .expect("Buffer must be inactive")
             .set_config(config)
@@ -289,6 +289,7 @@ impl ImageRsDecoder {
             {
                 let caps = state.info.as_ref().unwrap().to_caps().unwrap();
                 let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
+                state.caps = Some(caps);
             }
 
             self.setup_pool(&mut state)?;
