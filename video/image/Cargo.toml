@@ -27,7 +27,7 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["v1_24", "bmp", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
+default = ["v1_24", "avif", "bmp", "dds", "exr", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
 static = []
 capi = []
 doc = []

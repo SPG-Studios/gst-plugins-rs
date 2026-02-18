@@ -435,7 +435,7 @@ impl ImageRsDecoder {
                     }
 
                     #[cfg(feature = "exr")]
-                    "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::Exr),
+                    "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::OpenExr),
 
                     #[cfg(feature = "ff")]
                     "image/x-farbfeld" => {
