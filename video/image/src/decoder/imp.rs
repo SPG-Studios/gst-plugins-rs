@@ -213,11 +213,7 @@ impl ImageRsDecoder {
                 }
             }
         } else {
-            gst::element_error!(
-                self.obj(),
-                gst::StreamError::Failed,
-                ["Cannot allocate buffer pool"]
-            );
+            gst::error!(CAT, imp = self, "Cannot allocate buffer pool");
             return Err(gst::FlowError::Error);
         }
 
@@ -277,7 +273,7 @@ impl ImageRsDecoder {
                 gst::element_warning!(
                     self.obj(),
                     gst::StreamError::Decode,
-                    ["Format {:?} not supported, converting to RGBA", v]
+                    ["Format {v:?} not supported, converting to RGBA"]
                 );
                 needs_conversion = true;
 
@@ -301,11 +297,9 @@ impl ImageRsDecoder {
                         self.obj(),
                         gst::StreamError::Decode,
                         [
-                            "Format {} with {}x{} @ {:?} not supported: {v}",
-                            fmt,
+                            "Format {fmt} with {}x{} @ {fps:?} not supported: {v}",
                             wh.0,
                             wh.1,
-                            fps
                         ]
                     );
                     gst::FlowError::NotNegotiated
@@ -339,26 +333,22 @@ impl ImageRsDecoder {
             if needs_conversion {
                 let image_rgba8 = image.to_rgba8();
                 if let Err(v) = outbuf.copy_from_slice(0, image_rgba8.as_raw()) {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
-                        [
-                            "Mismatched buffer size: image {:?}, copied {v} bytes",
-                            image_rgba8.as_flat_samples().extents()
-                        ]
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Mismatched buffer size: image {:?}, copied {v} bytes",
+                        image_rgba8.as_flat_samples().extents()
                     );
                     return Err(gst::FlowError::Error);
                 }
             } else {
                 if let Err(v) = outbuf.copy_from_slice(0, image.as_bytes()) {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
-                        [
-                            "Mismatched buffer size: image {:?} {:?}, copied {v} bytes",
-                            image.color(),
-                            image.dimensions()
-                        ]
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Mismatched buffer size: image {:?} {:?}, copied {v} bytes",
+                        image.color(),
+                        image.dimensions()
                     );
                     return Err(gst::FlowError::Error);
                 }
@@ -373,11 +363,7 @@ impl ImageRsDecoder {
         match self.srcpad.push(outbuf) {
             Ok(_) => (),
             Err(flow) => {
-                gst::element_error!(
-                    self.obj(),
-                    gst::StreamError::Failed,
-                    ["Failed to push buffers: {:?}", flow]
-                );
+                gst::error!(CAT, imp = self, "Failed to push buffers: {flow:?}");
                 return Err(flow);
             }
         }
@@ -548,7 +534,7 @@ impl ImageRsDecoder {
         mut state: MutexGuard<'a, State>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         if state.buffers.is_empty() {
-            gst::element_error!(self.obj(), gst::StreamError::Decode, ["No buffers found"]);
+            gst::error!(CAT, imp = self, "No buffers found");
             return Err(gst::FlowError::Error);
         }
 
@@ -568,10 +554,10 @@ impl ImageRsDecoder {
                 reader
             }
             None => reader.with_guessed_format().map_err(|v| {
-                gst::element_error!(
-                    self.obj(),
-                    gst::StreamError::Decode,
-                    ["No caps available, failed guessing format: {v}"]
+                gst::error!(
+                    CAT,
+                    imp = self,
+                    "No caps available, failed guessing format: {v}"
                 );
                 gst::FlowError::Error
             })?,
@@ -587,17 +573,13 @@ impl ImageRsDecoder {
             #[cfg(feature = "gif")]
             Some(ImageFormat::Gif) => {
                 let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
+                    gst::error!(CAT, imp = self,
                         ["Failed decoding GIF container: {v}"]
                     );
                     gst::FlowError::Error
                 })?;
                 decoder.set_limits(limits).map_err(|v| {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
+                    gst::error!(CAT, imp = self,
                         ["Failed setting memory limits: {v}"]
                     );
                     gst::FlowError::Error
@@ -608,17 +590,13 @@ impl ImageRsDecoder {
             #[cfg(feature = "webp")]
             Some(ImageFormat::WebP) => {
                 let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
+                    gst::error!(CAT, imp = self,
                         ["Failed decoding WebP container: {v}"]
                     );
                     gst::FlowError::Error
                 })?;
                 decoder.set_limits(limits).map_err(|v| {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
+                    gst::error!(CAT, imp = self,
                         ["Failed setting memory limits: {v}"]
                     );
                     gst::FlowError::Error
@@ -626,25 +604,15 @@ impl ImageRsDecoder {
 
                 self.render_many_frames(decoder)?;
             }
-            Some(_) => {
+            // Some(v) => image-rs default format
+            // None => either failure to detect or an image-extras format
+            _ => {
                 reader.limits(limits);
                 let image = reader.decode().map_err(|v| {
-                    gst::element_error!(
-                        self.obj(),
-                        gst::StreamError::Decode,
-                        ["Failed decoding single image: {v}"]
-                    );
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
                     gst::FlowError::Error
                 })?;
                 self.render_single_frame(image, state, settings)?;
-            }
-            None => {
-                gst::element_error!(
-                    self.obj(),
-                    gst::StreamError::Decode,
-                    ["Failed reading for format detection"]
-                );
-                return Err(gst::FlowError::Error);
             }
         }
 
@@ -924,7 +892,7 @@ impl ElementImpl for ImageRsDecoder {
                     #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Rgba64Le,
                     #[cfg(target_endian = "big")]
-                    gst_video::VideoFormat::Rgba64Be
+                    gst_video::VideoFormat::Rgba64Be,
                 ])
                 .width_range(1..i32::MAX)
                 .height_range(1..i32::MAX)
