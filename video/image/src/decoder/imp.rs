@@ -263,7 +263,7 @@ impl ImageRsDecoder {
             #[cfg(target_endian = "little")]
             image::ColorType::Rgba8 => gst_video::VideoFormat::Rgba,
             #[cfg(target_endian = "big")]
-            image::ColorType::Rgba8 => gst_video::VideoFormat::Bgra,
+            image::ColorType::Rgba8 => gst_video::VideoFormat::Abgr,
             image::ColorType::L8 => gst_video::VideoFormat::Gray8,
             #[cfg(target_endian = "little")]
             image::ColorType::L16 => gst_video::VideoFormat::Gray16Le,
@@ -284,7 +284,7 @@ impl ImageRsDecoder {
                 if cfg!(target_endian = "little") {
                     gst_video::VideoFormat::Rgba
                 } else {
-                    gst_video::VideoFormat::Bgra
+                    gst_video::VideoFormat::Abgr
                 }
             }
         };
@@ -906,14 +906,26 @@ impl ElementImpl for ImageRsDecoder {
             )
             .unwrap();
 
-            let pixel = if cfg!(target_endian = "big") {
-                gst_video::VideoFormat::Bgra
-            } else {
-                gst_video::VideoFormat::Argb
-            };
-
             let caps = gst_video::VideoCapsBuilder::new()
-                .format(pixel)
+                .format_list([
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgb,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Bgr,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Abgr,
+                    gst_video::VideoFormat::Gray8,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be
+                ])
                 .width_range(1..i32::MAX)
                 .height_range(1..i32::MAX)
                 .framerate(gst::Fraction::new(0, i32::MAX))

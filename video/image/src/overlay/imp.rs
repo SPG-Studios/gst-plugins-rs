@@ -161,17 +161,24 @@ impl ImageRsOverlay {
         settings: &MutexGuard<'a, Settings>,
     ) {
         let reader = ImageReader::open(&settings.location).unwrap();
-        let argb_image = match reader.decode().unwrap() {
+        let mut argb_image = match reader.decode().unwrap() {
             image::DynamicImage::ImageRgba8(v) => v,
             v => v.to_rgba8(),
         };
+        // Correct for BGRA order
+        // https://github.com/image-rs/image/commit/38456b67a943f39dfad7ab35589afe7a86ea4643
+        {
+            for pix in argb_image.pixels_mut() {
+                pix.0[..3].reverse();
+            }
+        }
         let format = {
             let width = argb_image.width();
             let height = argb_image.height();
             let cwh_stride = argb_image.as_flat_samples().strides_cwh();
             // RGBA is a single plane
             let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
-            let pixel = if cfg!(target_endian = "big") {
+            let pixel = if cfg!(target_endian = "little") {
                 gst_video::VideoFormat::Bgra
             } else {
                 gst_video::VideoFormat::Argb
