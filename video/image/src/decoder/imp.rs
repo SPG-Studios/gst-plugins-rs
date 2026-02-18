@@ -222,21 +222,20 @@ impl ImageRsDecoder {
             pool = Some(gst::BufferPool::new());
         }
 
-        let mut config = pool.as_ref().unwrap().config();
+        let pool_mut = pool.as_ref().unwrap();
+
+        let mut config = pool_mut.config();
         config.set_params(state.caps.as_ref(), size, min, max);
-        pool.as_ref()
-            .expect("Buffer must be inactive")
-            .set_config(config)
-            .unwrap();
+        pool_mut.set_config(config).unwrap();
 
         if let Some(v) = state.pool.as_ref() {
             let _ = v.set_active(false);
             state.pool = None;
         }
-        state.pool = pool;
-
         /* and activate */
-        state.pool.as_ref().unwrap().set_active(true).unwrap();
+        pool_mut.set_active(true).unwrap();
+
+        state.pool = pool;
 
         Ok(())
     }
@@ -573,15 +572,11 @@ impl ImageRsDecoder {
             #[cfg(feature = "gif")]
             Some(ImageFormat::Gif) => {
                 let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error!(CAT, imp = self,
-                        ["Failed decoding GIF container: {v}"]
-                    );
+                    gst::error!(CAT, imp = self, ["Failed decoding GIF container: {v}"]);
                     gst::FlowError::Error
                 })?;
                 decoder.set_limits(limits).map_err(|v| {
-                    gst::error!(CAT, imp = self,
-                        ["Failed setting memory limits: {v}"]
-                    );
+                    gst::error!(CAT, imp = self, ["Failed setting memory limits: {v}"]);
                     gst::FlowError::Error
                 })?;
 
@@ -590,15 +585,11 @@ impl ImageRsDecoder {
             #[cfg(feature = "webp")]
             Some(ImageFormat::WebP) => {
                 let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error!(CAT, imp = self,
-                        ["Failed decoding WebP container: {v}"]
-                    );
+                    gst::error!(CAT, imp = self, ["Failed decoding WebP container: {v}"]);
                     gst::FlowError::Error
                 })?;
                 decoder.set_limits(limits).map_err(|v| {
-                    gst::error!(CAT, imp = self,
-                        ["Failed setting memory limits: {v}"]
-                    );
+                    gst::error!(CAT, imp = self, ["Failed setting memory limits: {v}"]);
                     gst::FlowError::Error
                 })?;
 
