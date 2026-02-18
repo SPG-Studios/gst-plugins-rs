@@ -9,6 +9,7 @@ use gst_base::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 use image::{DynamicImage, ImageReader};
+use image_extras;
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -207,6 +208,11 @@ impl ObjectSubclass for ImageRsOverlay {
 }
 
 impl ObjectImpl for ImageRsOverlay {
+    fn constructed(&self) {
+        self.parent_constructed();
+
+        image_extras::register();
+    }
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![

@@ -6,6 +6,7 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
+use image_extras;
 #[cfg(any(feature = "gif", feature = "webp"))]
 use image::{AnimationDecoder, Frame, ImageDecoder};
 use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
@@ -66,6 +67,12 @@ pub struct ImageRsDecoder {
     state: Mutex<State>,
 }
 
+// Missing formats from gdkpixbufdec:
+// - application/x-navi-animation
+// - image/x-cmu-raster
+// - image/x-sun-raster
+// - image/svg
+// - image/svg+xml
 fn mimetypes() -> impl IntoIterator<Item = &'static str> {
     [
         // FIXME upstream: AVIF also supports animations
@@ -91,6 +98,13 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         #[cfg(feature = "jpeg")]
         // FIXME upstream: doesn't support MJPEG
         "image/jpeg",
+        #[cfg(feature = "ora")]
+        "image/openraster",
+        // https://snisurset.net/code/abydos/supported.html
+        #[cfg(feature = "otb")]
+        "image/x-nokia-over-the-air-bitmap",
+        #[cfg(feature = "pcx")]
+        "image/x-pcx",
         #[cfg(any(feature = "png", feature = "ico"))]
         "image/png",
         #[cfg(feature = "pnm")]
@@ -101,16 +115,29 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         "image/x-portable-graymap",
         #[cfg(feature = "pnm")]
         "image/x-portable-pixmap",
+        // https://github.com/phoboslab/qoi/issues/167
         #[cfg(feature = "qoi")]
         "image/qoi",
+        #[cfg(feature = "qoi")]
+        "image/x-qoi",
+        #[cfg(feature = "sgi")]
+        "image/sgi",
         #[cfg(feature = "tga")]
         "image/x-targa",
         #[cfg(feature = "tga")]
         "image/x-tga",
         #[cfg(feature = "tiff")]
         "image/tiff",
+        #[cfg(feature = "wbmp")]
+        "image/vnd.wap.wbmp",
         #[cfg(feature = "webp")]
         "image/webp",
+        #[cfg(feature = "xbm")]
+        "image/x-xbitmap",
+        #[cfg(feature = "xbm")]
+        "image/x-xbm",
+        #[cfg(feature = "xpm")]
+        "image/x-xpixmap",
     ]
 }
 
@@ -458,6 +485,12 @@ impl ImageRsDecoder {
                     #[cfg(feature = "jpeg")]
                     "image/jpeg" => state.format_from_caps = Some(ImageFormat::Jpeg),
 
+                    #[cfg(feature = "ora")]
+                    "image/openraster" => state.format_from_caps = None,
+
+                    #[cfg(feature = "otb")]
+                    "image/x-nokia-over-the-air-bitmap" => state.format_from_caps = None,
+
                     #[cfg(any(feature = "png", feature = "ico"))]
                     "image/png" => state.format_from_caps = Some(ImageFormat::Png),
 
@@ -468,7 +501,10 @@ impl ImageRsDecoder {
                     | "image/x-portable-pixmap" => state.format_from_caps = Some(ImageFormat::Pnm),
 
                     #[cfg(feature = "qoi")]
-                    "image/qoi" => state.format_from_caps = Some(ImageFormat::Bmp),
+                    "image/qoi" | "image/x-qoi" => state.format_from_caps = Some(ImageFormat::Qoi),
+
+                    #[cfg(feature = "sgi")]
+                    "image/sgi" => state.format_from_caps = None,
 
                     #[cfg(feature = "tga")]
                     "image/x-targa" | "image/x-tga" => {
@@ -478,8 +514,17 @@ impl ImageRsDecoder {
                     #[cfg(feature = "tiff")]
                     "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
 
+                    #[cfg(feature = "wbmp")]
+                    "image/vnd.wap.wbmp" => state.format_from_caps = None,
+
                     #[cfg(feature = "webp")]
                     "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
+
+                    #[cfg(feature = "xbm")]
+                    "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
+
+                    #[cfg(feature = "xpm")]
+                    "image/x-xpixmap" => state.format_from_caps = None,
 
                     v => {
                         return Err(gst::error_msg!(
@@ -772,6 +817,8 @@ impl ObjectImpl for ImageRsDecoder {
         let obj = self.obj();
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.srcpad).unwrap();
+
+        image_extras::register();
     }
 
     fn properties() -> &'static [glib::ParamSpec] {

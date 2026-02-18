@@ -13,6 +13,7 @@ gst.workspace = true
 gst-base.workspace = true
 gst-video.workspace = true
 image = { package = "image", version = "0.25.9", default-features = false, features = ["rayon", "nasm"] }
+image_extras = { package = "image-extras", version = "0.1", default-features = false}
 num-rational = { version = "0.4", default-features = false, features = [] }
 
 [dev-dependencies]
@@ -27,10 +28,12 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["v1_24", "avif", "bmp", "dds", "exr", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
+default = ["v1_24", "still_formats", "still_formats_extras"]
 static = []
 capi = []
 doc = []
+still_formats = ["avif", "bmp", "dds", "exr", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
+still_formats_extras = ["ora", "otb", "pcx", "sgi", "wbmp", "xbm", "xpm"]
 avif = ["image/avif"]
 bmp = ["image/bmp"]
 dds = ["image/dds"]
@@ -40,12 +43,19 @@ gif = ["image/gif"]
 hdr = ["image/hdr"]
 ico = ["image/ico"]
 jpeg = ["image/jpeg"]
+ora = ["image_extras/ora"]
+otb = ["image_extras/otb"]
+pcx = ["image_extras/pcx"]
 png = ["image/png"]
 pnm = ["image/pnm"]
 qoi = ["image/qoi"]
+sgi = ["image_extras/sgi"]
 tga = ["image/tga"]
 tiff = ["image/tiff"]
+wbmp = ["image_extras/wbmp"]
 webp = ["image/webp"]
+xbm = ["image_extras/xbm"]
+xpm = ["image_extras/xpm"]
 v1_24 = ["gst-video/v1_24"]
 
 [package.metadata.capi]
