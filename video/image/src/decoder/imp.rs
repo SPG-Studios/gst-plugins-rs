@@ -308,7 +308,7 @@ impl ImageRsDecoder {
                             fps
                         ]
                     );
-                    gst::FlowError::Error
+                    gst::FlowError::NotNegotiated
                 })?;
 
             state.info = Some(info);
