@@ -139,7 +139,7 @@ impl ImageRsDecoder {
             state.buffers.push(buffer);
 
             if state.packetized {
-                return self.decode(state);
+                return self.decode(settings, state);
             }
 
             Ok(gst::FlowSuccess::Ok)
@@ -218,13 +218,12 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    fn render_single_frame(
-        &self,
+    fn render_single_frame<'a>(
+        &'a self,
         image: DynamicImage,
-        fps: (i32, i32),
+        mut state: MutexGuard<'a, State>,
+        settings: MutexGuard<'a, Settings>
     ) -> Result<(), gst::FlowError> {
-        let mut state = self.state.lock().unwrap();
-
         let wh = image.dimensions();
 
         let mut needs_conversion = false;
@@ -265,6 +264,7 @@ impl ImageRsDecoder {
 
         if state.info.is_none() {
             gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
+            let fps = state.in_fps;
 
             let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps(fps)
@@ -338,6 +338,9 @@ impl ImageRsDecoder {
         }
 
         gst::debug!(CAT, imp = self, "pushing... {} bytes", outbuf.size());
+
+        drop(state);
+        drop(settings);
 
         match self.srcpad.push(outbuf) {
             Ok(_) => (),
@@ -495,6 +498,7 @@ impl ImageRsDecoder {
 
     fn decode<'a>(
         &'a self,
+        settings: MutexGuard<'a, Settings>,
         mut state: MutexGuard<'a, State>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         if state.buffers.is_empty() {
@@ -527,13 +531,8 @@ impl ImageRsDecoder {
             })?,
         };
 
-        let fps = state.in_fps;
-
-        drop(state);
-
         let mut limits = Limits::default();
         {
-            let settings = self.settings.lock().unwrap();
             if settings.max_alloc != 0 {
                 limits.max_alloc = Some(settings.max_alloc);
             }
@@ -591,7 +590,7 @@ impl ImageRsDecoder {
                     );
                     gst::FlowError::Error
                 })?;
-                self.render_single_frame(image, fps)?;
+                self.render_single_frame(image, state, settings)?;
             }
             None => {
                 gst::element_error!(
@@ -660,8 +659,9 @@ impl ImageRsDecoder {
                 forward = false;
             }
             EventView::Eos(..) => {
+                let settings = self.settings.lock().unwrap();
                 let state = self.state.lock().unwrap();
-                match self.decode(state) {
+                match self.decode(settings, state) {
                     Ok(_) => {}
                     Err(v) => match v {
                         gst::FlowError::Flushing
