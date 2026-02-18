@@ -961,13 +961,10 @@ impl ElementImpl for ImageRsDecoder {
         let v = self.parent_change_state(transition)?;
 
         if transition == gst::StateChange::PausedToReady {
-            state.in_fps = (0, 0);
             if let Some(pool) = &state.pool {
                 let _ = pool.set_active(false);
-                state.pool = None;
             }
-            state.pending_events.clear();
-            // FIXME: close reader here?
+            *state = Default::default();
         }
 
         Ok(v)
