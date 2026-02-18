@@ -730,8 +730,7 @@ impl ImageRsDecoder {
                 state.packetized = segment.format() != gst::Format::Bytes;
                 if segment.format() != gst::Format::Time {
                     let seqnum = event.seqnum();
-                    let mut output_segment = gst::Segment::new();
-                    output_segment.reset_with_format(gst::Format::Time);
+                    let output_segment = gst::FormattedSegment::<gst::ClockTime>::new();
                     event_replace = Some(
                         gst::event::Segment::builder(&output_segment)
                             .seqnum(seqnum)
