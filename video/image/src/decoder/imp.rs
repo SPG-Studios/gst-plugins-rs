@@ -747,6 +747,7 @@ impl ImageRsDecoder {
                 && event.type_() > gst::EventType::Caps
                 && event.type_() != gst::EventType::FlushStop
                 && event.type_() != gst::EventType::Eos
+                && event.type_() != gst::EventType::SegmentDone
             {
                 ret = true;
                 let mut state = self.state.lock().unwrap();
