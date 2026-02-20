@@ -1,22 +1,13 @@
 // SPDX-CopyrightText: 2026 Amyspark <amy@centricular.com>
 // SPDX-License-Identifier: MPL-2.0
-// Based on Mathieu Duponchelle's WebP plugin -- see video/webp/src/dec/imp.rs
+// Based on gstpixbufdec
 
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
-#[cfg(any(feature = "gif", feature = "webp"))]
-use image::{AnimationDecoder, Frame, ImageDecoder};
 use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
 use image_extras;
-#[cfg(any(feature = "gif", feature = "webp"))]
-use num_rational::Ratio;
-
-#[cfg(feature = "gif")]
-use image::codecs::gif::GifDecoder;
-#[cfg(feature = "webp")]
-use image::codecs::webp::WebPDecoder;
 
 use std::collections::VecDeque;
 use std::io::Cursor;
@@ -48,16 +39,6 @@ struct State {
     pool: Option<gst::BufferPool>,
     pending_events: VecDeque<gst::Event>,
     packetized: bool,
-}
-
-#[cfg(any(feature = "gif", feature = "webp"))]
-struct AnimatedImageWrapper(Frame);
-
-#[cfg(any(feature = "gif", feature = "webp"))]
-impl AsRef<[u8]> for AnimatedImageWrapper {
-    fn as_ref(&self) -> &[u8] {
-        self.0.buffer()
-    }
 }
 
 pub struct ImageRsDecoder {
@@ -130,8 +111,6 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         "image/tiff",
         #[cfg(feature = "wbmp")]
         "image/vnd.wap.wbmp",
-        #[cfg(feature = "webp")]
-        "image/webp",
         #[cfg(feature = "xbm")]
         "image/x-xbitmap",
         #[cfg(feature = "xbm")]
@@ -370,66 +349,6 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    #[cfg(any(feature = "gif", feature = "webp"))]
-    fn render_many_frames<'a>(
-        &self,
-        decoder: impl AnimationDecoder<'a> + ImageDecoder,
-    ) -> Result<(), gst::ErrorMessage> {
-        let mut prev_timestamp = gst::ClockTime::ZERO;
-        let wh = decoder.dimensions();
-
-        let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgba, wh.0, wh.1)
-            .fps((0, 1))
-            .build()
-            .unwrap()
-            .to_caps()
-            .unwrap();
-
-        let segment = gst::FormattedSegment::<gst::ClockTime>::new();
-
-        let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
-        let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
-
-        // into_frames already blends the previous and current frames
-        // see https://github.com/image-rs/image/blob/0779d359908cf9bf04cbd1998a1a9940e368cd56/src/codecs/gif.rs#L355
-        for frame in decoder.into_frames() {
-            let frame = frame.map_err(|v| {
-                gst::error_msg!(
-                    gst::StreamError::Decode,
-                    ["Failed to get next frame: {}", v]
-                )
-            })?;
-
-            let delay = {
-                let d: Ratio<u32> = frame.delay().numer_denom_ms().into();
-                (d.to_integer() as u64).mseconds()
-            };
-
-            // AnimatedEncoder doesn't support anything other than RGBA
-            let mut out_buf = gst::Buffer::from_slice(AnimatedImageWrapper(frame));
-            {
-                let out_buf_mut = out_buf.get_mut().unwrap();
-                out_buf_mut.set_pts(prev_timestamp);
-                out_buf_mut.set_duration(delay);
-            }
-
-            prev_timestamp += delay;
-
-            match self.srcpad.push(out_buf) {
-                Ok(_) => (),
-                Err(gst::FlowError::Flushing) | Err(gst::FlowError::Eos) => break,
-                Err(flow) => {
-                    return Err(gst::error_msg!(
-                        gst::StreamError::Failed,
-                        ["Failed to push buffers: {:?}", flow]
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         match caps.structure() {
             Some(mime) => {
@@ -457,9 +376,6 @@ impl ImageRsDecoder {
                     "image/x-farbfeld" => {
                         state.format_from_caps = Some(image::ImageFormat::Farbfeld)
                     }
-
-                    #[cfg(feature = "gif")]
-                    "image/gif" => state.format_from_caps = Some(image::ImageFormat::Gif),
 
                     #[cfg(feature = "hdr")]
                     "image/vnd.radiance" => state.format_from_caps = Some(ImageFormat::Hdr),
@@ -501,9 +417,6 @@ impl ImageRsDecoder {
 
                     #[cfg(feature = "wbmp")]
                     "image/vnd.wap.wbmp" => state.format_from_caps = None,
-
-                    #[cfg(feature = "webp")]
-                    "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
 
                     #[cfg(feature = "xbm")]
                     "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
@@ -568,44 +481,12 @@ impl ImageRsDecoder {
                 limits.max_alloc = Some(settings.max_alloc);
             }
         }
-        match reader.format() {
-            #[cfg(feature = "gif")]
-            Some(ImageFormat::Gif) => {
-                let mut decoder = GifDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error!(CAT, imp = self, ["Failed decoding GIF container: {v}"]);
-                    gst::FlowError::Error
-                })?;
-                decoder.set_limits(limits).map_err(|v| {
-                    gst::error!(CAT, imp = self, ["Failed setting memory limits: {v}"]);
-                    gst::FlowError::Error
-                })?;
-
-                self.render_many_frames(decoder)?;
-            }
-            #[cfg(feature = "webp")]
-            Some(ImageFormat::WebP) => {
-                let mut decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
-                    gst::error!(CAT, imp = self, ["Failed decoding WebP container: {v}"]);
-                    gst::FlowError::Error
-                })?;
-                decoder.set_limits(limits).map_err(|v| {
-                    gst::error!(CAT, imp = self, ["Failed setting memory limits: {v}"]);
-                    gst::FlowError::Error
-                })?;
-
-                self.render_many_frames(decoder)?;
-            }
-            // Some(v) => image-rs default format
-            // None => either failure to detect or an image-extras format
-            _ => {
-                reader.limits(limits);
-                let image = reader.decode().map_err(|v| {
-                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
-                    gst::FlowError::Error
-                })?;
-                self.render_single_frame(image, state, settings)?;
-            }
-        }
+        reader.limits(limits);
+        let image = reader.decode().map_err(|v| {
+            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+            gst::FlowError::Error
+        })?;
+        self.render_single_frame(image, state, settings)?;
 
         Ok(gst::FlowSuccess::Ok)
     }
@@ -838,7 +719,7 @@ impl ElementImpl for ImageRsDecoder {
             gst::subclass::ElementMetadata::new(
                 "image-rs decoder",
                 "Codec/Decoder/Video",
-                "Decodes potentially animated images",
+                "Decodes still images",
                 "Amyspark <amy@centricular.com>",
             )
         });

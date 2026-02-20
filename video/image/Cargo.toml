@@ -28,12 +28,14 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["v1_24", "still_formats", "still_formats_extras"]
+default = ["v1_24", "still_formats", "still_formats_extras", "animated_formats"]
 static = []
 capi = []
 doc = []
 still_formats = ["avif", "bmp", "dds", "exr", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
 still_formats_extras = ["ora", "otb", "pcx", "sgi", "wbmp", "xbm", "xpm"]
+# See anim/imp.rs -- add PNG and AVIF when upstream supports them
+animated_formats = ["gif", "webp"]
 avif = ["image/avif"]
 bmp = ["image/bmp"]
 dds = ["image/dds"]
