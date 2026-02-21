@@ -29,7 +29,7 @@ struct State {
     total_size: usize,
     format_from_caps: Option<image::ImageFormat>,
     in_fps: (i32, i32),
-    in_par: (i32, i32)
+    in_par: (i32, i32),
 }
 
 pub struct Decoder {
@@ -79,7 +79,7 @@ impl Decoder {
         &self,
         decoder: impl AnimationDecoder<'a> + ImageDecoder,
         fps: (i32, i32),
-        pixel_aspect_ratio: (i32, i32)
+        pixel_aspect_ratio: (i32, i32),
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
         let wh = decoder.dimensions();
@@ -161,11 +161,21 @@ impl Decoder {
                 };
                 state.in_fps = match mime.get::<gst::Fraction>("framerate") {
                     Ok(framerate) => {
-                        gst::debug!(CAT, imp = self, "got framerate of {}/{} fps", framerate.numer(), framerate.denom());
+                        gst::debug!(
+                            CAT,
+                            imp = self,
+                            "got framerate of {}/{} fps",
+                            framerate.numer(),
+                            framerate.denom()
+                        );
                         framerate.into()
-                    },
-                    Err(v) =>{
-                        gst::debug!(CAT, imp = self, "no framerate, assuming single image: {v:?}");
+                    }
+                    Err(v) => {
+                        gst::debug!(
+                            CAT,
+                            imp = self,
+                            "no framerate, assuming single image: {v:?}"
+                        );
                         (0, 1)
                     }
                 };
@@ -252,7 +262,7 @@ impl Decoder {
                     self.post_error_message(err);
                 }
                 gst::Pad::event_default(pad, Some(&*self.obj()), event)
-            },
+            }
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
                 *state = State::default();
