@@ -169,31 +169,31 @@ impl ImageRsDecoder {
         let min: u32;
         let max: u32;
 
-        if let Some(v) = state.caps.as_ref() {
-            let mut query = gst::query::Allocation::new(Some(&v), true);
-            if !self.srcpad.peer_query(query.query_mut()) {
-                /* not a problem, we use the query defaults */
-                gst::debug!(CAT, imp = self, "ALLOCATION query failed");
-            }
-
-            match query.allocation_pools().nth(0) {
-                Some(v) => {
-                    /* we got configuration from our peer, parse them */
-                    pool = v.0;
-                    size = v.1;
-                    min = v.2;
-                    max = v.3;
-                }
-                None => {
-                    pool = None;
-                    size = state.info.as_ref().unwrap().size().try_into().unwrap();
-                    min = 0;
-                    max = 0;
-                }
-            }
-        } else {
+        if state.caps.as_ref() == None {
             gst::error!(CAT, imp = self, "Cannot allocate buffer pool");
             return Err(gst::FlowError::Error);
+        }
+
+        let mut query = gst::query::Allocation::new(state.caps.as_ref(), true);
+        if !self.srcpad.peer_query(query.query_mut()) {
+            /* not a problem, we use the query defaults */
+            gst::debug!(CAT, imp = self, "ALLOCATION query failed");
+        }
+
+        match query.allocation_pools().nth(0) {
+            Some(v) => {
+                /* we got configuration from our peer, parse them */
+                pool = v.0;
+                size = v.1;
+                min = v.2;
+                max = v.3;
+            }
+            None => {
+                pool = None;
+                size = state.info.as_ref().unwrap().size().try_into().unwrap();
+                min = 0;
+                max = 0;
+            }
         }
 
         if pool == None {
