@@ -29,6 +29,7 @@ struct State {
     total_size: usize,
     format_from_caps: Option<image::ImageFormat>,
     in_fps: (i32, i32),
+    in_par: (i32, i32)
 }
 
 pub struct Decoder {
@@ -77,7 +78,8 @@ impl Decoder {
     fn render_many_frames<'a>(
         &self,
         decoder: impl AnimationDecoder<'a> + ImageDecoder,
-        fps: (i32, i32)
+        fps: (i32, i32),
+        pixel_aspect_ratio: (i32, i32)
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
         let wh = decoder.dimensions();
@@ -90,6 +92,7 @@ impl Decoder {
 
         let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
             .fps(fps)
+            .par(pixel_aspect_ratio)
             .build()
             .unwrap()
             .to_caps()
@@ -156,15 +159,23 @@ impl Decoder {
                         ));
                     }
                 };
-                if let Ok(v) = mime.value("framerate") {
-                    if let Ok(framerate) = v.get::<gst::Fraction>() {
-                        state.in_fps = framerate.into();
-                        gst::debug!(CAT, imp = self, "got framerate of {}/{} fps", state.in_fps.0, state.in_fps.1);
+                state.in_fps = match mime.get::<gst::Fraction>("framerate") {
+                    Ok(framerate) => {
+                        gst::debug!(CAT, imp = self, "got framerate of {}/{} fps", framerate.numer(), framerate.denom());
+                        framerate.into()
+                    },
+                    Err(v) =>{
+                        gst::debug!(CAT, imp = self, "no framerate, assuming single image: {v:?}");
+                        (0, 1)
                     }
-                } else {
-                    state.in_fps = (0, 1);
-                    gst::debug!(CAT, imp = self, "no framerate, assuming single image");
-                }
+                };
+                state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
+                    Ok(v) => v.into(),
+                    Err(v) => {
+                        gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
+                        (1, 1)
+                    }
+                };
             }
             None => {
                 gst::warning!(
@@ -195,6 +206,7 @@ impl Decoder {
         }
 
         let fps = state.in_fps;
+        let par = state.in_par;
 
         drop(state);
 
@@ -209,7 +221,7 @@ impl Decoder {
                     )
                 })?;
 
-                self.render_many_frames(decoder, fps)
+                self.render_many_frames(decoder, fps, par)
             }
             Some(ImageFormat::WebP) => {
                 let decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
@@ -219,7 +231,7 @@ impl Decoder {
                     )
                 })?;
 
-                self.render_many_frames(decoder, fps)
+                self.render_many_frames(decoder, fps, par)
             }
             // Some(v) => image-rs default format
             // None => either failure to detect or an image-extras format
