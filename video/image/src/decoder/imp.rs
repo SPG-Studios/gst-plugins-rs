@@ -6,6 +6,7 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
+use image::RgbaImage;
 use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
 use image_extras;
 
@@ -228,51 +229,44 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    fn render_single_frame<'a>(
-        &'a self,
-        image: DynamicImage,
-        mut state: MutexGuard<'a, State>,
-    ) -> Result<(), gst::FlowError> {
-        let wh = image.dimensions();
-        let timestamp = state.last_timestamp;
-
-        let (image_rgba8, fmt, strides) = match image {
+    fn convert_format_and_strides(&self, image: &DynamicImage) -> (Option<RgbaImage>, gst_video::VideoFormat, (usize, usize, usize)) {
+        match image {
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgb8(ref p) => {
+            DynamicImage::ImageRgb8(p) => {
                 (None, gst_video::VideoFormat::Rgb, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgb8(ref p) => {
+            DynamicImage::ImageRgb8(p) => {
                 (None, gst_video::VideoFormat::Bgr, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba8(ref p) => {
+            DynamicImage::ImageRgba8(p) => {
                 (None, gst_video::VideoFormat::Rgba, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgba8(ref p) => {
+            DynamicImage::ImageRgba8(p) => {
                 (None, gst_video::VideoFormat::Abgr, p.as_flat_samples().strides_cwh())
             },
-            DynamicImage::ImageLuma8(ref p) => {
+            DynamicImage::ImageLuma8(p) => {
                 (None, gst_video::VideoFormat::Gray8, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageLuma16(ref p) => {
+            DynamicImage::ImageLuma16(p) => {
                 (None, gst_video::VideoFormat::Gray16Le, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageLuma16(ref p) => {
+            DynamicImage::ImageLuma16(p) => {
                 (None, gst_video::VideoFormat::Gray16Be, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba16(ref p) => {
+            DynamicImage::ImageRgba16(p) => {
                 (None, gst_video::VideoFormat::Rgba64Le, p.as_flat_samples().strides_cwh())
             },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgba16(ref p) => {
+            DynamicImage::ImageRgba16(p) => {
                 (None, gst_video::VideoFormat::Rgba64Be, p.as_flat_samples().strides_cwh())
             },
-            ref v => {
+            v => {
                 gst::element_warning!(
                     self.obj(),
                     gst::StreamError::Decode,
@@ -288,7 +282,18 @@ impl ImageRsDecoder {
 
                 (Some(image_rgba8), fmt, strides)
             }
-        };
+        }
+    }
+
+    fn render_single_frame<'a>(
+        &'a self,
+        image: DynamicImage,
+        mut state: MutexGuard<'a, State>,
+    ) -> Result<(), gst::FlowError> {
+        let wh = image.dimensions();
+        let timestamp = state.last_timestamp;
+
+        let (image_rgba8, fmt, strides) = self.convert_format_and_strides(&image);
 
         let pending_events = if state.info.is_none() {
             gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
