@@ -73,8 +73,6 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         "image/exr",
         #[cfg(feature = "ff")]
         "image/x-farbfeld",
-        #[cfg(feature = "gif")]
-        "image/gif",
         #[cfg(feature = "ico")]
         "image/x-icon",
         #[cfg(feature = "jpeg")]

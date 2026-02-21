@@ -9,13 +9,16 @@
  */
 use gst::glib;
 
-mod decoder;
+#[cfg(feature = "animated_formats")]
 mod anim;
+mod decoder;
+mod encoder;
 #[cfg(feature = "v1_24")]
 mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     decoder::register(plugin)?;
+    encoder::register(plugin)?;
     #[cfg(feature = "animated_formats")]
     anim::register(plugin)?;
     #[cfg(feature = "v1_24")]
