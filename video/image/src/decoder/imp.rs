@@ -579,11 +579,11 @@ impl ImageRsDecoder {
                 forward = false;
             }
             EventView::Eos(..) => {
-                let settings = self.settings.lock().unwrap();
                 let state = self.state.lock().unwrap();
-                match self.decode(settings, state) {
-                    Ok(_) => {}
-                    Err(v) => match v {
+                if !state.buffers.is_empty() {
+                    let settings = self.settings.lock().unwrap();
+                    if let Err(v) = self.decode(settings, state) {
+                        match v {
                         gst::FlowError::Flushing
                         | gst::FlowError::Eos
                         | gst::FlowError::NotLinked => {}
@@ -591,8 +591,9 @@ impl ImageRsDecoder {
                             forward = false;
                             ret = false;
                         }
-                    },
                 };
+                    }
+                }
             }
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
