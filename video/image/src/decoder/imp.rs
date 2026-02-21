@@ -120,6 +120,14 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
     ]
 }
 
+struct Wrapper(DynamicImage);
+
+impl AsRef<[u8]> for Wrapper {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
 impl ImageRsDecoder {
     fn dec_chain(
         &self,
@@ -161,6 +169,7 @@ impl ImageRsDecoder {
         }
     }
 
+    #[allow(unused)]
     fn setup_pool<'a>(&'a self, state: &mut MutexGuard<'a, State>) -> Result<(), gst::FlowError> {
         /* try to get a bufferpool now */
         /* find a pool for the negotiated caps now */
@@ -223,52 +232,73 @@ impl ImageRsDecoder {
         &'a self,
         image: DynamicImage,
         mut state: MutexGuard<'a, State>,
-        settings: MutexGuard<'a, Settings>,
     ) -> Result<(), gst::FlowError> {
         let wh = image.dimensions();
+        let timestamp = state.last_timestamp;
 
-        let mut needs_conversion = false;
-
-        let fmt = match image.color() {
+        let (image_rgba8, fmt, strides) = match image {
             #[cfg(target_endian = "little")]
-            image::ColorType::Rgb8 => gst_video::VideoFormat::Rgb,
+            DynamicImage::ImageRgb8(ref p) => {
+                (None, gst_video::VideoFormat::Rgb, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "big")]
-            image::ColorType::Rgb8 => gst_video::VideoFormat::Bgr,
+            DynamicImage::ImageRgb8(ref p) => {
+                (None, gst_video::VideoFormat::Bgr, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "little")]
-            image::ColorType::Rgba8 => gst_video::VideoFormat::Rgba,
+            DynamicImage::ImageRgba8(ref p) => {
+                (None, gst_video::VideoFormat::Rgba, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "big")]
-            image::ColorType::Rgba8 => gst_video::VideoFormat::Abgr,
-            image::ColorType::L8 => gst_video::VideoFormat::Gray8,
+            DynamicImage::ImageRgba8(ref p) => {
+                (None, gst_video::VideoFormat::Abgr, p.as_flat_samples().strides_cwh())
+            },
+            DynamicImage::ImageLuma8(ref p) => {
+                (None, gst_video::VideoFormat::Gray8, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "little")]
-            image::ColorType::L16 => gst_video::VideoFormat::Gray16Le,
+            DynamicImage::ImageLuma16(ref p) => {
+                (None, gst_video::VideoFormat::Gray16Le, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "big")]
-            image::ColorType::L16 => gst_video::VideoFormat::Gray16Be,
+            DynamicImage::ImageLuma16(ref p) => {
+                (None, gst_video::VideoFormat::Gray16Be, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "little")]
-            image::ColorType::Rgba16 => gst_video::VideoFormat::Rgba64Le,
+            DynamicImage::ImageRgba16(ref p) => {
+                (None, gst_video::VideoFormat::Rgba64Le, p.as_flat_samples().strides_cwh())
+            },
             #[cfg(target_endian = "big")]
-            image::ColorType::Rgba16 => gst_video::VideoFormat::Rgba64Be,
-            v => {
+            DynamicImage::ImageRgba16(ref p) => {
+                (None, gst_video::VideoFormat::Rgba64Be, p.as_flat_samples().strides_cwh())
+            },
+            ref v => {
                 gst::element_warning!(
                     self.obj(),
                     gst::StreamError::Decode,
-                    ["Format {v:?} not supported, converting to RGBA"]
+                    ["Format {:?} not supported, converting to RGBA", v.color()]
                 );
-                needs_conversion = true;
-
-                if cfg!(target_endian = "little") {
+                let image_rgba8 = v.to_rgba8();
+                let fmt = if cfg!(target_endian = "little") {
                     gst_video::VideoFormat::Rgba
                 } else {
                     gst_video::VideoFormat::Abgr
-                }
+                };
+                let strides = image_rgba8.as_flat_samples().strides_cwh();
+
+                (Some(image_rgba8), fmt, strides)
             }
         };
 
-        if state.info.is_none() {
+        let pending_events = if state.info.is_none() {
             gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
             let fps = state.in_fps;
 
+            let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
+
             let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps(fps)
+                .stride(&strides)
                 .build()
                 .map_err(|v| {
                     gst::element_error!(
@@ -283,60 +313,44 @@ impl ImageRsDecoder {
                     gst::FlowError::NotNegotiated
                 })?;
 
+            let caps = &info.to_caps().unwrap();
+
             state.info = Some(info);
+            // state.caps = Some(caps.clone());
 
-            {
-                let caps = state.info.as_ref().unwrap().to_caps().unwrap();
-                let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
-                state.caps = Some(caps);
-            }
+            let pending_events: Vec<_> = state.pending_events.drain(..).collect();
 
-            self.setup_pool(&mut state)?;
+            drop(state);
 
-            for l in state.pending_events.drain(..) {
-                self.srcpad.push_event(l);
-            }
+            let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
+
+            // self.setup_pool(&mut state)?;
+
+            pending_events
+        } else {
+            drop(state);
+            vec![]
+        };
+
+        for l in pending_events {
+            self.srcpad.push_event(l);
         }
 
         // FIXME: this should be validated
-        assert_eq!(state.info.as_ref().unwrap().format(), fmt);
+        // assert_eq!(state.info.as_ref().unwrap().format(), fmt);
+        // let mut outbuf = state.pool.as_ref().unwrap().acquire_buffer(None)?;
 
-        let mut outbuf = state.pool.as_ref().unwrap().acquire_buffer(None)?;
-
+        let mut outbuf = match image_rgba8 {
+            Some(v) => gst::Buffer::from_slice(Wrapper(DynamicImage::from(v))),
+            None => gst::Buffer::from_slice(Wrapper(image))
+        };
         {
             let outbuf = outbuf.get_mut().unwrap();
-            outbuf.set_pts(state.last_timestamp);
+            outbuf.set_pts(timestamp);
             outbuf.set_duration(None);
-
-            if needs_conversion {
-                let image_rgba8 = image.to_rgba8();
-                if let Err(v) = outbuf.copy_from_slice(0, image_rgba8.as_raw()) {
-                    gst::error!(
-                        CAT,
-                        imp = self,
-                        "Mismatched buffer size: image {:?}, copied {v} bytes",
-                        image_rgba8.as_flat_samples().extents()
-                    );
-                    return Err(gst::FlowError::Error);
-                }
-            } else {
-                if let Err(v) = outbuf.copy_from_slice(0, image.as_bytes()) {
-                    gst::error!(
-                        CAT,
-                        imp = self,
-                        "Mismatched buffer size: image {:?} {:?}, copied {v} bytes",
-                        image.color(),
-                        image.dimensions()
-                    );
-                    return Err(gst::FlowError::Error);
-                }
-            }
         }
 
         gst::debug!(CAT, imp = self, "pushing... {} bytes", outbuf.size());
-
-        drop(state);
-        drop(settings);
 
         match self.srcpad.push(outbuf) {
             Ok(_) => (),
@@ -494,11 +508,14 @@ impl ImageRsDecoder {
             }
         }
         reader.limits(limits);
+
+        drop(settings);
+
         let image = reader.decode().map_err(|v| {
             gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
             gst::FlowError::Error
         })?;
-        self.render_single_frame(image, state, settings)?;
+        self.render_single_frame(image, state)?;
 
         Ok(gst::FlowSuccess::Ok)
     }
