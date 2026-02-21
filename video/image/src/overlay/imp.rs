@@ -75,10 +75,7 @@ impl AsRef<[u8]> for Wrapper {
 }
 
 impl ImageRsOverlay {
-    fn update_composition<'a>(
-        &'a self,
-        state: &mut MutexGuard<'a, State>,
-    ) {
+    fn update_composition<'a>(&'a self, state: &mut MutexGuard<'a, State>) {
         let in_info = self.obj().input_video_info().unwrap();
         let video_width: i64 = in_info.width().into();
         let video_height: i64 = in_info.height().into();
@@ -157,10 +154,7 @@ impl ImageRsOverlay {
         state.update_composition = false;
     }
 
-    fn load_image<'a>(
-        &'a self,
-        state: &mut MutexGuard<'a, State>
-    ) {
+    fn load_image<'a>(&'a self, state: &mut MutexGuard<'a, State>) {
         let location = {
             let settings = self.settings.lock().unwrap();
             if state.location != settings.location {
@@ -456,10 +450,13 @@ impl BaseTransformImpl for ImageRsOverlay {
 
     fn before_transform(&self, inbuf: &gst::BufferRef) {
         let timestamp = inbuf.pts();
-        let segment = self.obj().segment().downcast::<gst::ClockTime>().ok();
-        let stream_time = segment.and_then(|v| v.to_stream_time(timestamp));
-        if stream_time != gst::ClockTime::NONE {
-            self.obj().sync_values(stream_time.unwrap()).unwrap();
+        let stream_time = self
+            .obj()
+            .segment()
+            .downcast::<gst::ClockTime>()
+            .map(|v| v.to_stream_time(timestamp));
+        if let Ok(Some(stream_time)) = stream_time {
+            self.obj().sync_values(stream_time).unwrap();
         }
 
         let mut set_passthrough = false;
