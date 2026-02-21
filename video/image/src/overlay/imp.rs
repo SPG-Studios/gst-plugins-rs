@@ -497,7 +497,7 @@ impl VideoFilterImpl for ImageRsOverlay {
         let state = self.state.lock().unwrap();
         if let Some(v) = &state.composition {
             v.blend(frame).map_err(|v| {
-                gst::element_imp_error!(self, gst::CoreError::Failed, ["Blending failed: {}", v]);
+                gst::error!(CAT, imp = self, "Blending failed: {}", v);
                 gst::FlowError::Error
             })?
         }
