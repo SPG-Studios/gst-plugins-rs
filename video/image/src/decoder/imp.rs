@@ -353,7 +353,6 @@ impl ImageRsDecoder {
         match caps.structure() {
             Some(mime) => {
                 let mut state = self.state.lock().unwrap();
-                state.format_from_caps = None;
                 match mime.name().as_str() {
                     #[cfg(feature = "avif")]
                     "image/avif" => state.format_from_caps = Some(image::ImageFormat::Avif),
@@ -430,14 +429,27 @@ impl ImageRsDecoder {
                             ["Unknown mimetype {v}"]
                         ));
                     }
+                };
+                if let Ok(v) = mime.value("framerate") {
+                    if let Ok(framerate) = v.get::<gst::Fraction>() {
+                        state.in_fps = framerate.into();
+                        gst::debug!(CAT, imp = self, "got framerate of {}/{} fps => packetized mode", state.in_fps.0, state.in_fps.1);
+                    }
+                } else {
+                    state.in_fps = (0, 1);
+                    gst::debug!(CAT, imp = self, "no framerate, assuming single image");
                 }
-                Ok(())
             }
-            None => Err(gst::error_msg!(
-                gst::StreamError::Format,
-                ["No mimetype available from caps, falling back to decoder sniffing"]
-            )),
-        }
+            None => {
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "No mimetype or framerate available from caps"
+                );
+            };
+        };
+
+        Ok(())
     }
 
     fn decode<'a>(

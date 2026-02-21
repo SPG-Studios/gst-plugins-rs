@@ -27,6 +27,8 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
+    format_from_caps: Option<image::ImageFormat>,
+    in_fps: (i32, i32),
 }
 
 pub struct Decoder {
@@ -75,6 +77,7 @@ impl Decoder {
     fn render_many_frames<'a>(
         &self,
         decoder: impl AnimationDecoder<'a> + ImageDecoder,
+        fps: (i32, i32)
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
         let wh = decoder.dimensions();
@@ -86,7 +89,7 @@ impl Decoder {
         };
 
         let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
-            .fps((0, 1))
+            .fps(fps)
             .build()
             .unwrap()
             .to_caps()
@@ -137,6 +140,44 @@ impl Decoder {
         Ok(())
     }
 
+    fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
+        match caps.structure() {
+            Some(mime) => {
+                let mut state = self.state.lock().unwrap();
+                match mime.name().as_str() {
+                    "image/gif" => state.format_from_caps = Some(image::ImageFormat::Gif),
+
+                    "image/webp" => state.format_from_caps = Some(image::ImageFormat::WebP),
+
+                    v => {
+                        return Err(gst::error_msg!(
+                            gst::StreamError::CodecNotFound,
+                            ["Unknown mimetype {v}"]
+                        ));
+                    }
+                };
+                if let Ok(v) = mime.value("framerate") {
+                    if let Ok(framerate) = v.get::<gst::Fraction>() {
+                        state.in_fps = framerate.into();
+                        gst::debug!(CAT, imp = self, "got framerate of {}/{} fps", state.in_fps.0, state.in_fps.1);
+                    }
+                } else {
+                    state.in_fps = (0, 1);
+                    gst::debug!(CAT, imp = self, "no framerate, assuming single image");
+                }
+            }
+            None => {
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "No mimetype or framerate available from caps"
+                );
+            }
+        };
+
+        Ok(())
+    }
+
     fn decode(&self) -> Result<(), gst::ErrorMessage> {
         let mut state = self.state.lock().unwrap();
 
@@ -153,6 +194,8 @@ impl Decoder {
             buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
         }
 
+        let fps = state.in_fps;
+
         drop(state);
 
         let reader = ImageReader::new(Cursor::new(buf));
@@ -166,7 +209,7 @@ impl Decoder {
                     )
                 })?;
 
-                self.render_many_frames(decoder)
+                self.render_many_frames(decoder, fps)
             }
             Some(ImageFormat::WebP) => {
                 let decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
@@ -176,7 +219,7 @@ impl Decoder {
                     )
                 })?;
 
-                self.render_many_frames(decoder)
+                self.render_many_frames(decoder, fps)
             }
             // Some(v) => image-rs default format
             // None => either failure to detect or an image-extras format
@@ -192,6 +235,12 @@ impl Decoder {
 
         gst::log!(CAT, obj = pad, "Handling event {:?}", event);
         match event.view() {
+            EventView::Caps(v) => {
+                if let Err(err) = self.set_format_from_caps(v) {
+                    self.post_error_message(err);
+                }
+                gst::Pad::event_default(pad, Some(&*self.obj()), event)
+            },
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
                 *state = State::default();
