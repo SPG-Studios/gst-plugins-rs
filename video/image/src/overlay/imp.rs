@@ -78,7 +78,6 @@ impl ImageRsOverlay {
     fn update_composition<'a>(
         &'a self,
         state: &mut MutexGuard<'a, State>,
-        settings: &MutexGuard<'a, Settings>,
     ) {
         let in_info = self.obj().input_video_info().unwrap();
         let video_width: i64 = in_info.width().into();
@@ -88,6 +87,7 @@ impl ImageRsOverlay {
             state.composition = None;
         }
 
+        let settings = self.settings.lock().unwrap();
         if settings.alpha == 0.0 || state.image == None {
             return;
         }
@@ -145,6 +145,8 @@ impl ImageRsOverlay {
             rect.get_mut().unwrap().set_global_alpha(settings.alpha);
         }
 
+        drop(settings);
+
         match gst_video::VideoOverlayComposition::new(Some(&rect)) {
             Ok(comp) => state.composition = Some(comp),
             Err(v) => {
@@ -157,10 +159,22 @@ impl ImageRsOverlay {
 
     fn load_image<'a>(
         &'a self,
-        state: &mut MutexGuard<'a, State>,
-        settings: &MutexGuard<'a, Settings>,
+        state: &mut MutexGuard<'a, State>
     ) {
-        let reader = ImageReader::open(&settings.location).unwrap();
+        let location = {
+            let settings = self.settings.lock().unwrap();
+            if state.location != settings.location {
+                return;
+            }
+
+            settings.location.clone()
+        };
+
+        // Using BufReader removes the code duplication that happens
+        // when using image-rs's own reading facilities: 7.6 => 7.2MB
+        let fs = std::fs::File::open(&location).unwrap();
+        let cursor = std::io::BufReader::new(fs);
+        let reader = ImageReader::new(cursor);
         let mut argb_image = match reader.decode().unwrap() {
             image::DynamicImage::ImageRgba8(v) => v,
             v => v.to_rgba8(),
@@ -201,7 +215,7 @@ impl ImageRsOverlay {
         )
         .unwrap();
 
-        state.location = settings.location.clone();
+        state.location = location;
         state.image = Some(buffer);
         state.update_composition = true;
     }
@@ -422,9 +436,9 @@ impl BaseTransformImpl for ImageRsOverlay {
     const TRANSFORM_IP_ON_PASSTHROUGH: bool = true;
 
     fn start(&self) -> Result<(), gst::ErrorMessage> {
-        let settings = self.settings.lock().unwrap();
+        let is_location_empty = self.settings.lock().unwrap().location.is_empty();
 
-        if !&settings.location.is_empty() {
+        if !is_location_empty {
             self.obj().set_passthrough(false);
         } else {
             gst::warning!(CAT, imp = self, "no image location set, doing nothing");
@@ -449,17 +463,17 @@ impl BaseTransformImpl for ImageRsOverlay {
         }
 
         let mut set_passthrough = false;
-        let mut state = self.state.lock().unwrap();
-        let settings = self.settings.lock().unwrap();
-        if state.location != settings.location {
-            self.load_image(&mut state, &settings);
-        }
-        if state.update_composition {
-            self.update_composition(&mut state, &settings);
-            set_passthrough = true;
-        }
+        let has_no_composition = {
+            let mut state = self.state.lock().unwrap();
+            self.load_image(&mut state);
+            if state.update_composition {
+                self.update_composition(&mut state);
+                set_passthrough = true;
+            }
+            state.composition.is_none()
+        };
         if set_passthrough {
-            self.obj().set_passthrough(state.composition.is_none());
+            self.obj().set_passthrough(has_no_composition);
         }
     }
 }
