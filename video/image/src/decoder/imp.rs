@@ -446,7 +446,7 @@ impl ImageRsDecoder {
                     imp = self,
                     "No mimetype or framerate available from caps"
                 );
-            };
+            }
         };
 
         Ok(())
