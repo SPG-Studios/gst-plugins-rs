@@ -11,7 +11,7 @@ use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
 use image_extras;
 
 use std::collections::VecDeque;
-use std::io::Cursor;
+use std::io::{BufRead, Cursor, Seek};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -283,6 +283,7 @@ impl ImageRsDecoder {
         }
     }
 
+    #[inline]
     fn render_single_frame<'a>(
         &'a self,
         image: DynamicImage,
@@ -469,25 +470,14 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    fn decode<'a>(
+    #[inline]
+    fn create_reader<'a, R: 'a + BufRead + Seek>(
         &'a self,
         settings: MutexGuard<'a, Settings>,
-        mut state: MutexGuard<'a, State>,
+        state: MutexGuard<'a, State>,
+        source: R
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        if state.buffers.is_empty() {
-            gst::error!(CAT, imp = self, "No buffers found");
-            return Err(gst::FlowError::Error);
-        }
-
-        let mut buf = Vec::with_capacity(state.total_size);
-
-        for buffer in state.buffers.drain(..) {
-            buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
-        }
-        state.total_size = 0;
-
-        let cursor = Cursor::new(buf);
-        let mut reader = ImageReader::new(cursor);
+        let mut reader = ImageReader::new(source);
 
         reader = match state.format_from_caps {
             Some(v) => {
@@ -521,6 +511,37 @@ impl ImageRsDecoder {
         self.render_single_frame(image, state)?;
 
         Ok(gst::FlowSuccess::Ok)
+    }
+
+    fn decode<'a>(
+        &'a self,
+        settings: MutexGuard<'a, Settings>,
+        mut state: MutexGuard<'a, State>,
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        if state.buffers.is_empty() {
+            gst::error!(CAT, imp = self, "No buffers found");
+            return Err(gst::FlowError::Error);
+        }
+
+        if state.packetized {
+            assert!(state.buffers.len() == 1);
+
+            let buffer = state.buffers.drain(..).nth(0).unwrap();
+
+            let cursor = Cursor::new(buffer.map_readable().unwrap());
+
+            self.create_reader(settings, state, cursor)
+        } else {
+            let mut buf = Vec::with_capacity(state.total_size);
+    
+            for buffer in state.buffers.drain(..) {
+                buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
+            }
+
+            let cursor = Cursor::new(buf);
+
+            self.create_reader(settings, state, cursor)
+        }
     }
 
     fn get_capslist(&self, filter: Option<&gst::CapsRef>) -> gst::Caps {
