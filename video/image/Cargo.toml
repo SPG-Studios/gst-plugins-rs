@@ -11,6 +11,7 @@ description = "GStreamer plugin based on image-rs"
 [dependencies]
 gst.workspace = true
 gst-base.workspace = true
+gst-tag.workspace = true
 gst-video.workspace = true
 image = { package = "image", version = "0.25.9", default-features = false, features = ["rayon", "nasm"] }
 image_extras = { package = "image-extras", version = "0.1", default-features = false}

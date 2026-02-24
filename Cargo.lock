@@ -5046,6 +5046,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-base",
  "gstreamer-check",
+ "gstreamer-tag",
  "gstreamer-video",
  "image",
  "image-extras",

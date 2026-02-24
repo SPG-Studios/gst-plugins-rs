@@ -7,7 +7,7 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use image::Limits;
 use image::RgbaImage;
-use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader};
+use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader};
 use image_extras;
 
 use std::collections::VecDeque;
@@ -318,6 +318,10 @@ impl ImageRsDecoder {
     fn render_single_frame<'a>(
         &'a self,
         image: DynamicImage,
+        exif: Option<Vec<u8>>,
+        xmp: Option<Vec<u8>>,
+        iptc: Option<Vec<u8>>,
+        icc: Option<Vec<u8>>,
         mut state: MutexGuard<'a, State>,
     ) -> Result<(), gst::FlowError> {
         let wh = image.dimensions();
@@ -377,6 +381,77 @@ impl ImageRsDecoder {
             self.srcpad.push_event(l);
         }
 
+        let tags = gst::TagList::new();
+
+        if let Some(v) = exif {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let v_rust = unsafe {
+                let v = gst_tag::ffi::gst_tag_list_from_exif_buffer(
+                    buf.as_mut_ptr(),
+                    #[cfg(target_endian = "little")]
+                    gst::glib::ffi::G_LITTLE_ENDIAN,
+                    #[cfg(target_endian = "big")]
+                    gst::glib::ffi::G_BIG_ENDIAN,
+                    0,
+                );
+
+                gst::TagList::from_glib_full(v)
+            };
+            tags.merge(&v_rust, gst::TagMergeMode::Append);
+        };
+
+        if let Some(v) = xmp {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let v_rust = unsafe {
+                let v = gst_tag::ffi::gst_tag_list_from_xmp_buffer(buf.as_mut_ptr());
+
+                gst::TagList::from_glib_full(v)
+            };
+            tags.merge(&v_rust, gst::TagMergeMode::Append);
+        };
+
+        let mut metadata_blobs = gst::TagList::new();
+
+        if let Some(v) = iptc {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let caps = gst::Caps::new_empty_simple("application/rdf+xml");
+            let info = gst::Structure::new_empty("application/rdf+xml");
+
+            let tagsample = gst::Sample::builder()
+                .buffer(&buf)
+                .caps(&caps)
+                .info(info)
+                .build();
+
+            metadata_blobs.get_mut().and_then(|v| {
+                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
+                Some(v)
+            });
+        };
+
+        if let Some(v) = icc {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let caps = gst::Caps::new_empty_simple("application/vnd.iccprofile");
+            let mut info = gst::Structure::new_empty("application/vnd.iccprofile");
+            // FIXME: image-rs's png reader does not expose the profile name
+            // see impl StreamingDecoder::parse_iccp_raw in the PNG crate
+            info.set("icc-name", "(embedded profile from image-rs)");
+            let tagsample = gst::Sample::builder()
+                .buffer(&buf)
+                .caps(&caps)
+                .info(info)
+                .build();
+
+            metadata_blobs.get_mut().and_then(|v| {
+                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
+                Some(v)
+            });
+        }
+
+        if metadata_blobs.n_tags() > 0 {
+            tags.merge(&metadata_blobs, gst::TagMergeMode::Append);
+        }
+
         // FIXME: this should be validated
         // assert_eq!(state.info.as_ref().unwrap().format(), fmt);
         // let mut outbuf = state.pool.as_ref().unwrap().acquire_buffer(None)?;
@@ -392,6 +467,11 @@ impl ImageRsDecoder {
         }
 
         gst::debug!(CAT, imp = self, "pushing... {} bytes", outbuf.size());
+
+        if tags.n_tags() > 0 {
+            let v = gst::event::Tag::new(tags);
+            self.srcpad.push_event(v);
+        }
 
         match self.srcpad.push(outbuf) {
             Ok(_) => (),
@@ -547,11 +627,48 @@ impl ImageRsDecoder {
 
         drop(settings);
 
-        let image = reader.decode().map_err(|v| {
+        let mut decoder = reader.into_decoder().map_err(|v| {
             gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
             gst::FlowError::Error
         })?;
-        self.render_single_frame(image, state)?;
+
+        let exif = match decoder.exif_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving EXIF metadata: {v}");
+                None
+            }
+        };
+
+        let xmp = match decoder.xmp_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving XMP metadata: {v}");
+                None
+            }
+        };
+
+        let icc = match decoder.icc_profile() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving ICC profile: {v}");
+                None
+            }
+        };
+
+        let iptc = match decoder.iptc_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving IPTC metadata: {v}");
+                None
+            }
+        };
+
+        let image = DynamicImage::from_decoder(decoder).map_err(|v| {
+            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+            gst::FlowError::Error
+        })?;
+        self.render_single_frame(image, exif, xmp, iptc, icc, state)?;
 
         Ok(gst::FlowSuccess::Ok)
     }
