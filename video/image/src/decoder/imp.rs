@@ -227,43 +227,68 @@ impl ImageRsDecoder {
         Ok(())
     }
 
-    fn convert_format_and_strides(&self, image: &DynamicImage) -> (Option<RgbaImage>, gst_video::VideoFormat, (usize, usize, usize)) {
+    fn convert_format_and_strides(
+        &self,
+        image: &DynamicImage,
+    ) -> (
+        Option<RgbaImage>,
+        gst_video::VideoFormat,
+        (usize, usize, usize),
+    ) {
         match image {
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgb8(p) => {
-                (None, gst_video::VideoFormat::Rgb, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageRgb8(p) => (
+                None,
+                gst_video::VideoFormat::Rgb,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgb8(p) => {
-                (None, gst_video::VideoFormat::Bgr, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageRgb8(p) => (
+                None,
+                gst_video::VideoFormat::Bgr,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba8(p) => {
-                (None, gst_video::VideoFormat::Rgba, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageRgba8(p) => (
+                None,
+                gst_video::VideoFormat::Rgba,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgba8(p) => {
-                (None, gst_video::VideoFormat::Abgr, p.as_flat_samples().strides_cwh())
-            },
-            DynamicImage::ImageLuma8(p) => {
-                (None, gst_video::VideoFormat::Gray8, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageRgba8(p) => (
+                None,
+                gst_video::VideoFormat::Abgr,
+                p.as_flat_samples().strides_cwh(),
+            ),
+            DynamicImage::ImageLuma8(p) => (
+                None,
+                gst_video::VideoFormat::Gray8,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageLuma16(p) => {
-                (None, gst_video::VideoFormat::Gray16Le, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageLuma16(p) => (
+                None,
+                gst_video::VideoFormat::Gray16Le,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageLuma16(p) => {
-                (None, gst_video::VideoFormat::Gray16Be, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageLuma16(p) => (
+                None,
+                gst_video::VideoFormat::Gray16Be,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba16(p) => {
-                (None, gst_video::VideoFormat::Rgba64Le, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageRgba16(p) => (
+                None,
+                gst_video::VideoFormat::Rgba64Le,
+                p.as_flat_samples().strides_cwh(),
+            ),
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgba16(p) => {
-                (None, gst_video::VideoFormat::Rgba64Be, p.as_flat_samples().strides_cwh())
-            },
+            DynamicImage::ImageRgba16(p) => (
+                None,
+                gst_video::VideoFormat::Rgba64Be,
+                p.as_flat_samples().strides_cwh(),
+            ),
             v => {
                 gst::element_warning!(
                     self.obj(),
@@ -346,7 +371,7 @@ impl ImageRsDecoder {
 
         let mut outbuf = match image_rgba8 {
             Some(v) => gst::Buffer::from_slice(Wrapper(DynamicImage::from(v))),
-            None => gst::Buffer::from_slice(Wrapper(image))
+            None => gst::Buffer::from_slice(Wrapper(image)),
         };
         {
             let outbuf = outbuf.get_mut().unwrap();
@@ -451,7 +476,13 @@ impl ImageRsDecoder {
                 if let Ok(v) = mime.value("framerate") {
                     if let Ok(framerate) = v.get::<gst::Fraction>() {
                         state.in_fps = framerate.into();
-                        gst::debug!(CAT, imp = self, "got framerate of {}/{} fps => packetized mode", state.in_fps.0, state.in_fps.1);
+                        gst::debug!(
+                            CAT,
+                            imp = self,
+                            "got framerate of {}/{} fps => packetized mode",
+                            state.in_fps.0,
+                            state.in_fps.1
+                        );
                     }
                 } else {
                     state.in_fps = (0, 1);
@@ -475,7 +506,7 @@ impl ImageRsDecoder {
         &'a self,
         settings: MutexGuard<'a, Settings>,
         state: MutexGuard<'a, State>,
-        source: R
+        source: R,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut reader = ImageReader::new(source);
 
@@ -533,7 +564,7 @@ impl ImageRsDecoder {
             self.create_reader(settings, state, cursor)
         } else {
             let mut buf = Vec::with_capacity(state.total_size);
-    
+
             for buffer in state.buffers.drain(..) {
                 buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
             }
@@ -603,14 +634,14 @@ impl ImageRsDecoder {
                     let settings = self.settings.lock().unwrap();
                     if let Err(v) = self.decode(settings, state) {
                         match v {
-                        gst::FlowError::Flushing
-                        | gst::FlowError::Eos
-                        | gst::FlowError::NotLinked => {}
-                        _ => {
-                            forward = false;
-                            ret = false;
-                        }
-                };
+                            gst::FlowError::Flushing
+                            | gst::FlowError::Eos
+                            | gst::FlowError::NotLinked => {}
+                            _ => {
+                                forward = false;
+                                ret = false;
+                            }
+                        };
                     }
                 }
             }
