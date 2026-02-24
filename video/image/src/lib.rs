@@ -9,6 +9,8 @@
  */
 use gst::glib;
 
+mod utils;
+
 #[cfg(feature = "animated_formats")]
 mod anim;
 mod decoder;

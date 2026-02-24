@@ -15,6 +15,8 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
+use crate::utils;
+
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ImageRsEncoder",
@@ -42,30 +44,21 @@ struct State {
 
 fn mimetypes() -> impl IntoIterator<Item = &'static str> {
     [
-        // FIXME upstream: AVIF also supports animations
-        // but needs image-rs support
         #[cfg(feature = "avif")]
         "image/avif",
         #[cfg(any(feature = "bmp", feature = "ico"))]
         "image/bmp",
-        #[cfg(any(feature = "bmp", feature = "ico"))]
-        "image/x-MS-bmp",
         #[cfg(feature = "exr")]
         "image/exr",
         #[cfg(feature = "ff")]
         "image/x-farbfeld",
         #[cfg(feature = "jpeg")]
-        // FIXME upstream: doesn't support MJPEG
         "image/jpeg",
         #[cfg(any(feature = "png", feature = "ico"))]
         "image/png",
         // https://github.com/phoboslab/qoi/issues/167
         #[cfg(feature = "qoi")]
         "image/qoi",
-        #[cfg(feature = "qoi")]
-        "image/x-qoi",
-        #[cfg(feature = "tga")]
-        "image/x-targa",
         #[cfg(feature = "tga")]
         "image/x-tga",
         #[cfg(feature = "tiff")]
@@ -210,9 +203,11 @@ impl VideoEncoderImpl for Encoder {
 
         *self.state.lock().unwrap() = Some(State { video_info });
 
+        let format: &str = self.settings.lock().unwrap().format.into();
+
         let instance = self.obj();
         let output_state = instance
-            .set_output_state(gst::Caps::builder("image/png").build(), Some(state))
+            .set_output_state(gst::Caps::builder(format).build(), Some(state))
             .map_err(|_| gst::loggable_error!(CAT, "Failed to set output state"))?;
         instance
             .negotiate(output_state)
@@ -227,6 +222,8 @@ impl VideoEncoderImpl for Encoder {
 
         let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
 
+        let format = self.settings.lock().unwrap().format;
+
         gst::debug!(
             CAT,
             imp = self,
@@ -234,7 +231,7 @@ impl VideoEncoderImpl for Encoder {
             frame.system_frame_number()
         );
 
-        let image = {
+        let mut image = {
             let input_buffer = frame.input_buffer().expect("frame without input buffer");
             let input_map = input_buffer.map_readable().unwrap();
             match state.video_info.format() {
@@ -280,7 +277,14 @@ impl VideoEncoderImpl for Encoder {
             .ok_or(gst::FlowError::NotSupported)
         }?;
 
-        let format = self.settings.lock().unwrap().format;
+        let color_space = utils::videoinfo_to_cicp(state.video_info.colorimetry());
+
+        drop(state_guard);
+
+        image.set_color_space(color_space).map_err(|e| {
+            gst::error!(CAT, imp = self, "Failed to write image data: {e}");
+            gst::FlowError::Error
+        })?;
 
         let buffer = Vec::with_capacity(4096);
         let mut cursor = Cursor::new(buffer);
@@ -288,8 +292,6 @@ impl VideoEncoderImpl for Encoder {
             gst::error!(CAT, imp = self, "Failed to write image data: {e}");
             gst::FlowError::Error
         })?;
-
-        drop(state_guard);
 
         let output_buffer = gst::Buffer::from_mut_slice(cursor.into_inner());
         // FIXME: what is "incremental frames" in pngenc?

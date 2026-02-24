@@ -47,6 +47,22 @@ impl From<Format> for image::ImageFormat {
     }
 }
 
+impl Into<&'static str> for Format {
+    fn into(self) -> &'static str {
+        match self {
+            Format::Avif => "image/avif",
+            Format::Bmp => "image/bmp",
+            Format::Exr => "image/exr",
+            Format::Farbfeld => "image/x-farbfeld",
+            Format::Jpeg => "image/jpeg",
+            Format::Png => "image/png",
+            Format::Qoi => "image/qoi",
+            Format::Tga => "image/x-tga",
+            Format::Tiff => "image/tiff",
+        }
+    }
+}
+
 glib::wrapper! {
     pub struct Encoder(ObjectSubclass<imp::Encoder>) @extends gst_video::VideoEncoder, gst::Element, gst::Object;
 }

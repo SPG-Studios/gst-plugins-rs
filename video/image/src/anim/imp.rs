@@ -12,9 +12,12 @@ use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames, ImageDecoder, ImageFormat, ImageReader};
 use num_rational::Ratio;
+
 use std::io::Cursor;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+
+use crate::utils;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -90,9 +93,27 @@ impl Decoder {
             gst_video::VideoFormat::Abgr
         };
 
+        let mut frame_list = frames.peekable();
+
+        let color_info = match frame_list.peek() {
+            Some(v) => match v {
+                Ok(frame) => Some(utils::cicp_to_videoinfo(frame.buffer().color_space())),
+                Err(v) => {
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "Failed retrieving color information from first frame: {v}"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
         let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
             .fps(fps)
             .par(pixel_aspect_ratio)
+            .colorimetry_if_some(color_info.as_ref())
             .build()
             .unwrap()
             .to_caps()
@@ -105,7 +126,7 @@ impl Decoder {
 
         // into_frames already blends the previous and current frames
         // see https://github.com/image-rs/image/blob/0779d359908cf9bf04cbd1998a1a9940e368cd56/src/codecs/gif.rs#L355
-        for frame in frames {
+        for frame in frame_list {
             let frame = frame.map_err(|v| {
                 gst::error_msg!(
                     gst::StreamError::Decode,

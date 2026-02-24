@@ -15,6 +15,8 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 
+use crate::utils;
+
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "imagersoverlay",
@@ -191,8 +193,24 @@ impl ImageRsOverlay {
             } else {
                 gst_video::VideoFormat::Argb
             };
+            let color_info = utils::cicp_to_videoinfo(argb_image.color_space());
+            if color_info.matrix() == gst_video::VideoColorMatrix::Unknown
+                || color_info.primaries() == gst_video::VideoColorPrimaries::Unknown
+                || color_info.range() == gst_video::VideoColorRange::Unknown
+                || color_info.transfer() == gst_video::VideoTransferFunction::Unknown
+            {
+                gst::element_error!(
+                    self.obj(),
+                    gst::StreamError::Decode,
+                    [
+                        "CICP {:?} not supported by GStreamer",
+                        argb_image.color_space()
+                    ]
+                );
+            }
             gst_video::VideoInfo::builder(pixel, width, height)
                 .stride(&strides)
+                .colorimetry(&color_info)
                 .build()
                 .unwrap()
         };

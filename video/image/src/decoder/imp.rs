@@ -14,6 +14,8 @@ use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
+use crate::utils;
+
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
         "ImageRsDecoder",
@@ -329,9 +331,15 @@ impl ImageRsDecoder {
 
             let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
 
+            let color_info = match &image_rgba8 {
+                Some(v) => utils::cicp_to_videoinfo(v.color_space()),
+                None => utils::cicp_to_videoinfo(image.color_space()),
+            };
+
             let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps(fps)
                 .stride(&strides)
+                .colorimetry(&color_info)
                 .build()
                 .map_err(|v| {
                     gst::element_error!(
