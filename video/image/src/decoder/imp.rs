@@ -42,6 +42,10 @@ struct State {
     packetized: bool,
 }
 
+trait ImageRsBuffer<'a>: BufRead + Seek {}
+
+impl<'a, T: BufRead + Seek> ImageRsBuffer<'a> for T {}
+
 pub struct ImageRsDecoder {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
@@ -502,11 +506,11 @@ impl ImageRsDecoder {
     }
 
     #[inline]
-    fn create_reader<'a, R: 'a + BufRead + Seek>(
+    fn create_reader<'a>(
         &'a self,
         settings: MutexGuard<'a, Settings>,
         state: MutexGuard<'a, State>,
-        source: R,
+        source: &mut dyn ImageRsBuffer<'a>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut reader = ImageReader::new(source);
 
@@ -559,9 +563,9 @@ impl ImageRsDecoder {
 
             let buffer = state.buffers.drain(..).nth(0).unwrap();
 
-            let cursor = Cursor::new(buffer.map_readable().unwrap());
+            let mut cursor = Cursor::new(buffer.map_readable().unwrap());
 
-            self.create_reader(settings, state, cursor)
+            self.create_reader(settings, state, &mut cursor)
         } else {
             let mut buf = Vec::with_capacity(state.total_size);
 
@@ -569,9 +573,9 @@ impl ImageRsDecoder {
                 buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
             }
 
-            let cursor = Cursor::new(buf);
+            let mut cursor = Cursor::new(buf);
 
-            self.create_reader(settings, state, cursor)
+            self.create_reader(settings, state, &mut cursor)
         }
     }
 

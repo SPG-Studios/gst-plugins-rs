@@ -10,7 +10,7 @@ use image;
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
-use image::{AnimationDecoder, Frame, ImageDecoder, ImageFormat, ImageReader};
+use image::{AnimationDecoder, Frame, Frames, ImageDecoder, ImageFormat, ImageReader};
 use num_rational::Ratio;
 use std::io::Cursor;
 use std::sync::LazyLock;
@@ -77,7 +77,7 @@ impl Decoder {
 
     fn render_many_frames<'a>(
         &self,
-        decoder: impl AnimationDecoder<'a>,
+        frames: Frames<'a>,
         fps: (i32, i32),
         wh: (u32, u32),
         pixel_aspect_ratio: (i32, i32),
@@ -105,7 +105,7 @@ impl Decoder {
 
         // into_frames already blends the previous and current frames
         // see https://github.com/image-rs/image/blob/0779d359908cf9bf04cbd1998a1a9940e368cd56/src/codecs/gif.rs#L355
-        for frame in decoder.into_frames() {
+        for frame in frames {
             let frame = frame.map_err(|v| {
                 gst::error_msg!(
                     gst::StreamError::Decode,
@@ -235,7 +235,9 @@ impl Decoder {
 
                 let wh = decoder.dimensions();
 
-                self.render_many_frames(decoder, fps, wh, par)
+                let frames = decoder.into_frames();
+
+                self.render_many_frames(frames, fps, wh, par)
             }
             Some(ImageFormat::WebP) => {
                 let decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
@@ -247,7 +249,9 @@ impl Decoder {
 
                 let wh = decoder.dimensions();
 
-                self.render_many_frames(decoder, fps, wh, par)
+                let frames = decoder.into_frames();
+
+                self.render_many_frames(frames, fps, wh, par)
             }
             Some(ImageFormat::Png) => {
                 let decoder = PngDecoder::new(reader.into_inner()).map_err(|v| {
@@ -266,7 +270,9 @@ impl Decoder {
                     )
                 })?;
 
-                self.render_many_frames(apng_decoder, fps, wh, par)
+                let frames = apng_decoder.into_frames();
+
+                self.render_many_frames(frames, fps, wh, par)
             }
             // Some(v) => image-rs default format
             // None => either failure to detect or an image-extras format
