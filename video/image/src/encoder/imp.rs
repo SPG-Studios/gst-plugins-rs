@@ -145,16 +145,14 @@ impl ElementImpl for Encoder {
                     #[cfg(target_endian = "big")]
                     gst_video::VideoFormat::Abgr,
                     gst_video::VideoFormat::Gray8,
-                    // FIXME: see handle_frame below -- these
-                    // formats need conversion I do not know how to handle
-                    // #[cfg(target_endian = "little")]
-                    // gst_video::VideoFormat::Gray16Le,
-                    // #[cfg(target_endian = "big")]
-                    // gst_video::VideoFormat::Gray16Be,
-                    // #[cfg(target_endian = "little")]
-                    // gst_video::VideoFormat::Rgba64Le,
-                    // #[cfg(target_endian = "big")]
-                    // gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
                 ])
                 .build();
             let sink_pad_template = gst::PadTemplate::new(
@@ -269,9 +267,54 @@ impl VideoEncoderImpl for Encoder {
                     input_map.to_vec(),
                 )
                 .map(|v| image::DynamicImage::from(v)),
-                // FIXME: Gray16 needs casting the BufferMap to u16,
-                // and using the raw ImageBuffer type (it is marked pubcrate)
-                // FIXME: Rgba64 needs same as above
+                #[cfg(target_endian = "little")]
+                gst_video::VideoFormat::Gray16Le => {
+                    let input = unsafe {
+                        std::slice::from_raw_parts(input_map.as_ptr() as *const u16, input_map.size() / 2)
+                    };
+                    image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
+                        state.video_info.width(),
+                        state.video_info.height(),
+                        input.to_vec()
+                    )
+                    .map(|v| image::DynamicImage::from(v))
+                },
+                #[cfg(target_endian = "big")]
+                gst_video::VideoFormat::Gray16Be => {
+                    let input = unsafe {
+                        std::slice::from_raw_parts(input_map.as_ptr() as *const u16, input_map.size() / 2)
+                    };
+                    image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
+                        state.video_info.width(),
+                        state.video_info.height(),
+                        input.to_vec()
+                    )
+                    .map(|v| image::DynamicImage::from(v))
+                },
+                #[cfg(target_endian = "little")]
+                gst_video::VideoFormat::Rgba64Le => {
+                    let input = unsafe {
+                        std::slice::from_raw_parts(input_map.as_ptr() as *const u16, input_map.size() / 2)
+                    };
+                    image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+                        state.video_info.width(),
+                        state.video_info.height(),
+                        input.to_vec()
+                    )
+                    .map(|v| image::DynamicImage::from(v))
+                },
+                #[cfg(target_endian = "big")]
+                gst_video::VideoFormat::Rgba64Be => {
+                    let input = unsafe {
+                        std::slice::from_raw_parts(input_map.as_ptr() as *const u16, input_map.size() / 2)
+                    };
+                    image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+                        state.video_info.width(),
+                        state.video_info.height(),
+                        input.to_vec()
+                    )
+                    .map(|v| image::DynamicImage::from(v))
+                },
                 _ => unimplemented!(),
             }
             .ok_or(gst::FlowError::NotSupported)
