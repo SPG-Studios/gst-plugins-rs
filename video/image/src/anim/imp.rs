@@ -8,6 +8,7 @@ use gst::subclass::prelude::*;
 
 use image;
 use image::codecs::gif::GifDecoder;
+use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, ImageDecoder, ImageFormat, ImageReader};
 use num_rational::Ratio;
@@ -45,8 +46,7 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         // "image/avif",
         "image/gif",
         "image/x-pcx",
-        // FIXME upstream: PNG does not expose the AnimationDecoder trait
-        // "image/png",
+        "image/png",
         "image/webp",
     ]
 }
@@ -77,12 +77,12 @@ impl Decoder {
 
     fn render_many_frames<'a>(
         &self,
-        decoder: impl AnimationDecoder<'a> + ImageDecoder,
+        decoder: impl AnimationDecoder<'a>,
         fps: (i32, i32),
+        wh: (u32, u32),
         pixel_aspect_ratio: (i32, i32),
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
-        let wh = decoder.dimensions();
 
         let fmt = if cfg!(target_endian = "little") {
             gst_video::VideoFormat::Rgba
@@ -151,6 +151,8 @@ impl Decoder {
                     "image/gif" => state.format_from_caps = Some(image::ImageFormat::Gif),
 
                     "image/webp" => state.format_from_caps = Some(image::ImageFormat::WebP),
+
+                    "image/png" => state.format_from_caps = Some(image::ImageFormat::Png),
 
                     v => {
                         return Err(gst::error_msg!(
@@ -231,17 +233,40 @@ impl Decoder {
                     )
                 })?;
 
-                self.render_many_frames(decoder, fps, par)
+                let wh = decoder.dimensions();
+
+                self.render_many_frames(decoder, fps, wh, par)
             }
             Some(ImageFormat::WebP) => {
                 let decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
                     gst::error_msg!(
                         gst::StreamError::Decode,
-                        ["Failed decoding GIF container: {v}"]
+                        ["Failed decoding WebP container: {v}"]
                     )
                 })?;
 
-                self.render_many_frames(decoder, fps, par)
+                let wh = decoder.dimensions();
+
+                self.render_many_frames(decoder, fps, wh, par)
+            }
+            Some(ImageFormat::Png) => {
+                let decoder = PngDecoder::new(reader.into_inner()).map_err(|v| {
+                    gst::error_msg!(
+                        gst::StreamError::Decode,
+                        ["Failed decoding PNG container: {v}"]
+                    )
+                })?;
+
+                let wh = decoder.dimensions();
+
+                let apng_decoder = decoder.apng().map_err(|v| {
+                    gst::error_msg!(
+                        gst::StreamError::Decode,
+                        ["Failed decoding animated PNG container: {v}"]
+                    )
+                })?;
+
+                self.render_many_frames(apng_decoder, fps, wh, par)
             }
             // Some(v) => image-rs default format
             // None => either failure to detect or an image-extras format

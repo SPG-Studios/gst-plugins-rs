@@ -35,7 +35,7 @@ doc = []
 still_formats = ["avif", "bmp", "dds", "exr", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
 still_formats_extras = ["ora", "otb", "pcx", "sgi", "wbmp", "xbm", "xpm"]
 # See anim/imp.rs -- add PNG and AVIF when upstream supports them
-animated_formats = ["gif", "webp"]
+animated_formats = ["gif", "png", "webp"]
 avif = ["image/avif"]
 bmp = ["image/bmp"]
 dds = ["image/dds"]
