@@ -13,7 +13,7 @@ gst.workspace = true
 gst-base.workspace = true
 gst-tag.workspace = true
 gst-video.workspace = true
-image = { package = "image", version = "0.25.9", default-features = false, features = ["rayon", "nasm"] }
+image = { version = "0.25", default-features = false }
 image_extras = { package = "image-extras", version = "0.1", default-features = false}
 num-rational = { version = "0.4", default-features = false, features = [] }
 
@@ -35,12 +35,14 @@ capi = []
 doc = []
 still_formats = ["avif", "bmp", "dds", "exr", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
 still_formats_extras = ["ora", "otb", "pcx", "sgi", "wbmp", "xbm", "xpm"]
-# See anim/imp.rs -- add PNG and AVIF when upstream supports them
+# See anim/imp.rs -- add AVIF when upstream supports them
 animated_formats = ["gif", "png", "webp"]
-avif = ["image/avif"]
+# image/avif enables encoding with rav1e, avif-native decoding with dav1d
+# rayon is multithreading and nasm rav1e's optimized assembly
+avif = ["image/avif", "image/avif-native", "image/rayon", "image/nasm"]
 bmp = ["image/bmp"]
 dds = ["image/dds"]
-exr = ["image/exr"]
+exr = ["image/exr", "image/rayon"]
 ff = ["image/ff"]
 gif = ["image/gif"]
 hdr = ["image/hdr"]
@@ -73,4 +75,4 @@ versioning = false
 import_library = false
 
 [package.metadata.capi.pkg_config]
-requires_private = "gstreamer-1.0, gstreamer-base-1.0, gstreamer-video-1.0"
+requires_private = "gstreamer-1.0, gstreamer-base-1.0, gstreamer-tag-1.0, gstreamer-video-1.0"
