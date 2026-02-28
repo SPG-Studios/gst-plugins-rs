@@ -158,32 +158,22 @@ impl Decoder {
     }
 
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
-        match caps.structure() {
-            Some(mime) => {
-                let mut state = self.state.lock().unwrap();
-                match mime.name().as_str() {
-                    "image/gif" => state.format_from_caps = Some(ImageFormat::Gif),
+        let mime = caps.structure().unwrap();
+        let mut state = self.state.lock().unwrap();
+        match mime.name().as_str() {
+            "image/gif" => state.format_from_caps = Some(ImageFormat::Gif),
 
-                    "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
+            "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
 
-                    "image/png" => state.format_from_caps = Some(ImageFormat::Png),
+            "image/png" => state.format_from_caps = Some(ImageFormat::Png),
 
-                    _ => unreachable!(),
-                };
-                state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
-                    Ok(v) => v.into(),
-                    Err(v) => {
-                        gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
-                        None
-                    }
-                };
-            }
-            None => {
-                gst::warning!(
-                    CAT,
-                    imp = self,
-                    "No mimetype or framerate available from caps"
-                );
+            _ => unreachable!(),
+        };
+        state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
+            Ok(v) => v.into(),
+            Err(v) => {
+                gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
+                None
             }
         };
 

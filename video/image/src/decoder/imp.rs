@@ -420,119 +420,105 @@ impl ImageRsDecoder {
     }
 
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
-        match caps.structure() {
-            Some(mime) => {
-                let mut state = self.state.lock().unwrap();
-                match mime.name().as_str() {
-                    #[cfg(feature = "avif")]
-                    "image/avif" => state.format_from_caps = Some(image::ImageFormat::Avif),
+        let mime = caps.structure().unwrap();
+        let mut state = self.state.lock().unwrap();
+        match mime.name().as_str() {
+            #[cfg(feature = "avif")]
+            "image/avif" => state.format_from_caps = Some(image::ImageFormat::Avif),
 
-                    // The ICO format support enables PNG and BMP as transitive deps
-                    #[cfg(any(feature = "bmp", feature = "ico"))]
-                    "image/bmp" | "image/x-MS-bmp" => {
-                        state.format_from_caps = Some(image::ImageFormat::Bmp)
-                    }
-
-                    #[cfg(feature = "dds")]
-                    "image/vnd-ms.dds" | "image/x-direct-draw-surface" => {
-                        state.format_from_caps = Some(image::ImageFormat::Dds)
-                    }
-
-                    #[cfg(feature = "exr")]
-                    "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::OpenExr),
-
-                    #[cfg(feature = "ff")]
-                    "image/x-farbfeld" => {
-                        state.format_from_caps = Some(image::ImageFormat::Farbfeld)
-                    }
-
-                    #[cfg(feature = "hdr")]
-                    "image/vnd.radiance" => state.format_from_caps = Some(ImageFormat::Hdr),
-
-                    #[cfg(feature = "ico")]
-                    "image/x-icon" => state.format_from_caps = Some(ImageFormat::Ico),
-
-                    #[cfg(feature = "jpeg")]
-                    "image/jpeg" => state.format_from_caps = Some(ImageFormat::Jpeg),
-
-                    #[cfg(feature = "ora")]
-                    "image/openraster" => state.format_from_caps = None,
-
-                    #[cfg(feature = "otb")]
-                    "image/x-nokia-over-the-air-bitmap" => state.format_from_caps = None,
-
-                    #[cfg(any(feature = "png", feature = "ico"))]
-                    "image/png" => state.format_from_caps = Some(ImageFormat::Png),
-
-                    #[cfg(feature = "pnm")]
-                    "image/x-portable-anymap"
-                    | "image/x-portable-bitmap"
-                    | "image/x-portable-graymap"
-                    | "image/x-portable-pixmap" => state.format_from_caps = Some(ImageFormat::Pnm),
-
-                    #[cfg(feature = "qoi")]
-                    "image/qoi" | "image/x-qoi" => state.format_from_caps = Some(ImageFormat::Qoi),
-
-                    #[cfg(feature = "sgi")]
-                    "image/sgi" => state.format_from_caps = None,
-
-                    #[cfg(feature = "tga")]
-                    "image/x-targa" | "image/x-tga" => {
-                        state.format_from_caps = Some(ImageFormat::Tga)
-                    }
-
-                    #[cfg(feature = "tiff")]
-                    "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
-
-                    #[cfg(feature = "wbmp")]
-                    "image/vnd.wap.wbmp" => state.format_from_caps = None,
-
-                    #[cfg(feature = "xbm")]
-                    "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
-
-                    #[cfg(feature = "xpm")]
-                    "image/x-xpixmap" => state.format_from_caps = None,
-
-                    v => {
-                        return Err(gst::error_msg!(
-                            gst::StreamError::CodecNotFound,
-                            ["Unknown mimetype {v}"]
-                        ));
-                    }
-                };
-                state.in_fps = match mime.get::<gst::Fraction>("framerate") {
-                    Ok(v) => {
-                        gst::debug!(
-                            CAT,
-                            imp = self,
-                            "got framerate of {} fps => packetized mode",
-                            v,
-                        );
-                        v.into()
-                    }
-                    Err(v) => {
-                        gst::debug!(
-                            CAT,
-                            imp = self,
-                            "no framerate, assuming single image: {v:?}"
-                        );
-                        None
-                    }
-                };
-                state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
-                    Ok(v) => v.into(),
-                    Err(v) => {
-                        gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
-                        None
-                    }
-                };
+            // The ICO format support enables PNG and BMP as transitive deps
+            #[cfg(any(feature = "bmp", feature = "ico"))]
+            "image/bmp" | "image/x-MS-bmp" => {
+                state.format_from_caps = Some(image::ImageFormat::Bmp)
             }
-            None => {
-                gst::warning!(
+
+            #[cfg(feature = "dds")]
+            "image/vnd-ms.dds" | "image/x-direct-draw-surface" => {
+                state.format_from_caps = Some(image::ImageFormat::Dds)
+            }
+
+            #[cfg(feature = "exr")]
+            "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::OpenExr),
+
+            #[cfg(feature = "ff")]
+            "image/x-farbfeld" => state.format_from_caps = Some(image::ImageFormat::Farbfeld),
+
+            #[cfg(feature = "hdr")]
+            "image/vnd.radiance" => state.format_from_caps = Some(ImageFormat::Hdr),
+
+            #[cfg(feature = "ico")]
+            "image/x-icon" => state.format_from_caps = Some(ImageFormat::Ico),
+
+            #[cfg(feature = "jpeg")]
+            "image/jpeg" => state.format_from_caps = Some(ImageFormat::Jpeg),
+
+            #[cfg(feature = "ora")]
+            "image/openraster" => state.format_from_caps = None,
+
+            #[cfg(feature = "otb")]
+            "image/x-nokia-over-the-air-bitmap" => state.format_from_caps = None,
+
+            #[cfg(any(feature = "png", feature = "ico"))]
+            "image/png" => state.format_from_caps = Some(ImageFormat::Png),
+
+            #[cfg(feature = "pnm")]
+            "image/x-portable-anymap"
+            | "image/x-portable-bitmap"
+            | "image/x-portable-graymap"
+            | "image/x-portable-pixmap" => state.format_from_caps = Some(ImageFormat::Pnm),
+
+            #[cfg(feature = "qoi")]
+            "image/qoi" | "image/x-qoi" => state.format_from_caps = Some(ImageFormat::Qoi),
+
+            #[cfg(feature = "sgi")]
+            "image/sgi" => state.format_from_caps = None,
+
+            #[cfg(feature = "tga")]
+            "image/x-targa" | "image/x-tga" => state.format_from_caps = Some(ImageFormat::Tga),
+
+            #[cfg(feature = "tiff")]
+            "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
+
+            #[cfg(feature = "wbmp")]
+            "image/vnd.wap.wbmp" => state.format_from_caps = None,
+
+            #[cfg(feature = "xbm")]
+            "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
+
+            #[cfg(feature = "xpm")]
+            "image/x-xpixmap" => state.format_from_caps = None,
+
+            v => {
+                return Err(gst::error_msg!(
+                    gst::StreamError::CodecNotFound,
+                    ["Unknown mimetype {v}"]
+                ));
+            }
+        };
+        state.in_fps = match mime.get::<gst::Fraction>("framerate") {
+            Ok(v) => {
+                gst::debug!(
                     CAT,
                     imp = self,
-                    "No mimetype or framerate available from caps"
+                    "got framerate of {} fps => packetized mode",
+                    v,
                 );
+                v.into()
+            }
+            Err(v) => {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "no framerate, assuming single image: {v:?}"
+                );
+                None
+            }
+        };
+        state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
+            Ok(v) => v.into(),
+            Err(v) => {
+                gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
+                None
             }
         };
 
