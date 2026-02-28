@@ -393,7 +393,8 @@ impl Encoder {
         })?;
 
         let output_buffer = gst::Buffer::from_mut_slice(cursor.into_inner());
-        // FIXME: what is "incremental frames" in pngenc?
+        // All images outputted by image-rs are whole frames
+        // (see comment in pngenc, same applies)
         frame.set_flags(gst_video::VideoCodecFrameFlags::SYNC_POINT);
         frame.set_output_buffer(output_buffer);
         self.obj().finish_frame(frame)
