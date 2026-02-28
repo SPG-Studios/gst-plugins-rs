@@ -214,11 +214,15 @@ impl VideoEncoderImpl for Encoder {
 
     fn handle_frame(
         &self,
-        mut frame: gst_video::VideoCodecFrame,
+        frame: gst_video::VideoCodecFrame,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let state_guard = self.state.lock().unwrap();
-
-        let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
+        let video_info = {
+            let state_guard = self.state.lock().unwrap();
+    
+            let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
+    
+            state.video_info.clone()
+        };
 
         let format = self.settings.lock().unwrap().format;
 
@@ -229,112 +233,141 @@ impl VideoEncoderImpl for Encoder {
             frame.system_frame_number()
         );
 
-        let mut image = {
-            let input_buffer = frame.input_buffer().expect("frame without input buffer");
-            let input_map = input_buffer.map_readable().unwrap();
-            match state.video_info.format() {
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Rgba => image::RgbaImage::from_raw(
-                    state.video_info.width(),
-                    state.video_info.height(),
-                    input_map.to_vec(),
-                )
-                .map(|v| image::DynamicImage::from(v)),
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Abgr => image::RgbaImage::from_raw(
-                    state.video_info.width(),
-                    state.video_info.height(),
-                    input_map.to_vec(),
-                )
-                .map(|v| image::DynamicImage::from(v)),
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Rgb => image::RgbImage::from_raw(
-                    state.video_info.width(),
-                    state.video_info.height(),
-                    input_map.to_vec(),
-                )
-                .map(|v| image::DynamicImage::from(v)),
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Bgr => image::RgbImage::from_raw(
-                    state.video_info.width(),
-                    state.video_info.height(),
-                    input_map.to_vec(),
-                )
-                .map(|v| image::DynamicImage::from(v)),
-                gst_video::VideoFormat::Gray8 => image::GrayImage::from_raw(
-                    state.video_info.width(),
-                    state.video_info.height(),
-                    input_map.to_vec(),
-                )
-                .map(|v| image::DynamicImage::from(v)),
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Gray16Le => {
-                    let input = unsafe {
-                        std::slice::from_raw_parts(
-                            input_map.as_ptr() as *const u16,
-                            input_map.size() / 2,
-                        )
-                    };
-                    image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
-                        state.video_info.width(),
-                        state.video_info.height(),
-                        input.to_vec(),
-                    )
-                    .map(|v| image::DynamicImage::from(v))
-                }
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Gray16Be => {
-                    let input = unsafe {
-                        std::slice::from_raw_parts(
-                            input_map.as_ptr() as *const u16,
-                            input_map.size() / 2,
-                        )
-                    };
-                    image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
-                        state.video_info.width(),
-                        state.video_info.height(),
-                        input.to_vec(),
-                    )
-                    .map(|v| image::DynamicImage::from(v))
-                }
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Rgba64Le => {
-                    let input = unsafe {
-                        std::slice::from_raw_parts(
-                            input_map.as_ptr() as *const u16,
-                            input_map.size() / 2,
-                        )
-                    };
-                    image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
-                        state.video_info.width(),
-                        state.video_info.height(),
-                        input.to_vec(),
-                    )
-                    .map(|v| image::DynamicImage::from(v))
-                }
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Rgba64Be => {
-                    let input = unsafe {
-                        std::slice::from_raw_parts(
-                            input_map.as_ptr() as *const u16,
-                            input_map.size() / 2,
-                        )
-                    };
-                    image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
-                        state.video_info.width(),
-                        state.video_info.height(),
-                        input.to_vec(),
-                    )
-                    .map(|v| image::DynamicImage::from(v))
-                }
-                _ => unimplemented!(),
+        let input_buffer = frame.input_buffer_owned().expect("frame without input buffer");
+        let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
+        match video_info.format() {
+            #[cfg(target_endian = "little")]
+            gst_video::VideoFormat::Rgba => {
+                let image = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input_map.as_slice(),
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
             }
-            .ok_or(gst::FlowError::NotSupported)
-        }?;
+            #[cfg(target_endian = "big")]
+            gst_video::VideoFormat::Abgr => {
+                let image = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input_map.as_slice(),
+                ).ok_or(gst::FlowError::NotSupported)?;
 
-        let color_space = utils::videoinfo_to_cicp(state.video_info.colorimetry());
+                self.render_frame(image, frame, video_info, format)
+            },
+            #[cfg(target_endian = "little")]
+            gst_video::VideoFormat::Rgb => {
+                let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input_map.as_slice(),
+                ).ok_or(gst::FlowError::NotSupported)?;
 
-        drop(state_guard);
+                self.render_frame(image, frame, video_info, format)
+            }
+            #[cfg(target_endian = "big")]
+            gst_video::VideoFormat::Bgr => {
+                let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input_map.as_slice(),
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
+            },
+            gst_video::VideoFormat::Gray8 => {
+                let image = image::ImageBuffer::<image::Luma<u8>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input_map.as_slice(),
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
+            },
+            #[cfg(target_endian = "little")]
+            gst_video::VideoFormat::Gray16Le => {
+                let input = unsafe {
+                    std::slice::from_raw_parts(
+                        input_map.as_ptr() as *const u16,
+                        input_map.size() / 2,
+                    )
+                };
+                let image = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input,
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
+            }
+            #[cfg(target_endian = "big")]
+            gst_video::VideoFormat::Gray16Be => {
+                let input = unsafe {
+                    std::slice::from_raw_parts(
+                        input_map.as_ptr() as *const u16,
+                        input_map.size() / 2,
+                    )
+                };
+                let image = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input,
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
+            }
+            #[cfg(target_endian = "little")]
+            gst_video::VideoFormat::Rgba64Le => {
+                let input = unsafe {
+                    std::slice::from_raw_parts(
+                        input_map.as_ptr() as *const u16,
+                        input_map.size() / 2,
+                    )
+                };
+                let image = image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input,
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
+            }
+            #[cfg(target_endian = "big")]
+            gst_video::VideoFormat::Rgba64Be => {
+                let input = unsafe {
+                    std::slice::from_raw_parts(
+                        input_map.as_ptr() as *const u16,
+                        input_map.size() / 2,
+                    )
+                };
+                let image = image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+                    video_info.width(),
+                    video_info.height(),
+                    input,
+                ).ok_or(gst::FlowError::NotSupported)?;
+
+                self.render_frame(image, frame, video_info, format)
+            }
+            _ => unimplemented!(),
+        }
+    }
+}
+
+
+impl Encoder {
+    fn render_frame<P: image::Pixel, C>
+    (
+        &self,
+        mut image: image::ImageBuffer<P, C>,
+        mut frame: gst_video::VideoCodecFrame,
+        video_info: gst_video::VideoInfo,
+        format: super::Format,
+    ) -> Result<gst::FlowSuccess, gst::FlowError>
+    where P: image::PixelWithColorType,
+        [P::Subpixel]: image::EncodableLayout,
+        C: std::ops::Deref<Target = [P::Subpixel]>{
+        let color_space = utils::videoinfo_to_cicp(video_info.colorimetry());
 
         image.set_color_space(color_space).map_err(|e| {
             gst::error!(CAT, imp = self, "Failed to write image data: {e}");
