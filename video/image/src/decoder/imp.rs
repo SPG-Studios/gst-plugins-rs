@@ -598,7 +598,7 @@ impl ImageRsDecoder {
         }
 
         if state.packetized {
-            assert!(state.buffers.len() == 1);
+            assert_eq!(state.buffers.len(), 1);
 
             let buffer = state.buffers.drain(..).nth(0).unwrap();
 
