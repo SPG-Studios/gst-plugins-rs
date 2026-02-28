@@ -123,8 +123,6 @@ impl Decoder {
         let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
         let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
 
-        // into_frames already blends the previous and current frames
-        // see https://github.com/image-rs/image/blob/0779d359908cf9bf04cbd1998a1a9940e368cd56/src/codecs/gif.rs#L355
         for frame in frame_list {
             let frame = frame.map_err(|v| {
                 gst::error_msg!(
