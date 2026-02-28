@@ -639,7 +639,7 @@ impl ImageRsDecoder {
         return_caps
     }
 
-    fn query_event(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
+    fn sink_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
 
         match query.view_mut() {
@@ -751,7 +751,7 @@ impl ObjectSubclass for ImageRsDecoder {
                 ImageRsDecoder::catch_panic_pad_function(
                     parent,
                     || false,
-                    |dec| dec.query_event(pad, query),
+                    |dec| dec.sink_query(pad, query),
                 )
             })
             .build();
