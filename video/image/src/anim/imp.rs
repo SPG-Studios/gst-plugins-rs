@@ -46,7 +46,6 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         // but needs image-rs support
         // "image/avif",
         "image/gif",
-        "image/x-pcx",
         "image/png",
         "image/webp",
     ]
@@ -169,12 +168,7 @@ impl Decoder {
 
                     "image/png" => state.format_from_caps = Some(ImageFormat::Png),
 
-                    v => {
-                        return Err(gst::error_msg!(
-                            gst::StreamError::CodecNotFound,
-                            ["Unknown mimetype {v}"]
-                        ));
-                    }
+                    _ => unreachable!(),
                 };
                 state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
                     Ok(v) => v.into(),
