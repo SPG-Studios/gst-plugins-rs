@@ -62,6 +62,44 @@ impl From<Format> for &'static str {
     }
 }
 
+impl TryFrom<&str> for Format {
+    type Error = String;
+
+    // FIXME: there are more mimetypes that are equally valid,
+    // (see decoder) but how do I export these in the pad templates?
+    // Those make the conversion Format -> String not 1:1
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "image/avif" => Ok(Format::Avif),
+            "image/bmp" => Ok(Format::Bmp),
+            "image/exr" => Ok(Format::Exr),
+            "image/x-farbfeld" => Ok(Format::Farbfeld),
+            "image/jpeg" => Ok(Format::Jpeg),
+            "image/png" => Ok(Format::Png),
+            "image/qoi" => Ok(Format::Qoi),
+            "image/x-tga" => Ok(Format::Tga),
+            "image/tiff" => Ok(Format::Tiff),
+            v => Err(format!("Unsupported value {}", v)),
+        }
+    }
+}
+
+impl Format {
+    fn all_values() -> impl IntoIterator<Item = Format> {
+        [
+            Format::Avif,
+            Format::Bmp,
+            Format::Exr,
+            Format::Farbfeld,
+            Format::Jpeg,
+            Format::Png,
+            Format::Qoi,
+            Format::Tga,
+            Format::Tiff,
+        ]
+    }
+}
+
 glib::wrapper! {
     pub struct Encoder(ObjectSubclass<imp::Encoder>) @extends gst_video::VideoEncoder, gst::Element, gst::Object;
 }

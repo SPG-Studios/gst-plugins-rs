@@ -25,52 +25,14 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-#[derive(Debug, Clone, Copy)]
-struct Settings {
-    format: super::Format,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings {
-            format: super::Format::Tiff,
-        }
-    }
-}
-
 struct State {
     video_info: gst_video::VideoInfo,
-}
-
-fn mimetypes() -> impl IntoIterator<Item = &'static str> {
-    [
-        #[cfg(feature = "avif")]
-        "image/avif",
-        #[cfg(any(feature = "bmp", feature = "ico"))]
-        "image/bmp",
-        #[cfg(feature = "exr")]
-        "image/exr",
-        #[cfg(feature = "ff")]
-        "image/x-farbfeld",
-        #[cfg(feature = "jpeg")]
-        "image/jpeg",
-        #[cfg(any(feature = "png", feature = "ico"))]
-        "image/png",
-        // https://github.com/phoboslab/qoi/issues/167
-        #[cfg(feature = "qoi")]
-        "image/qoi",
-        #[cfg(feature = "tga")]
-        "image/x-tga",
-        #[cfg(feature = "tiff")]
-        "image/tiff",
-        // FIXME: webp
-    ]
+    format: super::Format,
 }
 
 #[derive(Default)]
 pub struct Encoder {
     state: Mutex<Option<State>>,
-    settings: Mutex<Settings>,
 }
 
 #[glib::object_subclass]
@@ -80,41 +42,7 @@ impl ObjectSubclass for Encoder {
     type ParentType = gst_video::VideoEncoder;
 }
 
-impl ObjectImpl for Encoder {
-    fn properties() -> &'static [glib::ParamSpec] {
-        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
-            vec![
-                glib::ParamSpecEnum::builder_with_default("format", super::Format::Tiff)
-                    .nick("File format")
-                    .blurb("Selects the container format")
-                    .mutable_ready()
-                    .build(),
-            ]
-        });
-
-        PROPERTIES.as_ref()
-    }
-
-    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
-        match pspec.name() {
-            "format" => {
-                let mut settings = self.settings.lock().unwrap();
-                settings.format = value.get().expect("type checked upstream");
-            }
-            _ => unreachable!(),
-        }
-    }
-
-    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
-        match pspec.name() {
-            "format" => {
-                let settings = self.settings.lock().unwrap();
-                settings.format.to_value()
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
+impl ObjectImpl for Encoder {}
 
 impl GstObjectImpl for Encoder {}
 
@@ -167,8 +95,9 @@ impl ElementImpl for Encoder {
             {
                 let caps = src_caps.get_mut().unwrap();
 
-                for mimetype in mimetypes() {
-                    caps.append(gst::Caps::new_empty_simple(mimetype));
+                for f in super::Format::all_values() {
+                    let v: &'static str = f.into();
+                    caps.append(gst::Caps::new_empty_simple(v));
                 }
             };
             let src_pad_template = gst::PadTemplate::new(
@@ -196,35 +125,43 @@ impl VideoEncoderImpl for Encoder {
         &self,
         state: &gst_video::VideoCodecState<'static, gst_video::video_codec_state::Readable>,
     ) -> Result<(), gst::LoggableError> {
-        let video_info = state.info().clone();
-        gst::debug!(CAT, imp = self, "Setting format {:?}", video_info);
-
-        *self.state.lock().unwrap() = Some(State { video_info });
-
-        let format: &str = self.settings.lock().unwrap().format.into();
-
         let instance = self.obj();
+
+        let mut allowed_caps = match instance.src_pad().allowed_caps() {
+            None => instance.src_pad().pad_template_caps(),
+            Some(caps) => caps,
+        };
+
+        allowed_caps.fixate();
+
+        let s = allowed_caps.structure(0).unwrap();
+
         let output_state = instance
-            .set_output_state(gst::Caps::builder(format).build(), Some(state))
+            .set_output_state(gst::Caps::builder(s.name()).build(), Some(state))
             .map_err(|_| gst::loggable_error!(CAT, "Failed to set output state"))?;
         instance
             .negotiate(output_state)
-            .map_err(|_| gst::loggable_error!(CAT, "Failed to negotiate"))
+            .map_err(|_| gst::loggable_error!(CAT, "Failed to negotiate"))?;
+
+        *self.state.lock().unwrap() = Some(State {
+            video_info: instance.output_state().unwrap().info().clone(),
+            format: s.name().as_str().try_into().unwrap(),
+        });
+
+        Ok(())
     }
 
     fn handle_frame(
         &self,
         frame: gst_video::VideoCodecFrame,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let video_info = {
+        let (video_info, format) = {
             let state_guard = self.state.lock().unwrap();
 
             let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
 
-            state.video_info.clone()
+            (state.video_info.clone(), state.format)
         };
-
-        let format = self.settings.lock().unwrap().format;
 
         gst::debug!(
             CAT,
