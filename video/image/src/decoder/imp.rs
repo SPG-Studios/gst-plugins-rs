@@ -17,9 +17,9 @@ use crate::utils;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "ImageRsDecoder",
+        "imagersdec",
         gst::DebugColorFlags::empty(),
-        Some("image-rs decoder"),
+        Some("image-rs decoder for still image formats"),
     )
 });
 
@@ -874,9 +874,9 @@ impl ElementImpl for ImageRsDecoder {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
-                "image-rs decoder",
-                "Codec/Decoder/Video",
-                "Decodes still images",
+                "image-rs decoder (still formats)",
+                "Codec/Decoder/Image",
+                "Decodes still image formats",
                 "Amyspark <amy@centricular.com>",
             )
         });

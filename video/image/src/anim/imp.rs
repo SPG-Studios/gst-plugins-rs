@@ -20,7 +20,7 @@ use crate::utils;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "AnimatedImageRsDecoder",
+        "animatedimagersdec",
         gst::DebugColorFlags::empty(),
         Some("image-rs decoder for animated formats"),
     )
@@ -311,7 +311,7 @@ impl Decoder {
 
 #[glib::object_subclass]
 impl ObjectSubclass for Decoder {
-    const NAME: &'static str = "GstRsDecoder";
+    const NAME: &'static str = "GstImageRsAnimDecoder";
     type Type = super::Decoder;
     type ParentType = gst::Element;
 
@@ -367,7 +367,7 @@ impl ElementImpl for Decoder {
             gst::subclass::ElementMetadata::new(
                 "image-rs decoder (animated formats)",
                 "Codec/Decoder/Video",
-                "Decodes potentially animated images",
+                "Decodes animated image formats",
                 "Amyspark <amy@centricular.com>",
             )
         });
