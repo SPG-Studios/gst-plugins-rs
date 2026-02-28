@@ -31,7 +31,6 @@ struct Settings {
 
 #[derive(Default)]
 struct State {
-    last_timestamp: Option<gst::ClockTime>,
     buffers: Vec<gst::Buffer>,
     format_from_caps: Option<image::ImageFormat>,
     total_size: usize,
@@ -143,9 +142,6 @@ impl ImageRsDecoder {
         let settings = self.settings.lock().unwrap();
 
         let timestamp = buffer.pts();
-        if let Some(v) = timestamp {
-            state.last_timestamp = Some(v);
-        }
 
         gst::log!(CAT, imp = self, "buffer with ts: {timestamp:?}");
 
@@ -156,7 +152,7 @@ impl ImageRsDecoder {
             state.buffers.push(buffer);
 
             if state.packetized {
-                return self.decode(settings, state);
+                return self.decode(timestamp, settings, state);
             }
 
             Ok(gst::FlowSuccess::Ok)
@@ -252,18 +248,190 @@ impl ImageRsDecoder {
         }
     }
 
+    fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
+        let mime = caps.structure().unwrap();
+        let mut state = self.state.lock().unwrap();
+        match mime.name().as_str() {
+            #[cfg(feature = "avif")]
+            "image/avif" => state.format_from_caps = Some(image::ImageFormat::Avif),
+
+            // The ICO format support enables PNG and BMP as transitive deps
+            #[cfg(any(feature = "bmp", feature = "ico"))]
+            "image/bmp" | "image/x-MS-bmp" => {
+                state.format_from_caps = Some(image::ImageFormat::Bmp)
+            }
+
+            #[cfg(feature = "dds")]
+            "image/vnd-ms.dds" | "image/x-direct-draw-surface" => {
+                state.format_from_caps = Some(image::ImageFormat::Dds)
+            }
+
+            #[cfg(feature = "exr")]
+            "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::OpenExr),
+
+            #[cfg(feature = "ff")]
+            "image/x-farbfeld" => state.format_from_caps = Some(image::ImageFormat::Farbfeld),
+
+            #[cfg(feature = "hdr")]
+            "image/vnd.radiance" => state.format_from_caps = Some(ImageFormat::Hdr),
+
+            #[cfg(feature = "ico")]
+            "image/x-icon" => state.format_from_caps = Some(ImageFormat::Ico),
+
+            #[cfg(feature = "jpeg")]
+            "image/jpeg" => state.format_from_caps = Some(ImageFormat::Jpeg),
+
+            #[cfg(feature = "ora")]
+            "image/openraster" => state.format_from_caps = None,
+
+            #[cfg(feature = "otb")]
+            "image/x-nokia-over-the-air-bitmap" => state.format_from_caps = None,
+
+            #[cfg(any(feature = "png", feature = "ico"))]
+            "image/png" => state.format_from_caps = Some(ImageFormat::Png),
+
+            #[cfg(feature = "pnm")]
+            "image/x-portable-anymap"
+            | "image/x-portable-bitmap"
+            | "image/x-portable-graymap"
+            | "image/x-portable-pixmap" => state.format_from_caps = Some(ImageFormat::Pnm),
+
+            #[cfg(feature = "qoi")]
+            "image/qoi" | "image/x-qoi" => state.format_from_caps = Some(ImageFormat::Qoi),
+
+            #[cfg(feature = "sgi")]
+            "image/sgi" => state.format_from_caps = None,
+
+            #[cfg(feature = "tga")]
+            "image/x-targa" | "image/x-tga" => state.format_from_caps = Some(ImageFormat::Tga),
+
+            #[cfg(feature = "tiff")]
+            "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
+
+            #[cfg(feature = "wbmp")]
+            "image/vnd.wap.wbmp" => state.format_from_caps = None,
+
+            #[cfg(feature = "xbm")]
+            "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
+
+            #[cfg(feature = "xpm")]
+            "image/x-xpixmap" => state.format_from_caps = None,
+
+            v => {
+                return Err(gst::error_msg!(
+                    gst::StreamError::CodecNotFound,
+                    ["Unknown mimetype {v}"]
+                ));
+            }
+        };
+        state.in_fps = match mime.get::<gst::Fraction>("framerate") {
+            Ok(v) => {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "got framerate of {} fps => packetized mode",
+                    v,
+                );
+                v.into()
+            }
+            Err(v) => {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "no framerate, assuming single image: {v:?}"
+                );
+                None
+            }
+        };
+        state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
+            Ok(v) => v.into(),
+            Err(v) => {
+                gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
+                None
+            }
+        };
+
+        Ok(())
+    }
+
     #[inline]
     fn render_single_frame<'a>(
         &'a self,
-        image: DynamicImage,
-        exif: Option<Vec<u8>>,
-        xmp: Option<Vec<u8>>,
-        iptc: Option<Vec<u8>>,
-        icc: Option<Vec<u8>>,
+        settings: MutexGuard<'a, Settings>,
         mut state: MutexGuard<'a, State>,
-    ) -> Result<(), gst::FlowError> {
+        source: &mut dyn ImageRsBuffer<'a>,
+        timestamp: Option<gst::ClockTime>,
+    ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        let mut reader = ImageReader::new(source);
+
+        reader = match state.format_from_caps {
+            Some(v) => {
+                reader.set_format(v);
+                reader
+            }
+            None => reader.with_guessed_format().map_err(|v| {
+                gst::error!(
+                    CAT,
+                    imp = self,
+                    "No caps available, failed guessing format: {v}"
+                );
+                gst::FlowError::Error
+            })?,
+        };
+
+        let mut limits = Limits::default();
+        {
+            if settings.max_alloc != 0 {
+                limits.max_alloc = Some(settings.max_alloc);
+            }
+        }
+        reader.limits(limits);
+
+        drop(settings);
+
+        let mut decoder = reader.into_decoder().map_err(|v| {
+            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+            gst::FlowError::Error
+        })?;
+
+        let exif = match decoder.exif_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving EXIF metadata: {v}");
+                None
+            }
+        };
+
+        let xmp = match decoder.xmp_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving XMP metadata: {v}");
+                None
+            }
+        };
+
+        let icc = match decoder.icc_profile() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving ICC profile: {v}");
+                None
+            }
+        };
+
+        let iptc = match decoder.iptc_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving IPTC metadata: {v}");
+                None
+            }
+        };
+
+        let image = DynamicImage::from_decoder(decoder).map_err(|v| {
+            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+            gst::FlowError::Error
+        })?;
+
         let wh = image.dimensions();
-        let timestamp = state.last_timestamp;
 
         let (image_rgba8, fmt, strides) = self.convert_format_and_strides(&image);
 
@@ -389,7 +557,6 @@ impl ImageRsDecoder {
 
         // FIXME: this should be validated
         // assert_eq!(state.info.as_ref().unwrap().format(), fmt);
-        // let mut outbuf = state.pool.as_ref().unwrap().acquire_buffer(None)?;
 
         let mut outbuf = match image_rgba8 {
             Some(v) => gst::Buffer::from_slice(Wrapper(DynamicImage::from(v))),
@@ -416,197 +583,12 @@ impl ImageRsDecoder {
             }
         }
 
-        Ok(())
-    }
-
-    fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
-        let mime = caps.structure().unwrap();
-        let mut state = self.state.lock().unwrap();
-        match mime.name().as_str() {
-            #[cfg(feature = "avif")]
-            "image/avif" => state.format_from_caps = Some(image::ImageFormat::Avif),
-
-            // The ICO format support enables PNG and BMP as transitive deps
-            #[cfg(any(feature = "bmp", feature = "ico"))]
-            "image/bmp" | "image/x-MS-bmp" => {
-                state.format_from_caps = Some(image::ImageFormat::Bmp)
-            }
-
-            #[cfg(feature = "dds")]
-            "image/vnd-ms.dds" | "image/x-direct-draw-surface" => {
-                state.format_from_caps = Some(image::ImageFormat::Dds)
-            }
-
-            #[cfg(feature = "exr")]
-            "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::OpenExr),
-
-            #[cfg(feature = "ff")]
-            "image/x-farbfeld" => state.format_from_caps = Some(image::ImageFormat::Farbfeld),
-
-            #[cfg(feature = "hdr")]
-            "image/vnd.radiance" => state.format_from_caps = Some(ImageFormat::Hdr),
-
-            #[cfg(feature = "ico")]
-            "image/x-icon" => state.format_from_caps = Some(ImageFormat::Ico),
-
-            #[cfg(feature = "jpeg")]
-            "image/jpeg" => state.format_from_caps = Some(ImageFormat::Jpeg),
-
-            #[cfg(feature = "ora")]
-            "image/openraster" => state.format_from_caps = None,
-
-            #[cfg(feature = "otb")]
-            "image/x-nokia-over-the-air-bitmap" => state.format_from_caps = None,
-
-            #[cfg(any(feature = "png", feature = "ico"))]
-            "image/png" => state.format_from_caps = Some(ImageFormat::Png),
-
-            #[cfg(feature = "pnm")]
-            "image/x-portable-anymap"
-            | "image/x-portable-bitmap"
-            | "image/x-portable-graymap"
-            | "image/x-portable-pixmap" => state.format_from_caps = Some(ImageFormat::Pnm),
-
-            #[cfg(feature = "qoi")]
-            "image/qoi" | "image/x-qoi" => state.format_from_caps = Some(ImageFormat::Qoi),
-
-            #[cfg(feature = "sgi")]
-            "image/sgi" => state.format_from_caps = None,
-
-            #[cfg(feature = "tga")]
-            "image/x-targa" | "image/x-tga" => state.format_from_caps = Some(ImageFormat::Tga),
-
-            #[cfg(feature = "tiff")]
-            "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
-
-            #[cfg(feature = "wbmp")]
-            "image/vnd.wap.wbmp" => state.format_from_caps = None,
-
-            #[cfg(feature = "xbm")]
-            "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
-
-            #[cfg(feature = "xpm")]
-            "image/x-xpixmap" => state.format_from_caps = None,
-
-            v => {
-                return Err(gst::error_msg!(
-                    gst::StreamError::CodecNotFound,
-                    ["Unknown mimetype {v}"]
-                ));
-            }
-        };
-        state.in_fps = match mime.get::<gst::Fraction>("framerate") {
-            Ok(v) => {
-                gst::debug!(
-                    CAT,
-                    imp = self,
-                    "got framerate of {} fps => packetized mode",
-                    v,
-                );
-                v.into()
-            }
-            Err(v) => {
-                gst::debug!(
-                    CAT,
-                    imp = self,
-                    "no framerate, assuming single image: {v:?}"
-                );
-                None
-            }
-        };
-        state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
-            Ok(v) => v.into(),
-            Err(v) => {
-                gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
-                None
-            }
-        };
-
-        Ok(())
-    }
-
-    #[inline]
-    fn create_reader<'a>(
-        &'a self,
-        settings: MutexGuard<'a, Settings>,
-        state: MutexGuard<'a, State>,
-        source: &mut dyn ImageRsBuffer<'a>,
-    ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let mut reader = ImageReader::new(source);
-
-        reader = match state.format_from_caps {
-            Some(v) => {
-                reader.set_format(v);
-                reader
-            }
-            None => reader.with_guessed_format().map_err(|v| {
-                gst::error!(
-                    CAT,
-                    imp = self,
-                    "No caps available, failed guessing format: {v}"
-                );
-                gst::FlowError::Error
-            })?,
-        };
-
-        let mut limits = Limits::default();
-        {
-            if settings.max_alloc != 0 {
-                limits.max_alloc = Some(settings.max_alloc);
-            }
-        }
-        reader.limits(limits);
-
-        drop(settings);
-
-        let mut decoder = reader.into_decoder().map_err(|v| {
-            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
-            gst::FlowError::Error
-        })?;
-
-        let exif = match decoder.exif_metadata() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving EXIF metadata: {v}");
-                None
-            }
-        };
-
-        let xmp = match decoder.xmp_metadata() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving XMP metadata: {v}");
-                None
-            }
-        };
-
-        let icc = match decoder.icc_profile() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving ICC profile: {v}");
-                None
-            }
-        };
-
-        let iptc = match decoder.iptc_metadata() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving IPTC metadata: {v}");
-                None
-            }
-        };
-
-        let image = DynamicImage::from_decoder(decoder).map_err(|v| {
-            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
-            gst::FlowError::Error
-        })?;
-        self.render_single_frame(image, exif, xmp, iptc, icc, state)?;
-
         Ok(gst::FlowSuccess::Ok)
     }
 
     fn decode<'a>(
         &'a self,
+        timestamp: Option<gst::ClockTime>,
         settings: MutexGuard<'a, Settings>,
         mut state: MutexGuard<'a, State>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
@@ -622,7 +604,7 @@ impl ImageRsDecoder {
 
             let mut cursor = Cursor::new(buffer.map_readable().unwrap());
 
-            self.create_reader(settings, state, &mut cursor)
+            self.render_single_frame(settings, state, &mut cursor, timestamp)
         } else {
             let mut buf = Vec::with_capacity(state.total_size);
 
@@ -632,7 +614,7 @@ impl ImageRsDecoder {
 
             let mut cursor = Cursor::new(buf);
 
-            self.create_reader(settings, state, &mut cursor)
+            self.render_single_frame(settings, state, &mut cursor, timestamp)
         }
     }
 
@@ -690,7 +672,7 @@ impl ImageRsDecoder {
                 let state = self.state.lock().unwrap();
                 if !state.buffers.is_empty() {
                     let settings = self.settings.lock().unwrap();
-                    if let Err(v) = self.decode(settings, state) {
+                    if let Err(v) = self.decode(None, settings, state) {
                         match v {
                             gst::FlowError::Flushing
                             | gst::FlowError::Eos
