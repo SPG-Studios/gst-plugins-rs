@@ -169,71 +169,59 @@ impl ImageRsDecoder {
 
     fn convert_format_and_strides(
         &self,
-        image: &DynamicImage,
-    ) -> (
-        Option<RgbaImage>,
-        gst_video::VideoFormat,
-        (usize, usize, usize),
-    ) {
+        image: DynamicImage,
+    ) -> (DynamicImage, gst_video::VideoFormat, (usize, usize, usize)) {
         match image {
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgb8(p) => (
-                None,
-                gst_video::VideoFormat::Rgb,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageRgb8(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Rgb, strides)
+            }
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgb8(p) => (
-                None,
-                gst_video::VideoFormat::Bgr,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageRgb8(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Bgr, strides)
+            },
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba8(p) => (
-                None,
-                gst_video::VideoFormat::Rgba,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageRgba8(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Rgba, strides)
+            },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgba8(p) => (
-                None,
-                gst_video::VideoFormat::Abgr,
-                p.as_flat_samples().strides_cwh(),
-            ),
-            DynamicImage::ImageLuma8(p) => (
-                None,
-                gst_video::VideoFormat::Gray8,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageRgba8(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Rgba, strides)
+            },
+            DynamicImage::ImageLuma8(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Gray8, strides)
+            },
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageLuma16(p) => (
-                None,
-                gst_video::VideoFormat::Gray16Le,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageLuma16(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Gray16Le, strides)
+            },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageLuma16(p) => (
-                None,
-                gst_video::VideoFormat::Gray16Be,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageLuma16(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Gray16Be, strides)
+            },
             #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba16(p) => (
-                None,
-                gst_video::VideoFormat::Rgba64Le,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageRgba16(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Rgba64Le, strides)
+            },
             #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgba16(p) => (
-                None,
-                gst_video::VideoFormat::Rgba64Be,
-                p.as_flat_samples().strides_cwh(),
-            ),
+            DynamicImage::ImageRgba16(ref p) => {
+                let strides = p.as_flat_samples().strides_cwh();
+                (image, gst_video::VideoFormat::Rgba64Be, strides)
+            },
             v => {
-                gst::element_warning!(
-                    self.obj(),
-                    gst::StreamError::Decode,
-                    ["Format {:?} not supported, converting to RGBA", v.color()]
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Format {:?} not supported, converting to RGBA",
+                    v.color()
                 );
                 let image_rgba8 = v.to_rgba8();
                 let fmt = if cfg!(target_endian = "little") {
@@ -243,7 +231,7 @@ impl ImageRsDecoder {
                 };
                 let strides = image_rgba8.as_flat_samples().strides_cwh();
 
-                (Some(image_rgba8), fmt, strides)
+                (DynamicImage::from(image_rgba8), fmt, strides)
             }
         }
     }
@@ -509,7 +497,7 @@ impl ImageRsDecoder {
 
         let wh = image.dimensions();
 
-        let (image_rgba8, fmt, strides) = self.convert_format_and_strides(&image);
+        let (image, fmt, strides) = self.convert_format_and_strides(image);
 
         let pending_events = if state.info.is_none() {
             gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
@@ -518,10 +506,7 @@ impl ImageRsDecoder {
 
             let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
 
-            let color_info = match &image_rgba8 {
-                Some(v) => utils::cicp_to_videoinfo(v.color_space()),
-                None => utils::cicp_to_videoinfo(image.color_space()),
-            };
+            let color_info = utils::cicp_to_videoinfo(image.color_space());
 
             let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps_if_some(fps)
@@ -565,10 +550,7 @@ impl ImageRsDecoder {
         // FIXME: this should be validated
         // assert_eq!(state.info.as_ref().unwrap().format(), fmt);
 
-        let mut outbuf = match image_rgba8 {
-            Some(v) => gst::Buffer::from_slice(Wrapper(DynamicImage::from(v))),
-            None => gst::Buffer::from_slice(Wrapper(image)),
-        };
+        let mut outbuf = gst::Buffer::from_slice(Wrapper(image));
         {
             let outbuf = outbuf.get_mut().unwrap();
             outbuf.set_pts(timestamp);
@@ -679,7 +661,10 @@ impl ImageRsDecoder {
                 let state = self.state.lock().unwrap();
                 if !state.buffers.is_empty() {
                     let settings = self.settings.lock().unwrap();
-                    if let Err(v) = self.decode(None, settings, state) && v != gst::FlowError::Flushing && v != gst::FlowError::NotLinked {
+                    if let Err(v) = self.decode(None, settings, state)
+                        && v != gst::FlowError::Flushing
+                        && v != gst::FlowError::NotLinked
+                    {
                         forward = false;
                         ret = false;
                     }
