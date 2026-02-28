@@ -149,7 +149,7 @@ impl ImageRsOverlay {
         // when using image-rs's own reading facilities: 7.6 => 7.2MB
         let fs = std::fs::File::open(&location).map_err(|v| {
             gst::error_msg!(
-                gst::StreamError::Failed,
+                gst::ResourceError::OpenRead,
                 ["Could not load overlay image: {}", v]
             )
         })?;
@@ -157,7 +157,7 @@ impl ImageRsOverlay {
         let reader = ImageReader::new(cursor);
         let mut argb_image = match reader.decode().map_err(|v| {
             gst::error_msg!(
-                gst::StreamError::Failed,
+                gst::StreamError::Decode,
                 ["Could not decode overlay image container: {}", v]
             )
         })? {
