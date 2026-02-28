@@ -16,7 +16,7 @@ mod anim;
 mod decoder;
 #[cfg(feature = "v1_24")]
 mod encoder;
-#[cfg(feature = "v1_24")]
+#[cfg(feature = "v1_20")]
 mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
@@ -25,7 +25,7 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     encoder::register(plugin)?;
     #[cfg(feature = "animated_formats")]
     anim::register(plugin)?;
-    #[cfg(feature = "v1_24")]
+    #[cfg(feature = "v1_20")]
     overlay::register(plugin)?;
     Ok(())
 }

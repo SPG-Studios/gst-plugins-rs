@@ -51,23 +51,6 @@ pub struct ImageRsOverlay {
     settings: Mutex<Settings>,
 }
 
-#[allow(unused)]
-fn supported_formats() -> impl IntoIterator<Item = gst_video::VideoFormat> {
-    [
-        gst_video::VideoFormat::Rgb,
-        gst_video::VideoFormat::Rgba,
-        gst_video::VideoFormat::Gray8,
-        #[cfg(target_endian = "little")]
-        gst_video::VideoFormat::Gray16Le,
-        #[cfg(target_endian = "big")]
-        gst_video::VideoFormat::Gray16Be,
-        #[cfg(target_endian = "little")]
-        gst_video::VideoFormat::Rgba64Le,
-        #[cfg(target_endian = "big")]
-        gst_video::VideoFormat::Rgba64Be,
-    ]
-}
-
 struct Wrapper(image::DynamicImage);
 
 impl AsRef<[u8]> for Wrapper {
@@ -146,13 +129,7 @@ impl ImageRsOverlay {
 
         drop(settings);
 
-        match gst_video::VideoOverlayComposition::new(Some(&rect)) {
-            Ok(comp) => state.composition = Some(comp),
-            Err(v) => {
-                gst::error!(CAT, imp = self, "Failed to render buffer: {}", v);
-                state.composition = None;
-            }
-        };
+        state.composition = Some(gst_video::VideoOverlayComposition::new(Some(&rect)).unwrap());
         state.update_composition = false;
     }
 
