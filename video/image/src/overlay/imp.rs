@@ -156,11 +156,14 @@ impl ImageRsOverlay {
         state.update_composition = false;
     }
 
-    fn load_image<'a>(&'a self, state: &mut MutexGuard<'a, State>) {
+    fn load_image<'a>(
+        &'a self,
+        state: &mut MutexGuard<'a, State>,
+    ) -> Result<(), gst::ErrorMessage> {
         let location = {
             let settings = self.settings.lock().unwrap();
-            if state.location != settings.location {
-                return;
+            if state.location == settings.location {
+                return Ok(());
             }
 
             settings.location.clone()
@@ -168,10 +171,20 @@ impl ImageRsOverlay {
 
         // Using BufReader removes the code duplication that happens
         // when using image-rs's own reading facilities: 7.6 => 7.2MB
-        let fs = std::fs::File::open(&location).unwrap();
+        let fs = std::fs::File::open(&location).map_err(|v| {
+            gst::error_msg!(
+                gst::StreamError::Failed,
+                ["Could not load overlay image: {}", v]
+            )
+        })?;
         let cursor = std::io::BufReader::new(fs);
         let reader = ImageReader::new(cursor);
-        let mut argb_image = match reader.decode().unwrap() {
+        let mut argb_image = match reader.decode().map_err(|v| {
+            gst::error_msg!(
+                gst::StreamError::Failed,
+                ["Could not decode overlay image container: {}", v]
+            )
+        })? {
             image::DynamicImage::ImageRgba8(v) => v,
             v => v.to_rgba8(),
         };
@@ -197,9 +210,9 @@ impl ImageRsOverlay {
             let color_info = {
                 let cs = utils::cicp_to_videoinfo(argb_image.color_space());
                 if cs.matrix() == gst_video::VideoColorMatrix::Unknown
-                || cs.primaries() == gst_video::VideoColorPrimaries::Unknown
-                || cs.range() == gst_video::VideoColorRange::Unknown
-                || cs.transfer() == gst_video::VideoTransferFunction::Unknown
+                    || cs.primaries() == gst_video::VideoColorPrimaries::Unknown
+                    || cs.range() == gst_video::VideoColorRange::Unknown
+                    || cs.transfer() == gst_video::VideoTransferFunction::Unknown
                 {
                     gst::warning!(
                         CAT,
@@ -235,6 +248,8 @@ impl ImageRsOverlay {
         state.location = location;
         state.image = Some(buffer);
         state.update_composition = true;
+
+        Ok(())
     }
 }
 
@@ -483,7 +498,10 @@ impl BaseTransformImpl for ImageRsOverlay {
         let mut set_passthrough = false;
         let has_no_composition = {
             let mut state = self.state.lock().unwrap();
-            self.load_image(&mut state);
+            if let Err(err) = self.load_image(&mut state) {
+                self.post_error_message(err);
+                return;
+            }
             if state.update_composition {
                 self.update_composition(&mut state);
                 set_passthrough = true;
@@ -504,7 +522,7 @@ impl VideoFilterImpl for ImageRsOverlay {
         let state = self.state.lock().unwrap();
         if let Some(v) = &state.composition {
             // FIXME: negotiate and do metadata attaching when possible
-            // See cea608overlay and 
+            // See cea608overlay and
             // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/merge_requests/2856#note_3330298
             v.blend(frame).map_err(|v| {
                 gst::error!(CAT, imp = self, "Blending failed: {}", v);
