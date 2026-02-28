@@ -177,9 +177,10 @@ impl ImageRsOverlay {
         };
         // Correct for BGRA order
         // https://github.com/image-rs/image/commit/38456b67a943f39dfad7ab35589afe7a86ea4643
+        // https://github.com/image-rs/image/pull/2712/changes#diff-e2d0a143bdfdd2f70d37b1c74f277e94b4ac51ea63824ea8fabbafbd7015ec9c
         {
-            for pix in argb_image.pixels_mut() {
-                pix.0[..3].reverse();
+            for pix in argb_image.as_chunks_mut::<4>().0 {
+                pix.swap(0, 2);
             }
         }
         let format = {
@@ -193,24 +194,28 @@ impl ImageRsOverlay {
             } else {
                 gst_video::VideoFormat::Argb
             };
-            let color_info = utils::cicp_to_videoinfo(argb_image.color_space());
-            if color_info.matrix() == gst_video::VideoColorMatrix::Unknown
-                || color_info.primaries() == gst_video::VideoColorPrimaries::Unknown
-                || color_info.range() == gst_video::VideoColorRange::Unknown
-                || color_info.transfer() == gst_video::VideoTransferFunction::Unknown
-            {
-                gst::element_error!(
-                    self.obj(),
-                    gst::StreamError::Decode,
-                    [
+            let color_info = {
+                let cs = utils::cicp_to_videoinfo(argb_image.color_space());
+                if cs.matrix() == gst_video::VideoColorMatrix::Unknown
+                || cs.primaries() == gst_video::VideoColorPrimaries::Unknown
+                || cs.range() == gst_video::VideoColorRange::Unknown
+                || cs.transfer() == gst_video::VideoTransferFunction::Unknown
+                {
+                    gst::warning!(
+                        CAT,
+                        imp = self,
                         "CICP {:?} not supported by GStreamer",
                         argb_image.color_space()
-                    ]
-                );
-            }
+                    );
+
+                    None
+                } else {
+                    Some(cs)
+                }
+            };
             gst_video::VideoInfo::builder(pixel, width, height)
                 .stride(&strides)
-                .colorimetry(&color_info)
+                .colorimetry_if_some(color_info.as_ref())
                 .build()
                 .unwrap()
         };
@@ -397,9 +402,7 @@ impl ElementImpl for ImageRsOverlay {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
-            let caps = gst_video::VideoCapsBuilder::new()
-                .format_list(gst_video::VideoFormat::iter_any())
-                .build();
+            let caps = gst_video::VideoCapsBuilder::new().build();
 
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
@@ -494,23 +497,15 @@ impl BaseTransformImpl for ImageRsOverlay {
 }
 
 impl VideoFilterImpl for ImageRsOverlay {
-    fn set_info(
-        &self,
-        incaps: &gst::Caps,
-        in_info: &gst_video::VideoInfo,
-        outcaps: &gst::Caps,
-        out_info: &gst_video::VideoInfo,
-    ) -> Result<(), gst::LoggableError> {
-        gst::info!(CAT, imp = self, "caps: {incaps}");
-        self.parent_set_info(incaps, in_info, outcaps, out_info)
-    }
-
     fn transform_frame_ip(
         &self,
         frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let state = self.state.lock().unwrap();
         if let Some(v) = &state.composition {
+            // FIXME: negotiate and do metadata attaching when possible
+            // See cea608overlay and 
+            // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/merge_requests/2856#note_3330298
             v.blend(frame).map_err(|v| {
                 gst::error!(CAT, imp = self, "Blending failed: {}", v);
                 gst::FlowError::Error
