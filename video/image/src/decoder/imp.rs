@@ -8,7 +8,6 @@ use gst::subclass::prelude::*;
 use image::Limits;
 use image::RgbaImage;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader};
-use image_extras;
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
@@ -34,7 +33,6 @@ struct Settings {
 struct State {
     last_timestamp: Option<gst::ClockTime>,
     buffers: Vec<gst::Buffer>,
-    caps: Option<gst::Caps>,
     format_from_caps: Option<image::ImageFormat>,
     total_size: usize,
     in_fps: (i32, i32),
@@ -144,10 +142,9 @@ impl ImageRsDecoder {
         let settings = self.settings.lock().unwrap();
 
         let timestamp = buffer.pts();
-        match timestamp {
-            Some(v) => state.last_timestamp = Some(v),
-            _ => {}
-        };
+        if let Some(v) = timestamp {
+            state.last_timestamp = Some(v);
+        }
 
         gst::log!(CAT, imp = self, "buffer with ts: {timestamp:?}");
 
@@ -301,15 +298,12 @@ impl ImageRsDecoder {
             let caps = &info.to_caps().unwrap();
 
             state.info = Some(info);
-            // state.caps = Some(caps.clone());
 
             let pending_events: Vec<_> = state.pending_events.drain(..).collect();
 
             drop(state);
 
-            let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
-
-            // self.setup_pool(&mut state)?;
+            let _ = self.srcpad.push_event(gst::event::Caps::new(caps));
 
             pending_events
         } else {
@@ -363,10 +357,9 @@ impl ImageRsDecoder {
                 .info(info)
                 .build();
 
-            metadata_blobs.get_mut().and_then(|v| {
+            if let Some(v) = metadata_blobs.get_mut() {
                 v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
-                Some(v)
-            });
+            }
         };
 
         if let Some(v) = icc {
@@ -382,10 +375,9 @@ impl ImageRsDecoder {
                 .info(info)
                 .build();
 
-            metadata_blobs.get_mut().and_then(|v| {
+            if let Some(v) = metadata_blobs.get_mut() {
                 v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
-                Some(v)
-            });
+            }
         }
 
         if metadata_blobs.n_tags() > 0 {
@@ -656,13 +648,10 @@ impl ImageRsDecoder {
         let tmpl_caps = ImageRsDecoder::pad_templates()[1].caps();
         let mut return_caps = capslist.intersect(tmpl_caps);
 
-        match filter {
-            Some(f) => {
-                if !return_caps.is_empty() {
-                    return_caps = return_caps.intersect(f);
-                }
-            }
-            None => {}
+        if let Some(f) = filter
+            && !return_caps.is_empty()
+        {
+            return_caps = return_caps.intersect(f);
         }
 
         return_caps

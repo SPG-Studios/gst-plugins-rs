@@ -31,7 +31,6 @@ pub(crate) enum Format {
 }
 
 impl From<Format> for image::ImageFormat {
-    #[allow(deprecated)]
     fn from(value: Format) -> Self {
         match value {
             Format::Avif => image::ImageFormat::Avif,
@@ -47,9 +46,9 @@ impl From<Format> for image::ImageFormat {
     }
 }
 
-impl Into<&'static str> for Format {
-    fn into(self) -> &'static str {
-        match self {
+impl From<Format> for &'static str {
+    fn from(value: Format) -> Self {
+        match value {
             Format::Avif => "image/avif",
             Format::Bmp => "image/bmp",
             Format::Exr => "image/exr",

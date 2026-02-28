@@ -9,7 +9,6 @@ use gst_base::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 use image::{DynamicImage, ImageReader};
-use image_extras;
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -65,12 +64,12 @@ impl ImageRsOverlay {
         let video_width: i64 = in_info.width().into();
         let video_height: i64 = in_info.height().into();
 
-        if let Some(_) = &state.composition {
+        if state.composition.is_some() {
             state.composition = None;
         }
 
         let settings = self.settings.lock().unwrap();
-        if settings.alpha == 0.0 || state.image == None {
+        if settings.alpha == 0.0 || state.image.is_none() {
             return;
         }
 

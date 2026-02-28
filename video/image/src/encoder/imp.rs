@@ -9,7 +9,7 @@ use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
-use image;
+use image::{EncodableLayout, ImageBuffer, Luma, PixelWithColorType, Rgb, Rgba};
 
 use std::io::Cursor;
 use std::sync::LazyLock;
@@ -218,9 +218,9 @@ impl VideoEncoderImpl for Encoder {
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let video_info = {
             let state_guard = self.state.lock().unwrap();
-    
+
             let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
-    
+
             state.video_info.clone()
         };
 
@@ -233,58 +233,65 @@ impl VideoEncoderImpl for Encoder {
             frame.system_frame_number()
         );
 
-        let input_buffer = frame.input_buffer_owned().expect("frame without input buffer");
+        let input_buffer = frame
+            .input_buffer_owned()
+            .expect("frame without input buffer");
         let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
         match video_info.format() {
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba => {
-                let image = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input_map.as_slice(),
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Abgr => {
-                let image = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input_map.as_slice(),
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
-            },
+            }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgb => {
-                let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
+                let image = ImageBuffer::<Rgb<u8>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input_map.as_slice(),
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Bgr => {
-                let image = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
+                let image = ImageBuffer::<Rgb<u8>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input_map.as_slice(),
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
-            },
+            }
             gst_video::VideoFormat::Gray8 => {
-                let image = image::ImageBuffer::<image::Luma<u8>, _>::from_raw(
+                let image = ImageBuffer::<Luma<u8>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input_map.as_slice(),
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
-            },
+            }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Gray16Le => {
                 let input = unsafe {
@@ -293,11 +300,12 @@ impl VideoEncoderImpl for Encoder {
                         input_map.size() / 2,
                     )
                 };
-                let image = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
+                let image = ImageBuffer::<Luma<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input,
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
             }
@@ -309,11 +317,12 @@ impl VideoEncoderImpl for Encoder {
                         input_map.size() / 2,
                     )
                 };
-                let image = image::ImageBuffer::<image::Luma<u16>, _>::from_raw(
+                let image = ImageBuffer::<Luma<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input,
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
             }
@@ -325,11 +334,12 @@ impl VideoEncoderImpl for Encoder {
                         input_map.size() / 2,
                     )
                 };
-                let image = image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+                let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input,
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
             }
@@ -341,11 +351,12 @@ impl VideoEncoderImpl for Encoder {
                         input_map.size() / 2,
                     )
                 };
-                let image = image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(
+                let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
                     input,
-                ).ok_or(gst::FlowError::NotSupported)?;
+                )
+                .ok_or(gst::FlowError::NotSupported)?;
 
                 self.render_frame(image, frame, video_info, format)
             }
@@ -354,19 +365,19 @@ impl VideoEncoderImpl for Encoder {
     }
 }
 
-
 impl Encoder {
-    fn render_frame<P: image::Pixel, C>
-    (
+    fn render_frame<P, C>(
         &self,
-        mut image: image::ImageBuffer<P, C>,
+        mut image: ImageBuffer<P, C>,
         mut frame: gst_video::VideoCodecFrame,
         video_info: gst_video::VideoInfo,
         format: super::Format,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
-    where P: image::PixelWithColorType,
-        [P::Subpixel]: image::EncodableLayout,
-        C: std::ops::Deref<Target = [P::Subpixel]>{
+    where
+        P: PixelWithColorType,
+        [P::Subpixel]: EncodableLayout,
+        C: std::ops::Deref<Target = [P::Subpixel]>,
+    {
         let color_space = utils::videoinfo_to_cicp(video_info.colorimetry());
 
         image.set_color_space(color_space).map_err(|e| {

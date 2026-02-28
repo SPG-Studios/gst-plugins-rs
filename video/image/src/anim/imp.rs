@@ -6,7 +6,6 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use image;
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
@@ -31,7 +30,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
-    format_from_caps: Option<image::ImageFormat>,
+    format_from_caps: Option<ImageFormat>,
     in_fps: (i32, i32),
     in_par: (i32, i32),
 }
@@ -169,11 +168,11 @@ impl Decoder {
             Some(mime) => {
                 let mut state = self.state.lock().unwrap();
                 match mime.name().as_str() {
-                    "image/gif" => state.format_from_caps = Some(image::ImageFormat::Gif),
+                    "image/gif" => state.format_from_caps = Some(ImageFormat::Gif),
 
-                    "image/webp" => state.format_from_caps = Some(image::ImageFormat::WebP),
+                    "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
 
-                    "image/png" => state.format_from_caps = Some(image::ImageFormat::Png),
+                    "image/png" => state.format_from_caps = Some(ImageFormat::Png),
 
                     v => {
                         return Err(gst::error_msg!(
