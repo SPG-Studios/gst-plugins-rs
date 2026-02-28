@@ -31,8 +31,8 @@ struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
     format_from_caps: Option<ImageFormat>,
-    in_fps: (i32, i32),
-    in_par: (i32, i32),
+    in_fps: Option<gst::Fraction>,
+    in_par: Option<gst::Fraction>,
 }
 
 pub struct Decoder {
@@ -80,9 +80,9 @@ impl Decoder {
     fn render_many_frames<'a>(
         &self,
         frames: Frames<'a>,
-        fps: (i32, i32),
+        fps: Option<gst::Fraction>,
         wh: (u32, u32),
-        pixel_aspect_ratio: (i32, i32),
+        pixel_aspect_ratio: Option<gst::Fraction>,
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
 
@@ -110,8 +110,8 @@ impl Decoder {
         };
 
         let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
-            .fps(fps)
-            .par(pixel_aspect_ratio)
+            .fps_if_some(fps)
+            .par_if_some(pixel_aspect_ratio)
             .colorimetry_if_some(color_info.as_ref())
             .build()
             .unwrap()
@@ -198,14 +198,14 @@ impl Decoder {
                             imp = self,
                             "no framerate, assuming single image: {v:?}"
                         );
-                        (0, 1)
+                        None
                     }
                 };
                 state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
                     Ok(v) => v.into(),
                     Err(v) => {
                         gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
-                        (1, 1)
+                        None
                     }
                 };
             }

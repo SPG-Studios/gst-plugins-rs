@@ -35,7 +35,8 @@ struct State {
     buffers: Vec<gst::Buffer>,
     format_from_caps: Option<image::ImageFormat>,
     total_size: usize,
-    in_fps: (i32, i32),
+    in_fps: Option<gst::Fraction>,
+    in_par: Option<gst::Fraction>,
     info: Option<gst_video::VideoInfo>,
     pending_events: VecDeque<gst::Event>,
     packetized: bool,
@@ -269,6 +270,7 @@ impl ImageRsDecoder {
         let pending_events = if state.info.is_none() {
             gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
             let fps = state.in_fps;
+            let par = state.in_par;
 
             let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
 
@@ -278,7 +280,8 @@ impl ImageRsDecoder {
             };
 
             let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
-                .fps(fps)
+                .fps_if_some(fps)
+                .par_if_some(par)
                 .stride(&strides)
                 .colorimetry(&color_info)
                 .build()
@@ -497,21 +500,32 @@ impl ImageRsDecoder {
                         ));
                     }
                 };
-                if let Ok(v) = mime.value("framerate") {
-                    if let Ok(framerate) = v.get::<gst::Fraction>() {
-                        state.in_fps = framerate.into();
+                state.in_fps = match mime.get::<gst::Fraction>("framerate") {
+                    Ok(v) => {
                         gst::debug!(
                             CAT,
                             imp = self,
-                            "got framerate of {}/{} fps => packetized mode",
-                            state.in_fps.0,
-                            state.in_fps.1
+                            "got framerate of {} fps => packetized mode",
+                            v,
                         );
+                        v.into()
                     }
-                } else {
-                    state.in_fps = (0, 1);
-                    gst::debug!(CAT, imp = self, "no framerate, assuming single image");
-                }
+                    Err(v) => {
+                        gst::debug!(
+                            CAT,
+                            imp = self,
+                            "no framerate, assuming single image: {v:?}"
+                        );
+                        None
+                    }
+                };
+                state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
+                    Ok(v) => v.into(),
+                    Err(v) => {
+                        gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
+                        None
+                    }
+                };
             }
             None => {
                 gst::warning!(
@@ -938,7 +952,8 @@ impl ElementImpl for ImageRsDecoder {
 
         if transition == gst::StateChange::ReadyToPaused {
             /* default to single image mode, setcaps function might not be called */
-            state.in_fps = (0, 1);
+            state.in_fps = None;
+            state.in_par = None;
             state.info = None;
         }
 
