@@ -31,7 +31,6 @@ struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
     format_from_caps: Option<ImageFormat>,
-    in_fps: Option<gst::Fraction>,
     in_par: Option<gst::Fraction>,
 }
 
@@ -80,7 +79,6 @@ impl Decoder {
     fn render_many_frames<'a>(
         &self,
         frames: Frames<'a>,
-        fps: Option<gst::Fraction>,
         wh: (u32, u32),
         pixel_aspect_ratio: Option<gst::Fraction>,
     ) -> Result<(), gst::ErrorMessage> {
@@ -110,7 +108,6 @@ impl Decoder {
         };
 
         let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
-            .fps_if_some(fps)
             .par_if_some(pixel_aspect_ratio)
             .colorimetry_if_some(color_info.as_ref())
             .build()
@@ -132,7 +129,7 @@ impl Decoder {
             })?;
 
             let delay = {
-                let d: Ratio<u32> = frame.delay().numer_denom_ms().into();
+                let d = Ratio::<u32>::from(frame.delay().numer_denom_ms());
                 (d.to_integer() as u64).mseconds()
             };
 
@@ -179,26 +176,6 @@ impl Decoder {
                         ));
                     }
                 };
-                state.in_fps = match mime.get::<gst::Fraction>("framerate") {
-                    Ok(framerate) => {
-                        gst::debug!(
-                            CAT,
-                            imp = self,
-                            "got framerate of {}/{} fps",
-                            framerate.numer(),
-                            framerate.denom()
-                        );
-                        framerate.into()
-                    }
-                    Err(v) => {
-                        gst::debug!(
-                            CAT,
-                            imp = self,
-                            "no framerate, assuming single image: {v:?}"
-                        );
-                        None
-                    }
-                };
                 state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
                     Ok(v) => v.into(),
                     Err(v) => {
@@ -235,7 +212,6 @@ impl Decoder {
             buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
         }
 
-        let fps = state.in_fps;
         let par = state.in_par;
 
         drop(state);
@@ -255,7 +231,7 @@ impl Decoder {
 
                 let frames = decoder.into_frames();
 
-                self.render_many_frames(frames, fps, wh, par)
+                self.render_many_frames(frames, wh, par)
             }
             Some(ImageFormat::WebP) => {
                 let decoder = WebPDecoder::new(reader.into_inner()).map_err(|v| {
@@ -269,7 +245,7 @@ impl Decoder {
 
                 let frames = decoder.into_frames();
 
-                self.render_many_frames(frames, fps, wh, par)
+                self.render_many_frames(frames, wh, par)
             }
             Some(ImageFormat::Png) => {
                 let decoder = PngDecoder::new(reader.into_inner()).map_err(|v| {
@@ -290,7 +266,7 @@ impl Decoder {
 
                 let frames = apng_decoder.into_frames();
 
-                self.render_many_frames(frames, fps, wh, par)
+                self.render_many_frames(frames, wh, par)
             }
             // Some(v) => image-rs default format
             // None => either failure to detect or an image-extras format
