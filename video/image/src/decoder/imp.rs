@@ -354,6 +354,112 @@ impl ImageRsDecoder {
         Ok(())
     }
 
+    fn metadata_from_decoder(&self, decoder: &mut impl ImageDecoder) -> gst::TagList {
+        let exif = match decoder.exif_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving EXIF metadata: {v}");
+                None
+            }
+        };
+
+        let xmp = match decoder.xmp_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving XMP metadata: {v}");
+                None
+            }
+        };
+
+        let icc = match decoder.icc_profile() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving ICC profile: {v}");
+                None
+            }
+        };
+
+        let iptc = match decoder.iptc_metadata() {
+            Ok(v) => v,
+            Err(v) => {
+                gst::warning!(CAT, imp = self, "Failed retrieving IPTC metadata: {v}");
+                None
+            }
+        };
+
+        let tags = gst::TagList::new();
+
+        if let Some(v) = exif {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let v_rust = unsafe {
+                let v = gst_tag::ffi::gst_tag_list_from_exif_buffer(
+                    buf.as_mut_ptr(),
+                    #[cfg(target_endian = "little")]
+                    gst::glib::ffi::G_LITTLE_ENDIAN,
+                    #[cfg(target_endian = "big")]
+                    gst::glib::ffi::G_BIG_ENDIAN,
+                    0,
+                );
+
+                gst::TagList::from_glib_full(v)
+            };
+            tags.merge(&v_rust, gst::TagMergeMode::Append);
+        };
+
+        if let Some(v) = xmp {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let v_rust = unsafe {
+                let v = gst_tag::ffi::gst_tag_list_from_xmp_buffer(buf.as_mut_ptr());
+
+                gst::TagList::from_glib_full(v)
+            };
+            tags.merge(&v_rust, gst::TagMergeMode::Append);
+        };
+
+        // These go into a separate structure
+        let mut metadata_blobs = gst::TagList::new();
+
+        if let Some(v) = iptc {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let caps = gst::Caps::new_empty_simple("application/rdf+xml");
+            let info = gst::Structure::new_empty("application/rdf+xml");
+
+            let tagsample = gst::Sample::builder()
+                .buffer(&buf)
+                .caps(&caps)
+                .info(info)
+                .build();
+
+            if let Some(v) = metadata_blobs.get_mut() {
+                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
+            }
+        };
+
+        if let Some(v) = icc {
+            let buf = gst::Buffer::from_mut_slice(v);
+            let caps = gst::Caps::new_empty_simple("application/vnd.iccprofile");
+            let mut info = gst::Structure::new_empty("application/vnd.iccprofile");
+            // FIXME: image-rs's png reader does not expose the profile name
+            // see impl StreamingDecoder::parse_iccp_raw in the PNG crate
+            info.set("icc-name", "(embedded profile from image-rs)");
+            let tagsample = gst::Sample::builder()
+                .buffer(&buf)
+                .caps(&caps)
+                .info(info)
+                .build();
+
+            if let Some(v) = metadata_blobs.get_mut() {
+                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
+            }
+        }
+
+        if metadata_blobs.n_tags() > 0 {
+            tags.merge(&metadata_blobs, gst::TagMergeMode::Append);
+        }
+
+        tags
+    }
+
     #[inline]
     fn render_single_frame<'a>(
         &'a self,
@@ -394,37 +500,7 @@ impl ImageRsDecoder {
             gst::FlowError::Error
         })?;
 
-        let exif = match decoder.exif_metadata() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving EXIF metadata: {v}");
-                None
-            }
-        };
-
-        let xmp = match decoder.xmp_metadata() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving XMP metadata: {v}");
-                None
-            }
-        };
-
-        let icc = match decoder.icc_profile() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving ICC profile: {v}");
-                None
-            }
-        };
-
-        let iptc = match decoder.iptc_metadata() {
-            Ok(v) => v,
-            Err(v) => {
-                gst::warning!(CAT, imp = self, "Failed retrieving IPTC metadata: {v}");
-                None
-            }
-        };
+        let metadata = self.metadata_from_decoder(&mut decoder);
 
         let image = DynamicImage::from_decoder(decoder).map_err(|v| {
             gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
@@ -486,75 +562,6 @@ impl ImageRsDecoder {
             self.srcpad.push_event(l);
         }
 
-        let tags = gst::TagList::new();
-
-        if let Some(v) = exif {
-            let buf = gst::Buffer::from_mut_slice(v);
-            let v_rust = unsafe {
-                let v = gst_tag::ffi::gst_tag_list_from_exif_buffer(
-                    buf.as_mut_ptr(),
-                    #[cfg(target_endian = "little")]
-                    gst::glib::ffi::G_LITTLE_ENDIAN,
-                    #[cfg(target_endian = "big")]
-                    gst::glib::ffi::G_BIG_ENDIAN,
-                    0,
-                );
-
-                gst::TagList::from_glib_full(v)
-            };
-            tags.merge(&v_rust, gst::TagMergeMode::Append);
-        };
-
-        if let Some(v) = xmp {
-            let buf = gst::Buffer::from_mut_slice(v);
-            let v_rust = unsafe {
-                let v = gst_tag::ffi::gst_tag_list_from_xmp_buffer(buf.as_mut_ptr());
-
-                gst::TagList::from_glib_full(v)
-            };
-            tags.merge(&v_rust, gst::TagMergeMode::Append);
-        };
-
-        let mut metadata_blobs = gst::TagList::new();
-
-        if let Some(v) = iptc {
-            let buf = gst::Buffer::from_mut_slice(v);
-            let caps = gst::Caps::new_empty_simple("application/rdf+xml");
-            let info = gst::Structure::new_empty("application/rdf+xml");
-
-            let tagsample = gst::Sample::builder()
-                .buffer(&buf)
-                .caps(&caps)
-                .info(info)
-                .build();
-
-            if let Some(v) = metadata_blobs.get_mut() {
-                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
-            }
-        };
-
-        if let Some(v) = icc {
-            let buf = gst::Buffer::from_mut_slice(v);
-            let caps = gst::Caps::new_empty_simple("application/vnd.iccprofile");
-            let mut info = gst::Structure::new_empty("application/vnd.iccprofile");
-            // FIXME: image-rs's png reader does not expose the profile name
-            // see impl StreamingDecoder::parse_iccp_raw in the PNG crate
-            info.set("icc-name", "(embedded profile from image-rs)");
-            let tagsample = gst::Sample::builder()
-                .buffer(&buf)
-                .caps(&caps)
-                .info(info)
-                .build();
-
-            if let Some(v) = metadata_blobs.get_mut() {
-                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
-            }
-        }
-
-        if metadata_blobs.n_tags() > 0 {
-            tags.merge(&metadata_blobs, gst::TagMergeMode::Append);
-        }
-
         // FIXME: this should be validated
         // assert_eq!(state.info.as_ref().unwrap().format(), fmt);
 
@@ -570,8 +577,8 @@ impl ImageRsDecoder {
 
         gst::debug!(CAT, imp = self, "pushing... {} bytes", outbuf.size());
 
-        if tags.n_tags() > 0 {
-            let v = gst::event::Tag::new(tags);
+        if metadata.n_tags() > 0 {
+            let v = gst::event::Tag::new(metadata);
             self.srcpad.push_event(v);
         }
 
