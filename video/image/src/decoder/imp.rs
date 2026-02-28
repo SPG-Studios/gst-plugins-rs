@@ -692,7 +692,7 @@ impl ImageRsDecoder {
             EventView::Segment(v) => {
                 let mut state = self.state.lock().unwrap();
                 let segment = v.segment();
-                state.packetized = segment.format() != gst::Format::Bytes;
+                state.packetized = segment.format() == gst::Format::Time;
                 if segment.format() != gst::Format::Time {
                     let seqnum = event.seqnum();
                     let output_segment = gst::FormattedSegment::<gst::ClockTime>::new();
