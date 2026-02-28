@@ -668,7 +668,7 @@ impl ImageRsDecoder {
                 }
                 forward = false;
             }
-            EventView::Eos(..) => {
+            EventView::Eos(..) | EventView::SegmentDone(..) => {
                 let state = self.state.lock().unwrap();
                 if !state.buffers.is_empty() {
                     let settings = self.settings.lock().unwrap();
