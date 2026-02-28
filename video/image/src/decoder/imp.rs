@@ -673,15 +673,10 @@ impl ImageRsDecoder {
                 if !state.buffers.is_empty() {
                     let settings = self.settings.lock().unwrap();
                     if let Err(v) = self.decode(None, settings, state) {
-                        match v {
-                            gst::FlowError::Flushing
-                            | gst::FlowError::Eos
-                            | gst::FlowError::NotLinked => {}
-                            _ => {
-                                forward = false;
-                                ret = false;
-                            }
-                        };
+                        if v != gst::FlowError::Flushing && v != gst::FlowError::NotLinked {
+                            forward = false;
+                            ret = false;
+                        }
                     }
                 }
             }
