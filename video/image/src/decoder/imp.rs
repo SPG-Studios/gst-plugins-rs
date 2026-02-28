@@ -39,7 +39,6 @@ struct State {
     total_size: usize,
     in_fps: (i32, i32),
     info: Option<gst_video::VideoInfo>,
-    pool: Option<gst::BufferPool>,
     pending_events: VecDeque<gst::Event>,
     packetized: bool,
 }
@@ -172,65 +171,6 @@ impl ImageRsDecoder {
             );
             Err(gst::FlowError::Error)
         }
-    }
-
-    #[allow(unused)]
-    fn setup_pool<'a>(&'a self, state: &mut MutexGuard<'a, State>) -> Result<(), gst::FlowError> {
-        /* try to get a bufferpool now */
-        /* find a pool for the negotiated caps now */
-        let mut pool: Option<gst::BufferPool>;
-        let size: u32;
-        let min: u32;
-        let max: u32;
-
-        if state.caps.as_ref() == None {
-            gst::error!(CAT, imp = self, "Cannot allocate buffer pool");
-            return Err(gst::FlowError::Error);
-        }
-
-        let mut query = gst::query::Allocation::new(state.caps.as_ref(), true);
-        if !self.srcpad.peer_query(query.query_mut()) {
-            /* not a problem, we use the query defaults */
-            gst::debug!(CAT, imp = self, "ALLOCATION query failed");
-        }
-
-        match query.allocation_pools().nth(0) {
-            Some(v) => {
-                /* we got configuration from our peer, parse them */
-                pool = v.0;
-                size = v.1;
-                min = v.2;
-                max = v.3;
-            }
-            None => {
-                pool = None;
-                size = state.info.as_ref().unwrap().size().try_into().unwrap();
-                min = 0;
-                max = 0;
-            }
-        }
-
-        if pool == None {
-            /* we did not get a pool, make one ourselves then */
-            pool = Some(gst::BufferPool::new());
-        }
-
-        let pool_mut = pool.as_ref().unwrap();
-
-        let mut config = pool_mut.config();
-        config.set_params(state.caps.as_ref(), size, min, max);
-        pool_mut.set_config(config).unwrap();
-
-        if let Some(v) = state.pool.as_ref() {
-            let _ = v.set_active(false);
-            state.pool = None;
-        }
-        /* and activate */
-        pool_mut.set_active(true).unwrap();
-
-        state.pool = pool;
-
-        Ok(())
     }
 
     fn convert_format_and_strides(
@@ -1016,9 +956,6 @@ impl ElementImpl for ImageRsDecoder {
         let v = self.parent_change_state(transition)?;
 
         if transition == gst::StateChange::PausedToReady {
-            if let Some(pool) = &state.pool {
-                let _ = pool.set_active(false);
-            }
             *state = Default::default();
         }
 
