@@ -470,7 +470,7 @@ impl ImageRsDecoder {
                     imp = self,
                     "No caps available, failed guessing format: {v}"
                 );
-                gst::FlowError::Error
+                gst::FlowError::NotNegotiated
             })?,
         };
 
