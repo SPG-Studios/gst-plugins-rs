@@ -5,9 +5,7 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use image::Limits;
-use image::RgbaImage;
-use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader};
+use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
@@ -145,7 +143,9 @@ impl ImageRsDecoder {
 
         gst::log!(CAT, imp = self, "buffer with ts: {timestamp:?}");
 
-        if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size
+        if state.packetized
+            || settings.max_size == 0
+            || (state.total_size + buffer.size()) as u64 <= settings.max_size
         {
             gst::log!(CAT, imp = self, "Writing buffer size {}", buffer.size());
             state.total_size += buffer.size();
@@ -181,41 +181,41 @@ impl ImageRsDecoder {
             DynamicImage::ImageRgb8(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Bgr, strides)
-            },
+            }
             #[cfg(target_endian = "little")]
             DynamicImage::ImageRgba8(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Rgba, strides)
-            },
+            }
             #[cfg(target_endian = "big")]
             DynamicImage::ImageRgba8(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Rgba, strides)
-            },
+            }
             DynamicImage::ImageLuma8(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Gray8, strides)
-            },
+            }
             #[cfg(target_endian = "little")]
             DynamicImage::ImageLuma16(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Gray16Le, strides)
-            },
+            }
             #[cfg(target_endian = "big")]
             DynamicImage::ImageLuma16(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Gray16Be, strides)
-            },
+            }
             #[cfg(target_endian = "little")]
             DynamicImage::ImageRgba16(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Rgba64Le, strides)
-            },
+            }
             #[cfg(target_endian = "big")]
             DynamicImage::ImageRgba16(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Rgba64Be, strides)
-            },
+            }
             v => {
                 gst::debug!(
                     CAT,
