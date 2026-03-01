@@ -326,7 +326,8 @@ impl ImageRsDecoder {
                 gst::debug!(
                     CAT,
                     imp = self,
-                    "no framerate, assuming single image: {v:?}"
+                    // FIXME: this needs changing in gdkpixbufdec too
+                    "no framerate available: {v:?}"
                 );
                 None
             }
