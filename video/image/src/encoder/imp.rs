@@ -329,8 +329,8 @@ impl Encoder {
         })?;
 
         image.set_color_space(color_space).map_err(|e| {
-            gst::error!(CAT, imp = self, "Failed to write image data: {e}");
-            gst::FlowError::Error
+            gst::error!(CAT, imp = self, "Failed to set color space: {e}");
+            gst::FlowError::NotNegotiated
         })?;
 
         let buffer = Vec::with_capacity(4096);

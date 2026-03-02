@@ -501,15 +501,7 @@ impl ImageRsDecoder {
             self.srcpad.push_event(v);
         }
 
-        match self.srcpad.push(outbuf) {
-            Ok(_) => (),
-            Err(flow) => {
-                gst::error!(CAT, imp = self, "Failed to push buffers: {flow:?}");
-                return Err(flow);
-            }
-        }
-
-        Ok(gst::FlowSuccess::Ok)
+        self.srcpad.push(outbuf)
     }
 
     fn decode<'a>(
