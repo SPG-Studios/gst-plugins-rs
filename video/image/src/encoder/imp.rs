@@ -315,7 +315,14 @@ impl Encoder {
         [P::Subpixel]: EncodableLayout,
         C: std::ops::Deref<Target = [P::Subpixel]>,
     {
-        let color_space = utils::videoinfo_to_cicp(video_info.colorimetry());
+        let color_space = utils::videoinfo_to_cicp(video_info.colorimetry()).map_err(|v| {
+            gst::element_error!(
+                self.obj(),
+                gst::StreamError::Decode,
+                ["Format {video_info:?} not supported: {v}"]
+            );
+            gst::FlowError::NotNegotiated
+        })?;
 
         image.set_color_space(color_space).map_err(|e| {
             gst::error!(CAT, imp = self, "Failed to write image data: {e}");

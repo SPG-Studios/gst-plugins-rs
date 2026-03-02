@@ -117,7 +117,13 @@ impl Decoder {
 
         let color_info = match frame_list.peek() {
             Some(v) => match v {
-                Ok(frame) => Some(utils::cicp_to_videoinfo(frame.buffer().color_space())),
+                Ok(frame) => match utils::cicp_to_videoinfo(frame.buffer().color_space()) {
+                    Ok(v) => Some(v),
+                    Err(v) => {
+                        gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                        None
+                    }
+                },
                 Err(v) => {
                     gst::warning!(
                         CAT,

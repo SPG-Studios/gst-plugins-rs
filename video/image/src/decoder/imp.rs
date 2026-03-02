@@ -507,13 +507,19 @@ impl ImageRsDecoder {
 
             let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
 
-            let color_info = utils::cicp_to_videoinfo(image.color_space());
+            let color_info = match utils::cicp_to_videoinfo(image.color_space()) {
+                Ok(v) => Some(v),
+                Err(v) => {
+                    gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                    None
+                }
+            };
 
             let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps_if_some(fps)
                 .par_if_some(par)
                 .stride(&strides)
-                .colorimetry(&color_info)
+                .colorimetry_if_some(color_info.as_ref())
                 .build()
                 .map_err(|v| {
                     gst::element_error!(

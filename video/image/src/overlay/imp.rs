@@ -183,23 +183,12 @@ impl ImageRsOverlay {
             } else {
                 gst_video::VideoFormat::Argb
             };
-            let color_info = {
-                let cs = utils::cicp_to_videoinfo(argb_image.color_space());
-                if cs.matrix() == gst_video::VideoColorMatrix::Unknown
-                    || cs.primaries() == gst_video::VideoColorPrimaries::Unknown
-                    || cs.range() == gst_video::VideoColorRange::Unknown
-                    || cs.transfer() == gst_video::VideoTransferFunction::Unknown
-                {
-                    gst::warning!(
-                        CAT,
-                        imp = self,
-                        "CICP {:?} not supported by GStreamer",
-                        argb_image.color_space()
-                    );
-
+            // FIXME: should this be unwrapped?
+            let color_info = match utils::cicp_to_videoinfo(argb_image.color_space()) {
+                Ok(v) => Some(v),
+                Err(v) => {
+                    gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
                     None
-                } else {
-                    Some(cs)
                 }
             };
             gst_video::VideoInfo::builder(pixel, width, height)
