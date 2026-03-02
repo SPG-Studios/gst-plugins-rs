@@ -52,8 +52,11 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         // FIXME upstream: AVIF also supports animations
         // but needs image-rs support
         // "image/avif",
+        #[cfg(feature = "gif")]
         "image/gif",
+        #[cfg(any(feature = "png", feature = "ico"))]
         "image/png",
+        #[cfg(feature = "webp")]
         "image/webp",
     ]
 }
@@ -190,15 +193,7 @@ impl Decoder {
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         let mime = caps.structure().unwrap();
         let mut state = self.state.lock().unwrap();
-        match mime.name().as_str() {
-            "image/gif" => state.format_from_caps = Some(ImageFormat::Gif),
-
-            "image/webp" => state.format_from_caps = Some(ImageFormat::WebP),
-
-            "image/png" => state.format_from_caps = Some(ImageFormat::Png),
-
-            _ => unreachable!(),
-        };
+        state.format_from_caps = utils::format_from_mimetype(mime.name().as_str())?;
         state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
             Ok(v) => v.into(),
             Err(v) => {

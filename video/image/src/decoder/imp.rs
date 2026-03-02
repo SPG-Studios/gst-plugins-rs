@@ -5,7 +5,7 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
+use image::{DynamicImage, GenericImageView, ImageDecoder, ImageReader, Limits};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
@@ -111,6 +111,8 @@ fn mimetypes() -> impl IntoIterator<Item = &'static str> {
         "image/tiff",
         #[cfg(feature = "wbmp")]
         "image/vnd.wap.wbmp",
+        #[cfg(feature = "webp")]
+        "image/webp",
         #[cfg(feature = "xbm")]
         "image/x-xbitmap",
         #[cfg(feature = "xbm")]
@@ -239,79 +241,7 @@ impl ImageRsDecoder {
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         let mime = caps.structure().unwrap();
         let mut state = self.state.lock().unwrap();
-        match mime.name().as_str() {
-            #[cfg(feature = "avif")]
-            "image/avif" => state.format_from_caps = Some(image::ImageFormat::Avif),
-
-            // The ICO format support enables PNG and BMP as transitive deps
-            #[cfg(any(feature = "bmp", feature = "ico"))]
-            "image/bmp" | "image/x-MS-bmp" => {
-                state.format_from_caps = Some(image::ImageFormat::Bmp)
-            }
-
-            #[cfg(feature = "dds")]
-            "image/vnd-ms.dds" | "image/x-direct-draw-surface" => {
-                state.format_from_caps = Some(image::ImageFormat::Dds)
-            }
-
-            #[cfg(feature = "exr")]
-            "image/x-exr" => state.format_from_caps = Some(image::ImageFormat::OpenExr),
-
-            #[cfg(feature = "ff")]
-            "image/x-farbfeld" => state.format_from_caps = Some(image::ImageFormat::Farbfeld),
-
-            #[cfg(feature = "hdr")]
-            "image/vnd.radiance" => state.format_from_caps = Some(ImageFormat::Hdr),
-
-            #[cfg(feature = "ico")]
-            "image/x-icon" => state.format_from_caps = Some(ImageFormat::Ico),
-
-            #[cfg(feature = "jpeg")]
-            "image/jpeg" => state.format_from_caps = Some(ImageFormat::Jpeg),
-
-            #[cfg(feature = "ora")]
-            "image/openraster" => state.format_from_caps = None,
-
-            #[cfg(feature = "otb")]
-            "image/x-nokia-over-the-air-bitmap" => state.format_from_caps = None,
-
-            #[cfg(any(feature = "png", feature = "ico"))]
-            "image/png" => state.format_from_caps = Some(ImageFormat::Png),
-
-            #[cfg(feature = "pnm")]
-            "image/x-portable-anymap"
-            | "image/x-portable-bitmap"
-            | "image/x-portable-graymap"
-            | "image/x-portable-pixmap" => state.format_from_caps = Some(ImageFormat::Pnm),
-
-            #[cfg(feature = "qoi")]
-            "image/qoi" | "image/x-qoi" => state.format_from_caps = Some(ImageFormat::Qoi),
-
-            #[cfg(feature = "sgi")]
-            "image/sgi" => state.format_from_caps = None,
-
-            #[cfg(feature = "tga")]
-            "image/x-targa" | "image/x-tga" => state.format_from_caps = Some(ImageFormat::Tga),
-
-            #[cfg(feature = "tiff")]
-            "image/tiff" => state.format_from_caps = Some(ImageFormat::Tiff),
-
-            #[cfg(feature = "wbmp")]
-            "image/vnd.wap.wbmp" => state.format_from_caps = None,
-
-            #[cfg(feature = "xbm")]
-            "image/x-xbitmap" | "image/x-xbm" => state.format_from_caps = None,
-
-            #[cfg(feature = "xpm")]
-            "image/x-xpixmap" => state.format_from_caps = None,
-
-            v => {
-                return Err(gst::error_msg!(
-                    gst::StreamError::CodecNotFound,
-                    ["Unknown mimetype {v}"]
-                ));
-            }
-        };
+        state.format_from_caps = utils::format_from_mimetype(mime.name().as_str())?;
         state.in_fps = match mime.get::<gst::Fraction>("framerate") {
             Ok(v) => {
                 gst::debug!(

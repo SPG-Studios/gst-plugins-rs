@@ -1,6 +1,8 @@
+use gst::glib;
 use gst_video::{
     VideoColorMatrix, VideoColorPrimaries, VideoColorRange, VideoColorimetry, VideoTransferFunction,
 };
+use image::ImageFormat;
 use image::metadata::{
     Cicp, CicpColorPrimaries, CicpMatrixCoefficients, CicpTransferCharacteristics,
     CicpVideoFullRangeFlag,
@@ -146,4 +148,134 @@ pub(crate) fn videoinfo_to_cicp(color_space: VideoColorimetry) -> Result<Cicp, g
         primaries: pr,
         transfer: tf,
     })
+}
+
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
+#[repr(u32)]
+#[enum_type(name = "GstRsImageFormat")]
+pub(crate) enum Format {
+    #[enum_value(name = "AV1 image file format", nick = "avif")]
+    Avif,
+    #[enum_value(name = "Microsoft bitmap", nick = "bmp")]
+    Bmp,
+    #[enum_value(name = "OpenEXR", nick = "exr")]
+    Exr,
+    #[enum_value(name = "The Farbfeld simple image encoding format", nick = "farbfeld")]
+    Farbfeld,
+    #[enum_value(name = "JPEG image file format", nick = "jpeg")]
+    Jpeg,
+    #[enum_value(name = "Portable Network Graphics", nick = "jpeg")]
+    Png,
+    #[enum_value(name = "The Quite OK Image Format", nick = "qoi")]
+    Qoi,
+    #[enum_value(name = "Truevision Targa", nick = "tga")]
+    Tga,
+    #[enum_value(name = "Tagged Image File Format", nick = "tiff")]
+    Tiff,
+}
+
+impl From<Format> for image::ImageFormat {
+    fn from(value: Format) -> Self {
+        match value {
+            Format::Avif => image::ImageFormat::Avif,
+            Format::Bmp => image::ImageFormat::Bmp,
+            Format::Exr => image::ImageFormat::OpenExr,
+            Format::Farbfeld => image::ImageFormat::Farbfeld,
+            Format::Jpeg => image::ImageFormat::Jpeg,
+            Format::Png => image::ImageFormat::Png,
+            Format::Qoi => image::ImageFormat::Qoi,
+            Format::Tga => image::ImageFormat::Tga,
+            Format::Tiff => image::ImageFormat::Tiff,
+        }
+    }
+}
+
+impl From<Format> for &'static str {
+    fn from(value: Format) -> Self {
+        format_to_mimetype(&value.into()).unwrap()
+    }
+}
+
+impl TryFrom<&str> for Format {
+    type Error = gst::ErrorMessage;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match format_from_mimetype(value)? {
+            Some(v) => match v {
+                ImageFormat::Avif => Ok(Format::Avif),
+                ImageFormat::Bmp => Ok(Format::Bmp),
+                ImageFormat::OpenExr => Ok(Format::Exr),
+                ImageFormat::Farbfeld => Ok(Format::Farbfeld),
+                ImageFormat::Jpeg => Ok(Format::Jpeg),
+                ImageFormat::Png => Ok(Format::Png),
+                ImageFormat::Qoi => Ok(Format::Qoi),
+                ImageFormat::Tga => Ok(Format::Tga),
+                ImageFormat::Tiff => Ok(Format::Tiff),
+                _ => Err(gst::error_msg!(
+                    gst::StreamError::CodecNotFound,
+                    ["Unknown mimetype {value}"]
+                )),
+            },
+            None => Err(gst::error_msg!(
+                gst::StreamError::CodecNotFound,
+                ["Unknown mimetype {value}"]
+            )),
+        }
+    }
+}
+
+impl Format {
+    pub(crate) fn all_values() -> impl IntoIterator<Item = Format> {
+        [
+            Format::Avif,
+            Format::Bmp,
+            Format::Exr,
+            Format::Farbfeld,
+            Format::Jpeg,
+            Format::Png,
+            Format::Qoi,
+            Format::Tga,
+            Format::Tiff,
+        ]
+    }
+}
+
+/// Synchronized list from image-rs 0.25.9
+pub(crate) fn format_from_mimetype(mime: &str) -> Result<Option<ImageFormat>, gst::ErrorMessage> {
+    match ImageFormat::from_mime_type(mime) {
+        Some(v) => Ok(Some(v)),
+        None => match mime {
+            "image/x-MS-bmp" => Ok(Some(image::ImageFormat::Bmp)),
+            "image/x-direct-draw-surface" => Ok(Some(image::ImageFormat::Dds)),
+            "image/x-farbfeld" => Ok(Some(image::ImageFormat::Farbfeld)),
+            "image/openraster" => Ok(None),
+            "image/x-nokia-over-the-air-bitmap" => Ok(None),
+            // https://github.com/phoboslab/qoi/issues/167
+            "image/qoi" => Ok(Some(ImageFormat::Qoi)),
+            "image/sgi" => Ok(None),
+            "image/vnd.wap.wbmp" => Ok(None),
+            "image/x-xbitmap" | "image/x-xbm" => Ok(None),
+            "image/x-xpixmap" => Ok(None),
+            v => Err(gst::error_msg!(
+                gst::StreamError::CodecNotFound,
+                ["Unknown mimetype {v}"]
+            )),
+        },
+    }
+}
+
+pub(crate) fn format_to_mimetype(format: &ImageFormat) -> Option<&'static str> {
+    match format {
+        // GStreamer uses this one
+        ImageFormat::Tga => Some("image/x-tga"),
+        // https://github.com/phoboslab/qoi/issues/167
+        ImageFormat::Qoi => Some("image/qoi"),
+        // farbfeld's MIME type in image-rs is application/octet-stream,
+        // correct it here
+        ImageFormat::Farbfeld => Some("image/x-farbfeld"),
+        v => match v.to_mime_type() {
+            "application/octet-stream" => None,
+            v => Some(v),
+        },
+    }
 }

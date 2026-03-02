@@ -27,7 +27,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 struct State {
     video_info: gst_video::VideoInfo,
-    format: super::Format,
+    format: utils::Format,
 }
 
 #[derive(Default)]
@@ -145,7 +145,11 @@ impl VideoEncoderImpl for Encoder {
 
         *self.state.lock().unwrap() = Some(State {
             video_info: instance.output_state().unwrap().info().clone(),
-            format: s.name().as_str().try_into().unwrap(),
+            format: s
+                .name()
+                .as_str()
+                .try_into()
+                .map_err(|v| gst::loggable_error!(CAT, "Failed to determine format: {}", v))?,
         });
 
         Ok(())
