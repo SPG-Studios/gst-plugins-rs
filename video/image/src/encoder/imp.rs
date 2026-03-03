@@ -134,11 +134,15 @@ impl VideoEncoderImpl for Encoder {
 
         allowed_caps.fixate();
 
-        let s = allowed_caps.structure(0)
+        let s = allowed_caps
+            .structure(0)
             .ok_or(gst::loggable_error!(CAT, "Missing caps in set_format"))?;
 
         if s.is_empty() {
-            return Err(gst::loggable_error!(CAT, "Downstream doesn't specify any format or properties"));
+            return Err(gst::loggable_error!(
+                CAT,
+                "Downstream doesn't specify any format or properties"
+            ));
         }
 
         let output_state = instance
@@ -163,7 +167,10 @@ impl VideoEncoderImpl for Encoder {
         &self,
         frame: gst_video::VideoCodecFrame,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let surface_state = self.obj().output_state().ok_or(gst::FlowError::NotNegotiated)?;
+        let surface_state = self
+            .obj()
+            .output_state()
+            .ok_or(gst::FlowError::NotNegotiated)?;
 
         let video_info = surface_state.info();
 

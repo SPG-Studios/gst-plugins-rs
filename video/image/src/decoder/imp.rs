@@ -474,7 +474,13 @@ impl ImageRsDecoder {
                 gst::FlowError::NotNegotiated
             })?;
 
-            gst::debug!(CAT, imp = self, "Set size to {}x{}", new_info.width(), new_info.height());
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Set size to {}x{}",
+                new_info.width(),
+                new_info.height()
+            );
 
             state.info = Some(new_info);
 
@@ -544,42 +550,47 @@ impl ImageRsDecoder {
     }
 
     /// __gst_video_element_proxy_getcaps:
-    /// 
+    ///
     /// @element: a #GstElement
-    /// 
+    ///
     /// @sinkpad: the element's sink #GstPad
-    /// 
+    ///
     /// @srcpad: the element's source #GstPad
-    /// 
+    ///
     /// @initial_caps: initial caps
-    /// 
+    ///
     /// @filter: filter caps
-    /// 
+    ///
     /// Returns caps that express @initial_caps (or sink template caps if
     /// @initial_caps == NULL) restricted to resolution/format/...
     /// combinations supported by downstream elements (e.g. muxers).
-    /// 
+    ///
     /// Returns: a #GstCaps owned by caller
-    fn proxy_get_caps(&self, initial_caps: Option<&gst::CapsRef>, filter: Option<&gst::CapsRef>) -> gst::Caps {
+    fn proxy_get_caps(
+        &self,
+        initial_caps: Option<&gst::CapsRef>,
+        filter: Option<&gst::CapsRef>,
+    ) -> gst::Caps {
         /* Allow downstream to specify width/height/framerate/PAR constraints
-        * and forward them upstream for video converters to handle
-        */
-        let templ_caps = initial_caps.map(|v| v.copy()).unwrap_or_else(|| {
-            self.sinkpad.pad_template_caps()
-        });
+         * and forward them upstream for video converters to handle
+         */
+        let templ_caps = initial_caps
+            .map(|v| v.copy())
+            .unwrap_or_else(|| self.sinkpad.pad_template_caps());
         let src_templ_caps = self.srcpad.pad_template_caps();
-        let peer_caps = if let Some(filter) = filter && !filter.is_any() {
+        let peer_caps = if let Some(filter) = filter
+            && !filter.is_any()
+        {
             let proxy_filter = self.proxy_get_caps(Some(&src_templ_caps), Some(filter));
             self.srcpad.peer_query_caps(Some(&proxy_filter))
         } else {
             self.srcpad.peer_query_caps(None)
         };
 
-        let allowed = peer_caps.intersect_with_mode(&src_templ_caps,
-            gst::CapsIntersectMode::First);
+        let allowed = peer_caps.intersect_with_mode(&src_templ_caps, gst::CapsIntersectMode::First);
 
-        drop (src_templ_caps);
-        drop (peer_caps);
+        drop(src_templ_caps);
+        drop(peer_caps);
 
         let fcaps = if allowed.is_any() {
             templ_caps
@@ -588,13 +599,13 @@ impl ImageRsDecoder {
         } else {
             gst::log!(CAT, imp = self, "template caps {}", templ_caps);
             gst::log!(CAT, imp = self, "allowed caps {}", allowed);
-    
+
             let filter_caps = self.proxy_get_caps(Some(&templ_caps), Some(&allowed));
-    
+
             let mut fcaps = filter_caps.intersect(&templ_caps);
-            drop (filter_caps);
-            drop (templ_caps);
-    
+            drop(filter_caps);
+            drop(templ_caps);
+
             if let Some(f) = filter {
                 gst::log!(CAT, imp = self, "intersecting with {}", f);
                 fcaps = fcaps.intersect(f);
