@@ -430,8 +430,7 @@ impl ImageRsDecoder {
 
         let (image, fmt, strides) = self.convert_format_and_strides(image);
 
-        let pending_events = if state.info.is_none() {
-            gst::debug!(CAT, imp = self, "Set size to {}x{}", wh.0, wh.1);
+        let new_info = {
             let fps = state.in_fps;
             let par = state.in_par;
 
@@ -445,7 +444,7 @@ impl ImageRsDecoder {
                 }
             };
 
-            let info = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
+            gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps_if_some(fps)
                 .par_if_some(par)
                 .stride(&strides)
@@ -462,17 +461,28 @@ impl ImageRsDecoder {
                         ]
                     );
                     gst::FlowError::NotNegotiated
-                })?;
+                })
+        }?;
 
-            let caps = &info.to_caps().unwrap();
+        let pending_events = if state.info.as_ref().is_none_or(|v| !v.eq(&new_info)) {
+            let caps = new_info.to_caps().map_err(|_| {
+                gst::element_imp_error!(
+                    self,
+                    gst::ResourceError::Settings,
+                    ["Invalid video info received: {:?}", new_info]
+                );
+                gst::FlowError::NotNegotiated
+            })?;
 
-            state.info = Some(info);
+            gst::debug!(CAT, imp = self, "Set size to {}x{}", new_info.width(), new_info.height());
+
+            state.info = Some(new_info);
 
             let pending_events: Vec<_> = state.pending_events.drain(..).collect();
 
             drop(state);
 
-            let _ = self.srcpad.push_event(gst::event::Caps::new(caps));
+            let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
 
             pending_events
         } else {
@@ -483,9 +493,6 @@ impl ImageRsDecoder {
         for l in pending_events {
             self.srcpad.push_event(l);
         }
-
-        // FIXME: this should be validated
-        // assert_eq!(state.info.as_ref().unwrap().format(), fmt);
 
         let mut outbuf = gst::Buffer::from_slice(Wrapper(image));
         {
