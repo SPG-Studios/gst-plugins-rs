@@ -9,6 +9,7 @@ use gst::subclass::prelude::*;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
+use byte_slice_cast::*;
 use image::{EncodableLayout, ImageBuffer, Luma, PixelWithColorType, Rgb, Rgba};
 
 use std::io::Cursor;
@@ -235,12 +236,14 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Gray16Le => {
-                let input = unsafe {
-                    std::slice::from_raw_parts(
-                        input_map.as_ptr() as *const u16,
-                        input_map.size() / 2,
-                    )
-                };
+                let input = input_map.as_slice_of::<u16>().map_err(|v| {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Couldn't cast buffer to the expected format: {v}"
+                    );
+                    gst::FlowError::NotSupported
+                })?;
                 let image = ImageBuffer::<Luma<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
@@ -252,12 +255,14 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Gray16Be => {
-                let input = unsafe {
-                    std::slice::from_raw_parts(
-                        input_map.as_ptr() as *const u16,
-                        input_map.size() / 2,
-                    )
-                };
+                let input = input_map.as_slice_of::<u16>().map_err(|v| {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Couldn't cast buffer to the expected format: {v}"
+                    );
+                    gst::FlowError::NotSupported
+                })?;
                 let image = ImageBuffer::<Luma<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
@@ -269,12 +274,14 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba64Le => {
-                let input = unsafe {
-                    std::slice::from_raw_parts(
-                        input_map.as_ptr() as *const u16,
-                        input_map.size() / 2,
-                    )
-                };
+                let input = input_map.as_slice_of::<u16>().map_err(|v| {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Couldn't cast buffer to the expected format: {v}"
+                    );
+                    gst::FlowError::NotSupported
+                })?;
                 let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),
@@ -286,12 +293,14 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Rgba64Be => {
-                let input = unsafe {
-                    std::slice::from_raw_parts(
-                        input_map.as_ptr() as *const u16,
-                        input_map.size() / 2,
-                    )
-                };
+                let input = input_map.as_slice_of::<u16>().map_err(|v| {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "Couldn't cast buffer to the expected format: {v}"
+                    );
+                    gst::FlowError::NotSupported
+                })?;
                 let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
                     video_info.width(),
                     video_info.height(),

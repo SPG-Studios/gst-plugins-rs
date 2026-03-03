@@ -13,6 +13,7 @@ gst.workspace = true
 gst-base.workspace = true
 gst-tag.workspace = true
 gst-video.workspace = true
+byte-slice-cast = "1.2"
 image = { version = "0.25", default-features = false }
 image_extras = { package = "image-extras", version = "0.1", default-features = false}
 num-rational = { version = "0.4", default-features = false, features = [] }

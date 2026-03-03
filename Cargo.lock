@@ -5063,6 +5063,7 @@ dependencies = [
 name = "gst-plugin-image"
 version = "0.16.0-alpha"
 dependencies = [
+ "byte-slice-cast",
  "gst-plugin-version-helper",
  "gstreamer",
  "gstreamer-base",
