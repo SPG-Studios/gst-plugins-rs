@@ -27,7 +27,6 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 struct State {
-    video_info: gst_video::VideoInfo,
     format: utils::Format,
 }
 
@@ -145,7 +144,6 @@ impl VideoEncoderImpl for Encoder {
             .map_err(|_| gst::loggable_error!(CAT, "Failed to negotiate"))?;
 
         *self.state.lock().unwrap() = Some(State {
-            video_info: instance.output_state().unwrap().info().clone(),
             format: s
                 .name()
                 .as_str()
@@ -160,12 +158,16 @@ impl VideoEncoderImpl for Encoder {
         &self,
         frame: gst_video::VideoCodecFrame,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let (video_info, format) = {
+        let surface_state = self.obj().output_state().ok_or(gst::FlowError::NotNegotiated)?;
+
+        let video_info = surface_state.info();
+
+        let format = {
             let state_guard = self.state.lock().unwrap();
 
             let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
 
-            (state.video_info.clone(), state.format)
+            state.format
         };
 
         gst::debug!(
@@ -320,7 +322,7 @@ impl Encoder {
         &self,
         mut image: ImageBuffer<P, C>,
         mut frame: gst_video::VideoCodecFrame,
-        video_info: gst_video::VideoInfo,
+        video_info: &gst_video::VideoInfo,
         format: super::Format,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
     where
