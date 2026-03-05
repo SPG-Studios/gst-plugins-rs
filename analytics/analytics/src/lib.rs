@@ -18,6 +18,7 @@ use gst::glib;
 pub(crate) const ONVIF_METADATA_SCHEMA: &str = "http://www.onvif.org/ver10/schema";
 pub(crate) const ONVIF_METADATA_PREFIX: &str = "tt";
 
+mod helpers;
 mod onvifmeta2relationmeta;
 mod relationmeta2onvifmeta;
 
@@ -29,8 +30,8 @@ mod splitter;
 #[cfg(feature = "v1_28")]
 mod yoloxtensordec;
 
-#[cfg(feature = "v1_28")]
-mod handdetectiontensordec;
+#[cfg(feature = "v1_30")]
+mod hand;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     relationmeta2onvifmeta::register(plugin)?;
@@ -49,8 +50,8 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "v1_28")]
     yoloxtensordec::register(plugin)?;
 
-    #[cfg(feature = "v1_28")]
-    handdetectiontensordec::register(plugin)?;
+    #[cfg(feature = "v1_30")]
+    hand::register(plugin)?;
 
     Ok(())
 }
