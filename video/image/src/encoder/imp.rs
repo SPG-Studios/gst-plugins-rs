@@ -10,6 +10,7 @@ use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
 use byte_slice_cast::*;
+use image::flat::{NormalForm, SampleLayout};
 use image::{EncodableLayout, ImageBuffer, Luma, PixelWithColorType, Rgb, Rgba};
 
 use std::io::Cursor;
@@ -95,7 +96,7 @@ impl ElementImpl for Encoder {
             {
                 let caps = src_caps.get_mut().unwrap();
 
-                for f in super::Format::all_values() {
+                for f in utils::Format::all_values() {
                     let v: &'static str = f.into();
                     caps.append(gst::Caps::new_empty_simple(v));
                 }
@@ -112,6 +113,58 @@ impl ElementImpl for Encoder {
         });
 
         PAD_TEMPLATES.as_ref()
+    }
+}
+
+enum SliceContainer {
+    Reference(gst::MappedBuffer<gst::buffer::Readable>),
+    Owned(Vec<u8>),
+}
+
+impl SliceContainer {
+    /// Original by Markus Ebner on gifenc
+    fn convert_to_tightly_packed_framebuffer(
+        input_map: &gst::MappedBuffer<gst::buffer::Readable>,
+        video_info: &gst_video::VideoInfo,
+    ) -> Vec<u8> {
+        assert_eq!(video_info.n_planes(), 1);
+        let line_size = (video_info.width() * video_info.n_components()) as usize;
+        let line_stride = video_info.comp_stride(0) as usize;
+        let mut raw_frame: Vec<u8> = Vec::with_capacity(line_size * video_info.height() as usize);
+
+        input_map
+            .chunks_exact(line_stride)
+            .map(|padded_line| &padded_line[..line_size])
+            .for_each(|line| raw_frame.extend_from_slice(line));
+
+        raw_frame
+    }
+
+    /// Make a new struct that will automatically repackage the given buffer
+    /// if it's not tightly packed for image-rs.
+    ///
+    /// https://gstreamer.freedesktop.org/documentation/additional/design/mediatype-video-raw.html?gi-language=c#formats
+    fn new(
+        layout: &SampleLayout,
+        video_info: &gst_video::VideoInfo,
+        input_map: gst::MappedBuffer<gst::buffer::Readable>,
+    ) -> Self {
+        if layout.is_normal(NormalForm::RowMajorPacked) {
+            Self::Reference(input_map)
+        } else {
+            let packed_frame = Self::convert_to_tightly_packed_framebuffer(&input_map, video_info);
+            Self::Owned(packed_frame)
+        }
+    }
+}
+
+impl AsSliceOf for SliceContainer {
+    #[inline]
+    fn as_slice_of<T: FromByteSlice>(&self) -> Result<&[T], Error> {
+        match self {
+            SliceContainer::Reference(v) => v.as_slice_of::<T>(),
+            SliceContainer::Owned(v) => v.as_slice_of::<T>(),
+        }
     }
 }
 
@@ -189,140 +242,39 @@ impl VideoEncoderImpl for Encoder {
             frame.system_frame_number()
         );
 
-        let input_buffer = frame
-            .input_buffer_owned()
-            .expect("frame without input buffer");
-        let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
         match video_info.format() {
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba => {
-                let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input_map.as_slice(),
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.render_to_image::<Rgba<u8>>(frame, video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Abgr => {
-                let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input_map.as_slice(),
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.ingest_image::<Rgba<u8>>(frame, video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgb => {
-                let image = ImageBuffer::<Rgb<u8>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input_map.as_slice(),
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.render_to_image::<Rgb<u8>>(frame, video_info, format)
             }
             #[cfg(target_endian = "big")]
-            gst_video::VideoFormat::Bgr => {
-                let image = ImageBuffer::<Rgb<u8>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input_map.as_slice(),
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
-            }
+            gst_video::VideoFormat::Bgr => self.ingest_image::<Rgb<u8>>(frame, video_info, format),
             gst_video::VideoFormat::Gray8 => {
-                let image = ImageBuffer::<Luma<u8>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input_map.as_slice(),
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.render_to_image::<Luma<u8>>(frame, video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Gray16Le => {
-                let input = input_map.as_slice_of::<u16>().map_err(|v| {
-                    gst::error!(
-                        CAT,
-                        imp = self,
-                        "Couldn't cast buffer to the expected format: {v}"
-                    );
-                    gst::FlowError::NotSupported
-                })?;
-                let image = ImageBuffer::<Luma<u16>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input,
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.render_to_image::<Luma<u16>>(frame, video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Gray16Be => {
-                let input = input_map.as_slice_of::<u16>().map_err(|v| {
-                    gst::error!(
-                        CAT,
-                        imp = self,
-                        "Couldn't cast buffer to the expected format: {v}"
-                    );
-                    gst::FlowError::NotSupported
-                })?;
-                let image = ImageBuffer::<Luma<u16>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input,
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.ingest_image::<Luma<u16>>(frame, video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba64Le => {
-                let input = input_map.as_slice_of::<u16>().map_err(|v| {
-                    gst::error!(
-                        CAT,
-                        imp = self,
-                        "Couldn't cast buffer to the expected format: {v}"
-                    );
-                    gst::FlowError::NotSupported
-                })?;
-                let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input,
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.render_to_image::<Rgba<u16>>(frame, video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Rgba64Be => {
-                let input = input_map.as_slice_of::<u16>().map_err(|v| {
-                    gst::error!(
-                        CAT,
-                        imp = self,
-                        "Couldn't cast buffer to the expected format: {v}"
-                    );
-                    gst::FlowError::NotSupported
-                })?;
-                let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
-                    video_info.width(),
-                    video_info.height(),
-                    input,
-                )
-                .ok_or(gst::FlowError::NotSupported)?;
-
-                self.render_frame(image, frame, video_info, format)
+                self.ingest_image::<Rgba<u16>>(frame, video_info, format)
             }
             _ => unimplemented!(),
         }
@@ -330,18 +282,46 @@ impl VideoEncoderImpl for Encoder {
 }
 
 impl Encoder {
-    fn render_frame<P, C>(
+    fn render_to_image<T>(
         &self,
-        mut image: ImageBuffer<P, C>,
         mut frame: gst_video::VideoCodecFrame,
         video_info: &gst_video::VideoInfo,
-        format: super::Format,
+        format: utils::Format,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
     where
-        P: PixelWithColorType,
-        [P::Subpixel]: EncodableLayout,
-        C: std::ops::Deref<Target = [P::Subpixel]>,
+        T: PixelWithColorType,
+        [T::Subpixel]: EncodableLayout,
+        T::Subpixel: byte_slice_cast::FromByteSlice,
     {
+        let input_buffer = frame
+            .input_buffer_owned()
+            .expect("frame without input buffer");
+        let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
+
+        let layout = SampleLayout {
+            channels: video_info.n_components().try_into().unwrap(),
+            channel_stride: video_info.comp_offset(1),
+            width: video_info.width(),
+            width_stride: video_info.comp_pstride(0).try_into().unwrap(),
+            height: video_info.height(),
+            height_stride: video_info.comp_stride(0).try_into().unwrap(),
+        };
+
+        let container = SliceContainer::new(&layout, video_info, input_map);
+
+        let slice = container.as_slice_of::<T::Subpixel>().map_err(|v| {
+            gst::error!(
+                CAT,
+                imp = self,
+                "Couldn't cast buffer to the expected format: {v}"
+            );
+            gst::FlowError::NotSupported
+        })?;
+
+        let mut image =
+            ImageBuffer::<T, _>::from_raw(video_info.width(), video_info.height(), slice)
+                .ok_or(gst::FlowError::NotSupported)?;
+
         let color_space = utils::videoinfo_to_cicp(video_info.colorimetry()).map_err(|v| {
             gst::element_error!(
                 self.obj(),
