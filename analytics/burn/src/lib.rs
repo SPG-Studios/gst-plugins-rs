@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#[cfg(any(feature = "cpu", feature = "vulkan"))]
+mod voxtral_mini_realtime_transcriber;
 /**
  * SECTION:plugin-burn
  *
@@ -42,6 +44,8 @@ pub enum BackendType {
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     yoloxinference::register(plugin)?;
+    #[cfg(any(feature = "cpu", feature = "vulkan"))]
+    voxtral_mini_realtime_transcriber::register(plugin)?;
     Ok(())
 }
 

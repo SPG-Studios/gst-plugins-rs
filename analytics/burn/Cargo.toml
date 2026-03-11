@@ -13,14 +13,42 @@ glib.workspace = true
 gst = { workspace = true, features = ["v1_28"] }
 gst-base = { workspace = true, features = ["v1_28"] }
 gst-analytics = { workspace = true, features = ["v1_28"] }
+gst-audio = { workspace = true, features = ["v1_28"] }
 gst-video = { workspace = true, features = ["v1_28"] }
-burn = { version = "0.20", default-features = false }
+burn = { version = "0.20", default-features = false, features = ["std", "autodiff", "template"] }
 burn-store = { version = "0.20", default-features = false, features = ["std", "pytorch"] }
 dirs = { version = "6", optional = true }
 serde = { version = "1.0.192", default-features = false, features = ["derive", "alloc"] }
 byte-slice-cast = "1"
 itertools = "0.14"
 anyhow = "1"
+
+# Dependencies specifically for voxtral below, need cleanup
+
+burn-cubecl = { version = "0.20", features = ["template"] }
+cubecl = { version = "0.9", default-features = false, features = ["cpu"] }
+base64 = "0.22"
+
+# Audio processing
+hound = "3.5"              # WAV I/O
+rubato = "1.0"             # High-quality resampling
+rustfft = "6.4"            # FFT for spectrograms
+audioadapter-buffers = "2.0" # Buffer adapters for rubato
+
+# Serialization & model loading
+safetensors = "0.7"
+serde_json = "1.0"
+
+tracing = "0.1"
+tracing-subscriber = "0.3"
+num-traits = "0.2"
+num-complex = "0.4"
+byteorder = "1.5"
+flate2 = "1.1"
+
+half = "2.7"
+memmap2 = "0.9"
+
 
 [build-dependencies]
 gst-plugin-version-helper.workspace = true
@@ -38,7 +66,7 @@ pretrained = ["burn/network", "dep:dirs"]
 cpu = ["burn/cpu"]
 vulkan = ["burn/vulkan"]
 ndarray = ["burn/ndarray"]
-default = ["pretrained", "ndarray"]
+default = ["pretrained", "cpu"]
 
 [package.metadata.capi]
 min_version = "0.9.21"
