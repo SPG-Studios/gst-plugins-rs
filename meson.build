@@ -180,6 +180,7 @@ plugins = {
     'library': 'libgstrspng',
     'examples': ['pngenc'],
   },
+  'videorate2': {'library': 'libgstvideorate2'},
   'rav1e': {'library': 'libgstrav1e'},
   'videofx': {
     'library': 'libgstrsvideofx',

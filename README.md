@@ -184,6 +184,8 @@ You will find the following plugins in this repository:
 
     - `png`: PNG encoder based on the [png](https://github.com/image-rs/image-png) library.
 
+    - `videorate2`: Video rate adjuster (replacement for videorate).
+
     - `rav1e`: AV1 encoder based on the [rav1e](https://github.com/xiph/rav1e) library.
 
     - `skia`:
