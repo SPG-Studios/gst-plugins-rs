@@ -11,7 +11,9 @@ use gst_video::subclass::prelude::*;
 
 use byte_slice_cast::*;
 use image::flat::{NormalForm, SampleLayout};
-use image::{EncodableLayout, ImageBuffer, Luma, PixelWithColorType, Rgb, Rgba};
+use image::{
+    EncodableLayout, FlatSamples, GenericImage, GenericImageView, ImageBuffer, Luma, PixelWithColorType, Rgb, Rgba
+};
 
 use std::io::Cursor;
 use std::sync::LazyLock;
@@ -113,58 +115,6 @@ impl ElementImpl for Encoder {
         });
 
         PAD_TEMPLATES.as_ref()
-    }
-}
-
-enum SliceContainer {
-    Reference(gst::MappedBuffer<gst::buffer::Readable>),
-    Owned(Vec<u8>),
-}
-
-impl SliceContainer {
-    /// Original by Markus Ebner on gifenc
-    fn convert_to_tightly_packed_framebuffer(
-        input_map: &gst::MappedBuffer<gst::buffer::Readable>,
-        video_info: &gst_video::VideoInfo,
-    ) -> Vec<u8> {
-        assert_eq!(video_info.n_planes(), 1);
-        let line_size = (video_info.width() * video_info.n_components()) as usize;
-        let line_stride = video_info.comp_stride(0) as usize;
-        let mut raw_frame: Vec<u8> = Vec::with_capacity(line_size * video_info.height() as usize);
-
-        input_map
-            .chunks_exact(line_stride)
-            .map(|padded_line| &padded_line[..line_size])
-            .for_each(|line| raw_frame.extend_from_slice(line));
-
-        raw_frame
-    }
-
-    /// Make a new struct that will automatically repackage the given buffer
-    /// if it's not tightly packed for image-rs.
-    ///
-    /// https://gstreamer.freedesktop.org/documentation/additional/design/mediatype-video-raw.html?gi-language=c#formats
-    fn new(
-        layout: &SampleLayout,
-        video_info: &gst_video::VideoInfo,
-        input_map: gst::MappedBuffer<gst::buffer::Readable>,
-    ) -> Self {
-        if layout.is_normal(NormalForm::RowMajorPacked) {
-            Self::Reference(input_map)
-        } else {
-            let packed_frame = Self::convert_to_tightly_packed_framebuffer(&input_map, video_info);
-            Self::Owned(packed_frame)
-        }
-    }
-}
-
-impl AsSliceOf for SliceContainer {
-    #[inline]
-    fn as_slice_of<T: FromByteSlice>(&self) -> Result<&[T], Error> {
-        match self {
-            SliceContainer::Reference(v) => v.as_slice_of::<T>(),
-            SliceContainer::Owned(v) => v.as_slice_of::<T>(),
-        }
     }
 }
 
@@ -307,9 +257,7 @@ impl Encoder {
             height_stride: video_info.comp_stride(0).try_into().unwrap(),
         };
 
-        let container = SliceContainer::new(&layout, video_info, input_map);
-
-        let slice = container.as_slice_of::<T::Subpixel>().map_err(|v| {
+        let samples = input_map.as_slice_of::<T::Subpixel>().map_err(|v| {
             gst::error!(
                 CAT,
                 imp = self,
@@ -317,10 +265,6 @@ impl Encoder {
             );
             gst::FlowError::NotSupported
         })?;
-
-        let mut image =
-            ImageBuffer::<T, _>::from_raw(video_info.width(), video_info.height(), slice)
-                .ok_or(gst::FlowError::NotSupported)?;
 
         let color_space = utils::videoinfo_to_cicp(video_info.colorimetry()).map_err(|v| {
             gst::element_error!(
@@ -331,19 +275,52 @@ impl Encoder {
             gst::FlowError::NotNegotiated
         })?;
 
-        image.set_color_space(color_space).map_err(|e| {
-            gst::error!(CAT, imp = self, "Failed to set color space: {e}");
-            gst::FlowError::NotNegotiated
-        })?;
+        let output_buffer = if layout.is_normal(NormalForm::RowMajorPacked) {
+            let mut image =
+                ImageBuffer::<T, _>::from_raw(video_info.width(), video_info.height(), samples)
+                    .ok_or(gst::FlowError::NotSupported)?;
 
-        let buffer = Vec::with_capacity(4096);
-        let mut cursor = Cursor::new(buffer);
-        image.write_to(&mut cursor, format.into()).map_err(|e| {
-            gst::error!(CAT, imp = self, "Failed to write image data: {e}");
-            gst::FlowError::Error
-        })?;
+            image.set_color_space(color_space).map_err(|e| {
+                gst::error!(CAT, imp = self, "Failed to set color space: {e}");
+                gst::FlowError::NotNegotiated
+            })?;
 
-        let output_buffer = gst::Buffer::from_mut_slice(cursor.into_inner());
+            let mut cursor = Cursor::new(Vec::with_capacity(4096));
+            image.write_to(&mut cursor, format.into()).map_err(|e| {
+                gst::error!(CAT, imp = self, "Failed to write image data: {e}");
+                gst::FlowError::Error
+            })?;
+
+            gst::Buffer::from_mut_slice(cursor.into_inner())
+        } else {
+            let container = FlatSamples {
+                samples,
+                layout,
+                // Do not initialize color type, this is stride governed
+                color_hint: None,
+            };
+
+            let view = container.as_view::<T>().expect("Mismatched pixel type");
+
+            let mut image = GenericImageView::buffer_like(&view);
+
+            image
+                .copy_from(&view, 0, 0)
+                .expect("Image buffer too small");
+
+            image.set_color_space(color_space).map_err(|e| {
+                gst::error!(CAT, imp = self, "Failed to set color space: {e}");
+                gst::FlowError::NotNegotiated
+            })?;
+
+            let mut cursor = Cursor::new(Vec::with_capacity(4096));
+            image.write_to(&mut cursor, format.into()).map_err(|e| {
+                gst::error!(CAT, imp = self, "Failed to write image data: {e}");
+                gst::FlowError::Error
+            })?;
+
+            gst::Buffer::from_mut_slice(cursor.into_inner())
+        };
         // All images outputted by image-rs are whole frames
         // (see comment in pngenc, same applies)
         frame.set_flags(gst_video::VideoCodecFrameFlags::SYNC_POINT);
