@@ -176,6 +176,8 @@ pub(crate) enum Format {
     Exr,
     #[enum_value(name = "The Farbfeld simple image encoding format", nick = "farbfeld")]
     Farbfeld,
+    #[enum_value(name = "GIF image file format", nick = "gif")]
+    Gif,
     #[enum_value(name = "JPEG image file format", nick = "jpeg")]
     Jpeg,
     #[enum_value(name = "Portable Network Graphics", nick = "jpeg")]
@@ -186,6 +188,8 @@ pub(crate) enum Format {
     Tga,
     #[enum_value(name = "Tagged Image File Format", nick = "tiff")]
     Tiff,
+    #[enum_value(name = "WebP image file format", nick = "webp")]
+    WebP,
 }
 
 impl From<Format> for image::ImageFormat {
@@ -195,11 +199,13 @@ impl From<Format> for image::ImageFormat {
             Format::Bmp => image::ImageFormat::Bmp,
             Format::Exr => image::ImageFormat::OpenExr,
             Format::Farbfeld => image::ImageFormat::Farbfeld,
+            Format::Gif => image::ImageFormat::Gif,
             Format::Jpeg => image::ImageFormat::Jpeg,
             Format::Png => image::ImageFormat::Png,
             Format::Qoi => image::ImageFormat::Qoi,
             Format::Tga => image::ImageFormat::Tga,
             Format::Tiff => image::ImageFormat::Tiff,
+            Format::WebP => image::ImageFormat::WebP,
         }
     }
 }
@@ -220,11 +226,13 @@ impl TryFrom<&str> for Format {
                 ImageFormat::Bmp => Ok(Format::Bmp),
                 ImageFormat::OpenExr => Ok(Format::Exr),
                 ImageFormat::Farbfeld => Ok(Format::Farbfeld),
+                ImageFormat::Gif => Ok(Format::Gif),
                 ImageFormat::Jpeg => Ok(Format::Jpeg),
                 ImageFormat::Png => Ok(Format::Png),
                 ImageFormat::Qoi => Ok(Format::Qoi),
                 ImageFormat::Tga => Ok(Format::Tga),
                 ImageFormat::Tiff => Ok(Format::Tiff),
+                ImageFormat::WebP => Ok(Format::WebP),
                 _ => Err(gst::error_msg!(
                     gst::StreamError::CodecNotFound,
                     ["Unknown mimetype {value}"]
@@ -239,16 +247,40 @@ impl TryFrom<&str> for Format {
 }
 
 impl Format {
+    pub(crate) fn all_animated_values() -> impl IntoIterator<Item = Format> {
+        [
+            // FIXME upstream: AVIF also supports animations
+            // but needs image-rs support
+            // #[cfg(feature = "avif")]
+            // Format::Avif,
+            #[cfg(feature = "gif")]
+            Format::Gif,
+            #[cfg(any(feature = "png", feature = "ico"))]
+            Format::Png,
+            #[cfg(feature = "webp")]
+            Format::WebP,
+        ]
+    }
+
     pub(crate) fn all_values() -> impl IntoIterator<Item = Format> {
         [
+            #[cfg(feature = "avif")]
             Format::Avif,
+            #[cfg(feature = "bmp")]
             Format::Bmp,
+            #[cfg(feature = "exr")]
             Format::Exr,
+            #[cfg(feature = "ff")]
             Format::Farbfeld,
+            #[cfg(feature = "jpeg")]
             Format::Jpeg,
+            #[cfg(any(feature = "png", feature = "ico"))]
             Format::Png,
+            #[cfg(feature = "qoi")]
             Format::Qoi,
+            #[cfg(feature = "tga")]
             Format::Tga,
+            #[cfg(feature = "tiff")]
             Format::Tiff,
         ]
     }

@@ -47,20 +47,6 @@ pub struct Decoder {
     settings: Mutex<Settings>,
 }
 
-fn mimetypes() -> impl IntoIterator<Item = &'static str> {
-    [
-        // FIXME upstream: AVIF also supports animations
-        // but needs image-rs support
-        // "image/avif",
-        #[cfg(feature = "gif")]
-        "image/gif",
-        #[cfg(any(feature = "png", feature = "ico"))]
-        "image/png",
-        #[cfg(feature = "webp")]
-        "image/webp",
-    ]
-}
-
 struct AnimatedImageWrapper(Frame);
 
 impl AsRef<[u8]> for AnimatedImageWrapper {
@@ -456,8 +442,9 @@ impl ElementImpl for Decoder {
             {
                 let caps = caps.get_mut().unwrap();
 
-                for mimetype in mimetypes() {
-                    caps.append(gst::Caps::new_empty_simple(mimetype));
+                for f in utils::Format::all_animated_values() {
+                    let v: &'static str = f.into();
+                    caps.append(gst::Caps::new_empty_simple(v));
                 }
             }
 
