@@ -242,7 +242,7 @@ impl Encoder {
 
         let layout = SampleLayout {
             channels: video_info.n_components().try_into().unwrap(),
-            channel_stride: video_info.comp_offset(1),
+            channel_stride: video_info.comp_offset(0),
             width: video_info.width(),
             width_stride: video_info.comp_pstride(0).try_into().unwrap(),
             height: video_info.height(),
