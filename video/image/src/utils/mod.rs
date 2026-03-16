@@ -8,6 +8,20 @@ use image::metadata::{
     CicpVideoFullRangeFlag,
 };
 
+pub(crate) trait CanCicpRgb
+{
+    /// Implements publicly Cicp::from(self.into_rgb()) == self
+    /// (which checks for the two conditions below).
+    fn is_rgb(&self) -> bool;
+}
+
+impl CanCicpRgb for Cicp {
+    fn is_rgb(&self) -> bool {
+        self.matrix == image::metadata::CicpMatrixCoefficients::Identity
+                && self.full_range == image::metadata::CicpVideoFullRangeFlag::FullRange
+    }
+}
+
 pub(crate) fn cicp_to_videoinfo(cicp: Cicp) -> Result<VideoColorimetry, gst::ErrorMessage> {
     let rg = match cicp.full_range {
         CicpVideoFullRangeFlag::NarrowRange => VideoColorRange::Range16_235,

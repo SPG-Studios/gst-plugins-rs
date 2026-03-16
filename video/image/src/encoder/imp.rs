@@ -12,14 +12,15 @@ use gst_video::subclass::prelude::*;
 use byte_slice_cast::*;
 use image::flat::{NormalForm, SampleLayout};
 use image::{
-    EncodableLayout, FlatSamples, GenericImage, GenericImageView, ImageBuffer, Luma, PixelWithColorType, Rgb, Rgba
+    EncodableLayout, FlatSamples, GenericImage, GenericImageView, ImageBuffer, Luma,
+    PixelWithColorType, Rgb, Rgba,
 };
 
 use std::io::Cursor;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use crate::utils;
+use crate::utils::{self, CanCicpRgb};
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -280,10 +281,12 @@ impl Encoder {
                 ImageBuffer::<T, _>::from_raw(video_info.width(), video_info.height(), samples)
                     .ok_or(gst::FlowError::NotSupported)?;
 
-            image.set_color_space(color_space).map_err(|e| {
-                gst::error!(CAT, imp = self, "Failed to set color space: {e}");
-                gst::FlowError::NotNegotiated
-            })?;
+            if color_space.is_rgb() {
+                image.set_color_space(color_space).map_err(|e| {
+                    gst::error!(CAT, imp = self, "Failed to set color space: {e}");
+                    gst::FlowError::NotNegotiated
+                })?;
+            }
 
             let mut cursor = Cursor::new(Vec::with_capacity(4096));
             image.write_to(&mut cursor, format.into()).map_err(|e| {
@@ -308,10 +311,12 @@ impl Encoder {
                 .copy_from(&view, 0, 0)
                 .expect("Image buffer too small");
 
-            image.set_color_space(color_space).map_err(|e| {
-                gst::error!(CAT, imp = self, "Failed to set color space: {e}");
-                gst::FlowError::NotNegotiated
-            })?;
+            if color_space.is_rgb() {
+                image.set_color_space(color_space).map_err(|e| {
+                    gst::error!(CAT, imp = self, "Failed to set color space: {e}");
+                    gst::FlowError::NotNegotiated
+                })?;
+            }
 
             let mut cursor = Cursor::new(Vec::with_capacity(4096));
             image.write_to(&mut cursor, format.into()).map_err(|e| {
