@@ -32,6 +32,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 struct State {
     format: utils::Format,
+    video_info: gst_video::VideoInfo,
 }
 
 #[derive(Default)]
@@ -155,6 +156,7 @@ impl VideoEncoderImpl for Encoder {
                 .as_str()
                 .try_into()
                 .map_err(|v| gst::loggable_error!(CAT, "Failed to determine format: {}", v))?,
+            video_info: state.info().clone(),
         });
 
         Ok(())
@@ -164,19 +166,12 @@ impl VideoEncoderImpl for Encoder {
         &self,
         frame: gst_video::VideoCodecFrame,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let surface_state = self
-            .obj()
-            .output_state()
-            .ok_or(gst::FlowError::NotNegotiated)?;
-
-        let video_info = surface_state.info();
-
-        let format = {
+        let (video_info, format) = {
             let state_guard = self.state.lock().unwrap();
 
             let state = state_guard.as_ref().ok_or(gst::FlowError::NotNegotiated)?;
 
-            state.format
+            (state.video_info.clone(), state.format)
         };
 
         gst::debug!(
@@ -189,38 +184,41 @@ impl VideoEncoderImpl for Encoder {
         match video_info.format() {
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba => {
-                self.render_to_image::<Rgba<u8>>(frame, video_info, format)
+                self.render_to_image::<Rgba<u8>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Abgr => {
-                self.ingest_image::<Rgba<u8>>(frame, video_info, format)
+                self.ingest_image::<Rgba<u8>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgb => {
-                self.render_to_image::<Rgb<u8>>(frame, video_info, format)
+                self.render_to_image::<Rgb<u8>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "big")]
-            gst_video::VideoFormat::Bgr => self.ingest_image::<Rgb<u8>>(frame, video_info, format),
+            gst_video::VideoFormat::Bgr => self.ingest_image::<Rgb<u8>>(frame, &video_info, format),
             gst_video::VideoFormat::Gray8 => {
-                self.render_to_image::<Luma<u8>>(frame, video_info, format)
+                self.render_to_image::<Luma<u8>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Gray16Le => {
-                self.render_to_image::<Luma<u16>>(frame, video_info, format)
+                self.render_to_image::<Luma<u16>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Gray16Be => {
-                self.ingest_image::<Luma<u16>>(frame, video_info, format)
+                self.ingest_image::<Luma<u16>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba64Le => {
-                self.render_to_image::<Rgba<u16>>(frame, video_info, format)
+                self.render_to_image::<Rgba<u16>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Rgba64Be => {
-                self.ingest_image::<Rgba<u16>>(frame, video_info, format)
+                self.ingest_image::<Rgba<u16>>(frame, &video_info, format)
             }
-            _ => unimplemented!(),
+            v => {
+                gst::error!(CAT, imp = self, "Unknown format {v}");
+                Err(gst::FlowError::NotSupported)
+            }
         }
     }
 }
