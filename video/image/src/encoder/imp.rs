@@ -240,13 +240,16 @@ impl Encoder {
             .expect("frame without input buffer");
         let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
 
+        let sample_size = std::mem::size_of::<T::Subpixel>();
+
         let layout = SampleLayout {
             channels: video_info.n_components().try_into().unwrap(),
-            channel_stride: video_info.comp_offset(0),
+            // Planar format (contiguous channels)
+            channel_stride: 1,
             width: video_info.width(),
-            width_stride: video_info.comp_pstride(0).try_into().unwrap(),
+            width_stride: (video_info.comp_pstride(0) / sample_size as i32).try_into().unwrap(),
             height: video_info.height(),
-            height_stride: video_info.comp_stride(0).try_into().unwrap(),
+            height_stride: (video_info.comp_stride(0) / sample_size as i32).try_into().unwrap(),
         };
 
         let samples = input_map.as_slice_of::<T::Subpixel>().map_err(|v| {
