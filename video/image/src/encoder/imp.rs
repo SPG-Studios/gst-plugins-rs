@@ -12,7 +12,7 @@ use gst_video::subclass::prelude::*;
 use byte_slice_cast::*;
 use image::flat::{NormalForm, SampleLayout};
 use image::{
-    EncodableLayout, FlatSamples, GenericImage, GenericImageView, ImageBuffer, Luma,
+    EncodableLayout, FlatSamples, GenericImage, GenericImageView, ImageBuffer, ImageFormat, Luma,
     PixelWithColorType, Rgb, Rgba,
 };
 
@@ -100,9 +100,10 @@ impl ElementImpl for Encoder {
             {
                 let caps = src_caps.get_mut().unwrap();
 
-                for f in utils::Format::all_values() {
-                    let v: &'static str = f.into();
-                    caps.append(gst::Caps::new_empty_simple(v));
+                for f in utils::Format::all_encoder_formats() {
+                    for v in f.to_mimetypes() {
+                        caps.append(gst::Caps::new_empty_simple(v));
+                    }
                 }
             };
             let src_pad_template = gst::PadTemplate::new(
@@ -174,6 +175,11 @@ impl VideoEncoderImpl for Encoder {
             (state.video_info.clone(), state.format)
         };
 
+        let format = ImageFormat::try_from(format).map_err(|v| {
+            gst::error!(CAT, imp = self, "{}", v);
+            gst::FlowError::NotNegotiated
+        })?;
+
         gst::debug!(
             CAT,
             imp = self,
@@ -228,7 +234,7 @@ impl Encoder {
         &self,
         mut frame: gst_video::VideoCodecFrame,
         video_info: &gst_video::VideoInfo,
-        format: utils::Format,
+        format: ImageFormat,
     ) -> Result<gst::FlowSuccess, gst::FlowError>
     where
         T: PixelWithColorType,
@@ -247,9 +253,13 @@ impl Encoder {
             // Planar format (contiguous channels)
             channel_stride: 1,
             width: video_info.width(),
-            width_stride: (video_info.comp_pstride(0) / sample_size as i32).try_into().unwrap(),
+            width_stride: (video_info.comp_pstride(0) / sample_size as i32)
+                .try_into()
+                .unwrap(),
             height: video_info.height(),
-            height_stride: (video_info.comp_stride(0) / sample_size as i32).try_into().unwrap(),
+            height_stride: (video_info.comp_stride(0) / sample_size as i32)
+                .try_into()
+                .unwrap(),
         };
 
         let samples = input_map.as_slice_of::<T::Subpixel>().map_err(|v| {
@@ -283,7 +293,7 @@ impl Encoder {
             }
 
             let mut cursor = Cursor::new(Vec::with_capacity(4096));
-            image.write_to(&mut cursor, format.into()).map_err(|e| {
+            image.write_to(&mut cursor, format).map_err(|e| {
                 gst::error!(CAT, imp = self, "Failed to write image data: {e}");
                 gst::FlowError::Error
             })?;
@@ -313,7 +323,7 @@ impl Encoder {
             }
 
             let mut cursor = Cursor::new(Vec::with_capacity(4096));
-            image.write_to(&mut cursor, format.into()).map_err(|e| {
+            image.write_to(&mut cursor, format).map_err(|e| {
                 gst::error!(CAT, imp = self, "Failed to write image data: {e}");
                 gst::FlowError::Error
             })?;

@@ -36,7 +36,7 @@ struct Settings {
 struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
-    format_from_caps: Option<ImageFormat>,
+    format_from_caps: Option<utils::Format>,
     in_par: Option<gst::Fraction>,
 }
 
@@ -179,7 +179,7 @@ impl Decoder {
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         let mime = caps.structure().unwrap();
         let mut state = self.state.lock().unwrap();
-        state.format_from_caps = utils::format_from_mimetype(mime.name().as_str())?;
+        state.format_from_caps = Some(mime.name().as_str().try_into()?);
         state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
             Ok(v) => v.into(),
             Err(v) => {
@@ -442,9 +442,10 @@ impl ElementImpl for Decoder {
             {
                 let caps = caps.get_mut().unwrap();
 
-                for f in utils::Format::all_animated_values() {
-                    let v: &'static str = f.into();
-                    caps.append(gst::Caps::new_empty_simple(v));
+                for f in utils::Format::all_animated_formats() {
+                    for v in f.to_mimetypes() {
+                        caps.append(gst::Caps::new_empty_simple(v));
+                    }
                 }
             }
 

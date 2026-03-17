@@ -5,7 +5,7 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-use image::{DynamicImage, GenericImageView, ImageDecoder, ImageReader, Limits};
+use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
@@ -30,7 +30,7 @@ struct Settings {
 #[derive(Default)]
 struct State {
     buffers: Vec<gst::Buffer>,
-    format_from_caps: Option<image::ImageFormat>,
+    format_from_caps: Option<utils::Format>,
     total_size: usize,
     in_fps: Option<gst::Fraction>,
     in_par: Option<gst::Fraction>,
@@ -48,78 +48,6 @@ pub struct ImageRsDecoder {
     sinkpad: gst::Pad,
     settings: Mutex<Settings>,
     state: Mutex<State>,
-}
-
-// Missing formats from gdkpixbufdec:
-// - application/x-navi-animation
-// - image/x-cmu-raster
-// - image/x-sun-raster
-// - image/svg
-// - image/svg+xml
-fn mimetypes() -> impl IntoIterator<Item = &'static str> {
-    [
-        // FIXME upstream: AVIF also supports animations
-        // but needs image-rs support
-        #[cfg(feature = "avif")]
-        "image/avif",
-        #[cfg(any(feature = "bmp", feature = "ico"))]
-        "image/bmp",
-        #[cfg(any(feature = "bmp", feature = "ico"))]
-        "image/x-MS-bmp",
-        #[cfg(feature = "dds")]
-        "image/vnd-ms.dds",
-        #[cfg(feature = "dds")]
-        "image/x-direct-draw-surface",
-        #[cfg(feature = "exr")]
-        "image/exr",
-        #[cfg(feature = "ff")]
-        "image/x-farbfeld",
-        #[cfg(feature = "ico")]
-        "image/x-icon",
-        #[cfg(feature = "jpeg")]
-        // FIXME upstream: doesn't support MJPEG
-        "image/jpeg",
-        #[cfg(feature = "ora")]
-        "image/openraster",
-        // https://snisurset.net/code/abydos/supported.html
-        #[cfg(feature = "otb")]
-        "image/x-nokia-over-the-air-bitmap",
-        #[cfg(feature = "pcx")]
-        "image/x-pcx",
-        #[cfg(any(feature = "png", feature = "ico"))]
-        "image/png",
-        #[cfg(feature = "pnm")]
-        "image/x-portable-anymap",
-        #[cfg(feature = "pnm")]
-        "image/x-portable-bitmap",
-        #[cfg(feature = "pnm")]
-        "image/x-portable-graymap",
-        #[cfg(feature = "pnm")]
-        "image/x-portable-pixmap",
-        // https://github.com/phoboslab/qoi/issues/167
-        #[cfg(feature = "qoi")]
-        "image/qoi",
-        #[cfg(feature = "qoi")]
-        "image/x-qoi",
-        #[cfg(feature = "sgi")]
-        "image/sgi",
-        #[cfg(feature = "tga")]
-        "image/x-targa",
-        #[cfg(feature = "tga")]
-        "image/x-tga",
-        #[cfg(feature = "tiff")]
-        "image/tiff",
-        #[cfg(feature = "wbmp")]
-        "image/vnd.wap.wbmp",
-        #[cfg(feature = "webp")]
-        "image/webp",
-        #[cfg(feature = "xbm")]
-        "image/x-xbitmap",
-        #[cfg(feature = "xbm")]
-        "image/x-xbm",
-        #[cfg(feature = "xpm")]
-        "image/x-xpixmap",
-    ]
 }
 
 struct Wrapper(DynamicImage);
@@ -241,7 +169,7 @@ impl ImageRsDecoder {
     fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         let mime = caps.structure().unwrap();
         let mut state = self.state.lock().unwrap();
-        state.format_from_caps = utils::format_from_mimetype(mime.name().as_str())?;
+        state.format_from_caps = Some(mime.name().as_str().try_into()?);
         state.in_fps = match mime.get::<gst::Fraction>("framerate") {
             Ok(v) => {
                 gst::debug!(
@@ -389,20 +317,13 @@ impl ImageRsDecoder {
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mut reader = ImageReader::new(source);
 
-        reader = match state.format_from_caps {
-            Some(v) => {
-                reader.set_format(v);
-                reader
-            }
-            None => reader.with_guessed_format().map_err(|v| {
-                gst::error!(
-                    CAT,
-                    imp = self,
-                    "No caps available, failed guessing format: {v}"
-                );
-                gst::FlowError::NotNegotiated
-            })?,
-        };
+        let format = state
+            .format_from_caps
+            .ok_or(gst::FlowError::NotNegotiated)?;
+
+        if let Ok(v) = ImageFormat::try_from(format) {
+            reader.set_format(v);
+        }
 
         let mut limits = Limits::default();
         {
@@ -835,8 +756,11 @@ impl ElementImpl for ImageRsDecoder {
             {
                 let caps = caps.get_mut().unwrap();
 
-                for mimetype in mimetypes() {
-                    caps.append(gst::Caps::new_empty_simple(mimetype));
+                for f in utils::Format::all_decoding_formats() {
+                    eprintln!("Registering {:?}", f);
+                    for v in f.to_mimetypes() {
+                        caps.append(gst::Caps::new_empty_simple(v));
+                    }
                 }
             }
 
