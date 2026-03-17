@@ -5,13 +5,15 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gst_video::VideoColorimetry;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use crate::utils;
+use crate::cicp::ImageCicp;
+use crate::format::Format;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -30,7 +32,7 @@ struct Settings {
 #[derive(Default)]
 struct State {
     buffers: Vec<gst::Buffer>,
-    format_from_caps: Option<utils::Format>,
+    format_from_caps: Option<Format>,
     total_size: usize,
     in_fps: Option<gst::Fraction>,
     in_par: Option<gst::Fraction>,
@@ -357,7 +359,8 @@ impl ImageRsDecoder {
 
             let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
 
-            let color_info = match utils::cicp_to_videoinfo(image.color_space()) {
+            let color_info = match VideoColorimetry::try_from(ImageCicp::from(image.color_space()))
+            {
                 Ok(v) => Some(v),
                 Err(v) => {
                     gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
@@ -756,7 +759,7 @@ impl ElementImpl for ImageRsDecoder {
             {
                 let caps = caps.get_mut().unwrap();
 
-                for f in utils::Format::all_decoding_formats() {
+                for f in Format::all_decoding_formats() {
                     eprintln!("Registering {:?}", f);
                     for v in f.to_mimetypes() {
                         caps.append(gst::Caps::new_empty_simple(v));

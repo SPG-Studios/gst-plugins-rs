@@ -20,7 +20,8 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use crate::utils::{self, CanCicpRgb};
+use crate::cicp::{CanCicpRgb, ImageCicp};
+use crate::format::Format;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -31,7 +32,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 });
 
 struct State {
-    format: utils::Format,
+    format: Format,
     video_info: gst_video::VideoInfo,
 }
 
@@ -100,7 +101,7 @@ impl ElementImpl for Encoder {
             {
                 let caps = src_caps.get_mut().unwrap();
 
-                for f in utils::Format::all_encoder_formats() {
+                for f in Format::all_encoder_formats() {
                     for v in f.to_mimetypes() {
                         caps.append(gst::Caps::new_empty_simple(v));
                     }
@@ -278,7 +279,7 @@ impl Encoder {
             gst::FlowError::NotSupported
         })?;
 
-        let color_space = utils::videoinfo_to_cicp(video_info.colorimetry()).map_err(|v| {
+        let color_space = ImageCicp::try_from(video_info.colorimetry()).map_err(|v| {
             gst::element_error!(
                 self.obj(),
                 gst::StreamError::Decode,
@@ -293,7 +294,7 @@ impl Encoder {
                     .ok_or(gst::FlowError::NotSupported)?;
 
             if color_space.is_rgb() {
-                image.set_color_space(color_space).map_err(|e| {
+                image.set_color_space(color_space.into()).map_err(|e| {
                     gst::error!(CAT, imp = self, "Failed to set color space: {e}");
                     gst::FlowError::NotNegotiated
                 })?;
@@ -323,7 +324,7 @@ impl Encoder {
                 .expect("Image buffer too small");
 
             if color_space.is_rgb() {
-                image.set_color_space(color_space).map_err(|e| {
+                image.set_color_space(color_space.into()).map_err(|e| {
                     gst::error!(CAT, imp = self, "Failed to set color space: {e}");
                     gst::FlowError::NotNegotiated
                 })?;

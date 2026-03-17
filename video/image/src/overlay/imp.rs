@@ -6,6 +6,7 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::prelude::*;
+use gst_video::VideoColorimetry;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 use image::{DynamicImage, ImageReader};
@@ -14,7 +15,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 
-use crate::utils;
+use crate::cicp::ImageCicp;
 
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -184,13 +185,14 @@ impl ImageRsOverlay {
                 gst_video::VideoFormat::Argb
             };
             // FIXME: should this be unwrapped?
-            let color_info = match utils::cicp_to_videoinfo(argb_image.color_space()) {
-                Ok(v) => Some(v),
-                Err(v) => {
-                    gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
-                    None
-                }
-            };
+            let color_info =
+                match VideoColorimetry::try_from(ImageCicp::from(argb_image.color_space())) {
+                    Ok(v) => Some(v),
+                    Err(v) => {
+                        gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                        None
+                    }
+                };
             gst_video::VideoInfo::builder(pixel, width, height)
                 .stride(&strides)
                 .colorimetry_if_some(color_info.as_ref())

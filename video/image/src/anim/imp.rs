@@ -5,6 +5,7 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gst_video::VideoColorimetry;
 
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
@@ -16,7 +17,8 @@ use std::io::Cursor;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use crate::utils;
+use crate::cicp::ImageCicp;
+use crate::format::Format;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -36,7 +38,7 @@ struct Settings {
 struct State {
     buffers: Vec<gst::Buffer>,
     total_size: usize,
-    format_from_caps: Option<utils::Format>,
+    format_from_caps: Option<Format>,
     in_par: Option<gst::Fraction>,
 }
 
@@ -106,13 +108,16 @@ impl Decoder {
 
         let color_info = match frame_list.peek() {
             Some(v) => match v {
-                Ok(frame) => match utils::cicp_to_videoinfo(frame.buffer().color_space()) {
-                    Ok(v) => Some(v),
-                    Err(v) => {
-                        gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
-                        None
+                Ok(frame) => {
+                    match VideoColorimetry::try_from(ImageCicp::from(frame.buffer().color_space()))
+                    {
+                        Ok(v) => Some(v),
+                        Err(v) => {
+                            gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                            None
+                        }
                     }
-                },
+                }
                 Err(v) => {
                     gst::warning!(
                         CAT,
@@ -442,7 +447,7 @@ impl ElementImpl for Decoder {
             {
                 let caps = caps.get_mut().unwrap();
 
-                for f in utils::Format::all_animated_formats() {
+                for f in Format::all_animated_formats() {
                     for v in f.to_mimetypes() {
                         caps.append(gst::Caps::new_empty_simple(v));
                     }
