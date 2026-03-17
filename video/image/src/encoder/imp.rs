@@ -244,23 +244,30 @@ impl Encoder {
         let input_buffer = frame
             .input_buffer_owned()
             .expect("frame without input buffer");
-        let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
 
-        let sample_size = std::mem::size_of::<T::Subpixel>();
+        let layout = {
+            let video_frame =
+                gst_video::VideoFrameRef::from_buffer_ref_readable(&input_buffer, video_info)
+                    .unwrap();
 
-        let layout = SampleLayout {
-            channels: video_info.n_components().try_into().unwrap(),
-            // Planar format (contiguous channels)
-            channel_stride: 1,
-            width: video_info.width(),
-            width_stride: (video_info.comp_pstride(0) / sample_size as i32)
-                .try_into()
-                .unwrap(),
-            height: video_info.height(),
-            height_stride: (video_info.comp_stride(0) / sample_size as i32)
-                .try_into()
-                .unwrap(),
+            let sample_size = std::mem::size_of::<T::Subpixel>();
+
+            SampleLayout {
+                channels: video_info.n_components().try_into().unwrap(),
+                // Planar format (contiguous channels)
+                channel_stride: 1,
+                width: video_info.width(),
+                width_stride: (video_frame.comp_pstride(0) / sample_size as i32)
+                    .try_into()
+                    .unwrap(),
+                height: video_info.height(),
+                height_stride: (video_frame.comp_stride(0) / sample_size as i32)
+                    .try_into()
+                    .unwrap(),
+            }
         };
+
+        let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
 
         let samples = input_map.as_slice_of::<T::Subpixel>().map_err(|v| {
             gst::error!(
