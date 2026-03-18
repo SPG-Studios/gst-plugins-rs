@@ -97,12 +97,6 @@ impl Decoder {
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
 
-        let fmt = if cfg!(target_endian = "little") {
-            gst_video::VideoFormat::Rgba
-        } else {
-            gst_video::VideoFormat::Abgr
-        };
-
         let mut frame_list = frames.peekable();
 
         let color_info = match frame_list.peek() {
@@ -129,7 +123,7 @@ impl Decoder {
             None => None,
         };
 
-        let caps = gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
+        let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgba, wh.0, wh.1)
             .par_if_some(pixel_aspect_ratio)
             .colorimetry_if_some(color_info.as_ref())
             .build()

@@ -179,11 +179,6 @@ impl ImageRsOverlay {
             let cwh_stride = argb_image.as_flat_samples().strides_cwh();
             // RGBA is a single plane
             let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
-            let pixel = if cfg!(target_endian = "little") {
-                gst_video::VideoFormat::Bgra
-            } else {
-                gst_video::VideoFormat::Argb
-            };
             // FIXME: should this be unwrapped?
             let color_info =
                 match VideoColorimetry::try_from(ImageCicp::from(argb_image.color_space())) {
@@ -193,7 +188,7 @@ impl ImageRsOverlay {
                         None
                     }
                 };
-            gst_video::VideoInfo::builder(pixel, width, height)
+            gst_video::VideoInfo::builder(gst_video::VideoFormat::Bgra, width, height)
                 .stride(&strides)
                 .colorimetry_if_some(color_info.as_ref())
                 .build()

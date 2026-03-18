@@ -156,14 +156,13 @@ impl ImageRsDecoder {
                     v.color()
                 );
                 let image_rgba8 = v.to_rgba8();
-                let fmt = if cfg!(target_endian = "little") {
-                    gst_video::VideoFormat::Rgba
-                } else {
-                    gst_video::VideoFormat::Abgr
-                };
                 let strides = image_rgba8.as_flat_samples().strides_cwh();
 
-                (DynamicImage::from(image_rgba8), fmt, strides)
+                (
+                    DynamicImage::from(image_rgba8),
+                    gst_video::VideoFormat::Rgba,
+                    strides,
+                )
             }
         }
     }
