@@ -168,8 +168,8 @@ impl ImageRsDecoder {
         }
     }
 
-    fn set_format_from_caps(&self, caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
-        let mime = caps.structure().unwrap();
+    fn set_format_from_caps(&self, event_caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
+        let mime = event_caps.caps().structure(0).unwrap();
         let mut state = self.state.lock().unwrap();
         state.format_from_caps = Some(mime.name().as_str().try_into()?);
         state.in_fps = match mime.get::<gst::Fraction>("framerate") {

@@ -130,11 +130,11 @@ impl TryFrom<&str> for Format {
             "image/x-xbitmap" | "image/x-xbm" => Ok(Format::Xbm),
             "image/x-xpixmap" => Ok(Format::Xpm),
 
-            _ => match ImageFormat::from_mime_type(value) {
+            v => match ImageFormat::from_mime_type(value) {
                 Some(v) => Format::try_from(v),
                 None => Err(gst::error_msg!(
                     gst::StreamError::CodecNotFound,
-                    ["Unknown mimetype {value}"]
+                    ["Unknown mimetype {v}"]
                 )),
             },
         }
