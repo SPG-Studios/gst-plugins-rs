@@ -4,6 +4,19 @@
 use gst::glib;
 use gst::prelude::*;
 
+/**
+ * SECTION:element-imagersdec
+ *
+ * Decodes still image formats using pure Rust to raw video
+ *
+ * ## Example launch line
+ *
+ * ```bash
+ * gst-launch-1.0 filesrc location=$PATH ! typefind ! imagersdec ! imagefreeze ! video/x-raw,framerate=30/1 ! videoconvert ! autovideosink
+ * ```
+ *
+ * Since: 0.16
+ */
 mod imp;
 
 glib::wrapper! {

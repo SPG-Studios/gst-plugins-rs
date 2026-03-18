@@ -4,6 +4,19 @@
 use gst::glib;
 use gst::prelude::*;
 
+/**
+ * SECTION:element-imagersenc
+ *
+ * Encodes a single frame into still image formats
+ *
+ * ## Example launch line
+ *
+ * ```bash
+ * gst-launch-1.0 videotestsrc pattern=smpte num-buffers=1 ! video/x-raw,width=320,height=240,format=RGBA ! videoconvert ! imagersenc ! image/png ! filesink location=foo.png
+ * ```
+ *
+ * Since: 0.16
+ */
 mod imp;
 
 glib::wrapper! {

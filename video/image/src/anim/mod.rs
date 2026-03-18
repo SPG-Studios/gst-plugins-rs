@@ -4,6 +4,19 @@
 use gst::glib;
 use gst::prelude::*;
 
+/**
+ * SECTION:element-animatedimagersdec
+ *
+ * Decodes animated image formats using pure Rust to raw video
+ *
+ * ## Example launch line
+ *
+ * ```bash
+ * gst-launch-1.0 filesrc location=$PATH ! typefind ! animatedimagersdec ! videoconvert ! autovideosink
+ * ```
+ *
+ * Since: 0.16
+ */
 mod imp;
 
 glib::wrapper! {
@@ -14,7 +27,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "animatedimagersdec",
-        gst::Rank::PRIMARY,
+        gst::Rank::SECONDARY - 1,
         Decoder::static_type(),
     )
 }
