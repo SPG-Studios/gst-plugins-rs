@@ -231,6 +231,8 @@ impl VideoEncoderImpl for Encoder {
 }
 
 impl Encoder {
+    #[track_caller]
+    #[inline(never)]
     fn render_to_image<T>(
         &self,
         mut frame: gst_video::VideoCodecFrame,

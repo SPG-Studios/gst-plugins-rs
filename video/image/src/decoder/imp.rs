@@ -473,6 +473,45 @@ impl ImageRsDecoder {
         }
     }
 
+    /// Takes caps and copies its video fields to tmpl_caps
+    fn proxy_caps(&self, templ_caps: &gst::CapsRef, caps: &gst::CapsRef) -> gst::Caps {
+        let mut result = gst::Caps::new_empty();
+
+        for i in templ_caps.iter_with_features() {
+            let name = i.0.name_id();
+            let features = i.1;
+
+            for _caps_s in caps.iter() {
+                let mut tmp = gst::Caps::new_empty();
+
+                let s = gst::Structure::new_empty_from_id(name);
+
+                // FIXME: only pixel-aspect-ratio would be supported here,
+                // but how would it interact with the setting value?
+                // for v in [
+                //     "width",
+                //     "height",
+                //     "framerate",
+                //     "pixel-aspect-ratio",
+                //     "colorimetry",
+                //     "chroma-site"
+                // ] {
+                //     if let Ok(value) = caps_s.value(v) {
+                //         s.set(v, value.clone());
+                //     }
+                // }
+
+                tmp.get_mut()
+                    .unwrap()
+                    .append_structure_full(s, Some(features.to_owned()));
+
+                result.merge(tmp);
+            }
+        }
+
+        result
+    }
+
     /// __gst_video_element_proxy_getcaps:
     ///
     /// @element: a #GstElement
@@ -490,18 +529,57 @@ impl ImageRsDecoder {
     /// combinations supported by downstream elements (e.g. muxers).
     ///
     /// Returns: a #GstCaps owned by caller
-    fn proxy_get_caps(&self, filter: Option<&gst::CapsRef>) -> gst::Caps {
-        let mut return_caps = self.sinkpad.pad_template_caps();
-
-        if let Some(filter) = filter
-            && !return_caps.is_empty()
+    fn proxy_get_caps(
+        &self,
+        initial_caps: Option<&gst::CapsRef>,
+        filter: Option<&gst::CapsRef>,
+    ) -> gst::Caps {
+        /* Allow downstream to specify width/height/framerate/PAR constraints
+         * and forward them upstream for video converters to handle
+         */
+        let templ_caps = initial_caps
+            .map(|v| v.copy())
+            .unwrap_or_else(|| self.sinkpad.pad_template_caps());
+        let src_templ_caps = self.srcpad.pad_template_caps();
+        let peer_caps = if let Some(filter) = filter
+            && !filter.is_any()
         {
-            return_caps = return_caps.intersect(filter);
-        }
+            let proxy_filter = self.proxy_caps(&src_templ_caps, filter);
+            self.srcpad.peer_query_caps(Some(&proxy_filter))
+        } else {
+            self.srcpad.peer_query_caps(None)
+        };
 
-        gst::log!(CAT, imp = self, "proxy caps {}", return_caps);
+        let allowed = peer_caps.intersect_with_mode(&src_templ_caps, gst::CapsIntersectMode::First);
 
-        return_caps
+        drop(src_templ_caps);
+        drop(peer_caps);
+
+        let fcaps = if allowed.is_any() {
+            templ_caps
+        } else if allowed.is_empty() {
+            allowed
+        } else {
+            gst::log!(CAT, imp = self, "template caps {}", templ_caps);
+            gst::log!(CAT, imp = self, "allowed caps {}", allowed);
+
+            let filter_caps = self.proxy_caps(&templ_caps, &allowed);
+
+            let mut fcaps = filter_caps.intersect(&templ_caps);
+            drop(filter_caps);
+            drop(templ_caps);
+
+            if let Some(f) = filter {
+                gst::log!(CAT, imp = self, "intersecting with {}", f);
+                fcaps = fcaps.intersect_with_mode(f, gst::CapsIntersectMode::First);
+            }
+
+            fcaps
+        };
+
+        gst::log!(CAT, imp = self, "proxy caps {}", fcaps);
+
+        fcaps
     }
 
     fn sink_query(&self, pad: &gst::Pad, query: &mut gst::QueryRef) -> bool {
@@ -511,7 +589,7 @@ impl ImageRsDecoder {
             QueryViewMut::Caps(q) => {
                 let filter = q.filter();
                 // See gst_video_decoder_sink_getcaps
-                let caps = self.proxy_get_caps(filter);
+                let caps = self.proxy_get_caps(None, filter);
                 q.set_result(&caps);
                 true
             }
@@ -531,6 +609,7 @@ impl ImageRsDecoder {
             EventView::Caps(v) => {
                 if let Err(err) = self.set_format_from_caps(v) {
                     self.post_error_message(err);
+                    ret = false;
                 }
                 forward = false;
             }
