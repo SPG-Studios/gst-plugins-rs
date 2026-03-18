@@ -11,7 +11,6 @@ use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frame, Frames, ImageDecoder, ImageFormat, ImageReader, Limits};
-use num_rational::Ratio;
 
 use std::io::Cursor;
 use std::sync::LazyLock;
@@ -151,10 +150,11 @@ impl Decoder {
                 )
             })?;
 
-            let delay = {
-                let d = Ratio::<u32>::from(frame.delay().numer_denom_ms());
-                (d.to_integer() as u64).mseconds()
-            };
+            let delay: gst::ClockTime = std::time::Duration::from(frame.delay())
+                .try_into()
+                .map_err(|v| {
+                    gst::error_msg!(gst::StreamError::Decode, ["Invalid frame duration: {}", v])
+                })?;
 
             // AnimatedEncoder doesn't support anything other than RGBA
             let mut out_buf = gst::Buffer::from_slice(AnimatedImageWrapper(frame));
