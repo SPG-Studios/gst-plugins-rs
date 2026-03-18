@@ -199,6 +199,8 @@ impl Decoder {
     fn decode(&self) -> Result<(), gst::ErrorMessage> {
         let mut state = self.state.lock().unwrap();
 
+        let format = state.format_from_caps;
+
         if state.buffers.is_empty() {
             return Err(gst::error_msg!(
                 gst::StreamError::Decode,
@@ -227,6 +229,17 @@ impl Decoder {
             }
         }
         reader.limits(limits);
+
+        if let Some(v) = format {
+            reader.set_format(v.try_into().unwrap());
+        } else {
+            reader = reader.with_guessed_format().map_err(|v| {
+                gst::error_msg!(
+                    gst::StreamError::Decode,
+                    ["Failed detecting container: {v}"]
+                )
+            })?;
+        }
 
         match reader.format() {
             Some(ImageFormat::Gif) => {
