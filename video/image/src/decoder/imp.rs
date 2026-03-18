@@ -760,7 +760,6 @@ impl ElementImpl for ImageRsDecoder {
                 let caps = caps.get_mut().unwrap();
 
                 for f in Format::all_decoding_formats() {
-                    eprintln!("Registering {:?}", f);
                     for v in f.to_mimetypes() {
                         caps.append(gst::Caps::new_empty_simple(v));
                     }
