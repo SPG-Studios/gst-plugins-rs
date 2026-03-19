@@ -145,7 +145,7 @@ impl ImageRsDecoder {
                 if v.has_alpha() {
                     let image = v.to_rgba8();
                     let strides = image.as_flat_samples().strides_cwh();
-    
+
                     (
                         DynamicImage::from(image),
                         gst_video::VideoFormat::Rgba,
@@ -154,7 +154,7 @@ impl ImageRsDecoder {
                 } else {
                     let image = v.to_rgb8();
                     let strides = image.as_flat_samples().strides_cwh();
-    
+
                     (
                         DynamicImage::from(image),
                         gst_video::VideoFormat::Rgb,
@@ -393,7 +393,7 @@ impl ImageRsDecoder {
 
             state.info = Some(new_info);
 
-            let pending_events: Vec<_> = state.pending_events.drain(..).collect();
+            let pending_events = state.pending_events.drain(..).collect::<Vec<_>>();
 
             drop(state);
 
@@ -527,20 +527,18 @@ impl ImageRsDecoder {
         let templ_caps = initial_caps
             .map(|v| v.copy())
             .unwrap_or_else(|| self.sinkpad.pad_template_caps());
-        let src_templ_caps = self.srcpad.pad_template_caps();
-        let peer_caps = if let Some(filter) = filter
-            && !filter.is_any()
-        {
-            let proxy_filter = self.proxy_caps(&src_templ_caps, filter);
-            self.srcpad.peer_query_caps(Some(&proxy_filter))
-        } else {
-            self.srcpad.peer_query_caps(None)
+        let allowed = {
+            let src_templ_caps = self.srcpad.pad_template_caps();
+            let peer_caps = if let Some(filter) = filter
+                && !filter.is_any()
+            {
+                let proxy_filter = self.proxy_caps(&src_templ_caps, filter);
+                self.srcpad.peer_query_caps(Some(&proxy_filter))
+            } else {
+                self.srcpad.peer_query_caps(None)
+            };
+            peer_caps.intersect_with_mode(&src_templ_caps, gst::CapsIntersectMode::First)
         };
-
-        let allowed = peer_caps.intersect_with_mode(&src_templ_caps, gst::CapsIntersectMode::First);
-
-        drop(src_templ_caps);
-        drop(peer_caps);
 
         let fcaps = if allowed.is_any() {
             templ_caps
@@ -550,10 +548,10 @@ impl ImageRsDecoder {
             gst::log!(CAT, imp = self, "template caps {}", templ_caps);
             gst::log!(CAT, imp = self, "allowed caps {}", allowed);
 
-            let filter_caps = self.proxy_caps(&templ_caps, &allowed);
+            let mut fcaps = self
+                .proxy_caps(&templ_caps, &allowed)
+                .intersect(&templ_caps);
 
-            let mut fcaps = filter_caps.intersect(&templ_caps);
-            drop(filter_caps);
             drop(templ_caps);
 
             if let Some(f) = filter {

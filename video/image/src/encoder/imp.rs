@@ -17,8 +17,7 @@ use image::{
 };
 
 use std::io::Cursor;
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use crate::cicp::{CanCicpRgb, ImageCicp};
 use crate::format::Format;
@@ -151,7 +150,7 @@ impl VideoEncoderImpl for Encoder {
                 .name()
                 .as_str()
                 .try_into()
-                .map_err(|v| gst::loggable_error!(CAT, "Failed to determine format: {}", v))?,
+                .map_err(|v| gst::loggable_error!(CAT, "Failed to determine format: {v}"))?,
             video_info: state.info().clone(),
         });
 

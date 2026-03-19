@@ -13,8 +13,7 @@ use image::codecs::webp::WebPDecoder;
 use image::{AnimationDecoder, Frames, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 use std::io::Cursor;
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use crate::cicp::ImageCicp;
 use crate::format::Format;
