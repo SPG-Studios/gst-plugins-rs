@@ -13,7 +13,6 @@ use image::ImageReader;
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::MutexGuard;
 
 use crate::cicp::ImageCicp;
 
@@ -125,10 +124,7 @@ impl ImageRsOverlay {
         state.update_composition = false;
     }
 
-    fn load_image<'a>(
-        &'a self,
-        state: &mut MutexGuard<'a, State>,
-    ) -> Result<(), gst::ErrorMessage> {
+    fn load_image(&self, state: &mut State) -> Result<(), gst::ErrorMessage> {
         let location = {
             let settings = self.settings.lock().unwrap();
             if state.location == settings.location {
