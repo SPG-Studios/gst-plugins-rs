@@ -149,9 +149,11 @@ impl ImageRsOverlay {
             image::DynamicImage::ImageRgba8(v) => v,
             v => v.to_rgba8(),
         };
-        // Correct for BGRA order
+        // image-rs always outputs image in RGBA channel order (individual
+        // channels respecting the native endianness).
+        // FIXME: use the upstream into_raw_bgr function for converting to
+        // BGRA, when it is released
         // https://github.com/image-rs/image/commit/38456b67a943f39dfad7ab35589afe7a86ea4643
-        // https://github.com/image-rs/image/pull/2712/changes#diff-e2d0a143bdfdd2f70d37b1c74f277e94b4ac51ea63824ea8fabbafbd7015ec9c
         {
             for pix in argb_image.as_chunks_mut::<4>().0 {
                 pix.swap(0, 2);
