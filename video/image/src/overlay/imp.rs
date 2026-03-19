@@ -396,15 +396,24 @@ impl ElementImpl for ImageRsOverlay {
         gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
 
         match transition {
-            gst::StateChange::ReadyToPaused | gst::StateChange::PausedToReady => {
-                // Reset the whole state
+            gst::StateChange::ReadyToPaused => {
                 let mut state = self.state.lock().unwrap();
                 *state = State::default();
             }
             _ => (),
         }
 
-        self.parent_change_state(transition)
+        let ret = self.parent_change_state(transition)?;
+
+        match transition {
+            gst::StateChange::PausedToReady => {
+                let mut state = self.state.lock().unwrap();
+                *state = State::default();
+            }
+            _ => (),
+        }
+
+        Ok(ret)
     }
 }
 
