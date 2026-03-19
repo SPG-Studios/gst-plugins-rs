@@ -614,7 +614,9 @@ impl ImageRsDecoder {
                         && v != gst::FlowError::Flushing
                         && v != gst::FlowError::NotLinked
                     {
-                        forward = false;
+                        if let EventView::SegmentDone(..) = event.view() {
+                            forward = false
+                        }
                         ret = false;
                     }
                 }
