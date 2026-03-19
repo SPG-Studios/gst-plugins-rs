@@ -29,7 +29,7 @@ pub(crate) enum Format {
     Nokia,
     #[enum_value(name = "PiCture eXchange file format", nick = "pcx")]
     Pcx,
-    #[enum_value(name = "Portable Network Graphics", nick = "jpeg")]
+    #[enum_value(name = "Portable Network Graphics", nick = "png")]
     Png,
     #[enum_value(name = "Netpbm image file format", nick = "pnm")]
     Pnm,

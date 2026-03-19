@@ -195,7 +195,7 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Abgr => {
-                self.ingest_image::<Rgba<u8>>(frame, &video_info, format)
+                self.render_to_image::<Rgba<u8>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgb => {
