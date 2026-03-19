@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use gst::glib;
 use image::ImageFormat;
 
@@ -51,8 +53,40 @@ pub(crate) enum Format {
     Xpm,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum UnsupportedFormat<'a> {
+    MimetypeNotFound(&'a str),
+    NonNativeFormat(Format),
+}
+
+impl From<UnsupportedFormat<'_>> for gst::ErrorMessage {
+    fn from(value: UnsupportedFormat) -> Self {
+        gst::ErrorMessage::from(&value)
+    }
+}
+
+impl From<&UnsupportedFormat<'_>> for gst::ErrorMessage {
+    fn from(value: &UnsupportedFormat) -> Self {
+        match value {
+            UnsupportedFormat::MimetypeNotFound(v) => {
+                gst::error_msg!(gst::StreamError::CodecNotFound, ["Unknown mimetype {v}"])
+            }
+            UnsupportedFormat::NonNativeFormat(v) => {
+                gst::error_msg!(gst::StreamError::CodecNotFound, ["Unknown format {v:?}"])
+            }
+        }
+    }
+}
+
+impl Display for UnsupportedFormat<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", gst::ErrorMessage::from(self))?;
+        Ok(())
+    }
+}
+
 impl TryFrom<Format> for ImageFormat {
-    type Error = gst::ErrorMessage;
+    type Error = UnsupportedFormat<'static>;
 
     fn try_from(value: Format) -> Result<Self, Self::Error> {
         match value {
@@ -71,46 +105,38 @@ impl TryFrom<Format> for ImageFormat {
             Format::Tga => Ok(ImageFormat::Tga),
             Format::Tiff => Ok(ImageFormat::Tiff),
             Format::WebP => Ok(ImageFormat::WebP),
-            v => Err(gst::error_msg!(
-                gst::StreamError::CodecNotFound,
-                ["Unknown format {v:?}"]
-            )),
+            v => Err(UnsupportedFormat::NonNativeFormat(v)),
         }
     }
 }
 
-impl TryFrom<ImageFormat> for Format {
-    type Error = gst::ErrorMessage;
-
-    fn try_from(value: ImageFormat) -> Result<Self, Self::Error> {
+impl From<ImageFormat> for Format {
+    fn from(value: ImageFormat) -> Format {
         match value {
-            ImageFormat::Avif => Ok(Format::Avif),
-            ImageFormat::Bmp => Ok(Format::Bmp),
-            ImageFormat::Dds => Ok(Format::Dds),
-            ImageFormat::OpenExr => Ok(Format::Exr),
-            ImageFormat::Farbfeld => Ok(Format::Farbfeld),
-            ImageFormat::Gif => Ok(Format::Gif),
-            ImageFormat::Hdr => Ok(Format::Hdr),
-            ImageFormat::Ico => Ok(Format::Ico),
-            ImageFormat::Jpeg => Ok(Format::Jpeg),
-            ImageFormat::Png => Ok(Format::Png),
-            ImageFormat::Pnm => Ok(Format::Pnm),
-            ImageFormat::Qoi => Ok(Format::Qoi),
-            ImageFormat::Tga => Ok(Format::Tga),
-            ImageFormat::Tiff => Ok(Format::Tiff),
-            ImageFormat::WebP => Ok(Format::WebP),
-            v => Err(gst::error_msg!(
-                gst::StreamError::CodecNotFound,
-                ["Unknown format {v:?}"]
-            )),
+            ImageFormat::Avif => Format::Avif,
+            ImageFormat::Bmp => Format::Bmp,
+            ImageFormat::Dds => Format::Dds,
+            ImageFormat::OpenExr => Format::Exr,
+            ImageFormat::Farbfeld => Format::Farbfeld,
+            ImageFormat::Gif => Format::Gif,
+            ImageFormat::Hdr => Format::Hdr,
+            ImageFormat::Ico => Format::Ico,
+            ImageFormat::Jpeg => Format::Jpeg,
+            ImageFormat::Png => Format::Png,
+            ImageFormat::Pnm => Format::Pnm,
+            ImageFormat::Qoi => Format::Qoi,
+            ImageFormat::Tga => Format::Tga,
+            ImageFormat::Tiff => Format::Tiff,
+            ImageFormat::WebP => Format::WebP,
+            v => unimplemented!("{:?}", v),
         }
     }
 }
 
-impl TryFrom<&str> for Format {
-    type Error = gst::ErrorMessage;
+impl<'a> TryFrom<&'a str> for Format {
+    type Error = UnsupportedFormat<'a>;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         match value {
             "image/x-MS-bmp" => Ok(Format::Bmp),
             "image/x-direct-draw-surface" => Ok(Format::Dds),
@@ -131,11 +157,8 @@ impl TryFrom<&str> for Format {
             "image/x-xpixmap" => Ok(Format::Xpm),
 
             v => match ImageFormat::from_mime_type(value) {
-                Some(v) => Format::try_from(v),
-                None => Err(gst::error_msg!(
-                    gst::StreamError::CodecNotFound,
-                    ["Unknown mimetype {v}"]
-                )),
+                Some(v) => Ok(v.into()),
+                None => Err(UnsupportedFormat::MimetypeNotFound(v)),
             },
         }
     }
