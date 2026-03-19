@@ -326,13 +326,11 @@ impl ImageRsDecoder {
             reader.set_format(v);
         }
 
-        let mut limits = Limits::default();
-        {
-            if settings.max_alloc != 0 {
-                limits.max_alloc = Some(settings.max_alloc);
-            }
+        if settings.max_alloc != 0 {
+            let mut limits = Limits::default();
+            limits.max_alloc = Some(settings.max_alloc);
+            reader.limits(limits);
         }
-        reader.limits(limits);
 
         drop(settings);
 

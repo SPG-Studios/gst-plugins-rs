@@ -214,15 +214,15 @@ impl Decoder {
 
         let mut reader = ImageReader::new(Cursor::new(buf));
 
-        let mut limits = Limits::default();
         {
             let settings = self.settings.lock().unwrap();
 
             if settings.max_alloc != 0 {
+                let mut limits = Limits::default();
                 limits.max_alloc = Some(settings.max_alloc);
+                reader.limits(limits);
             }
         }
-        reader.limits(limits);
 
         if let Some(v) = format {
             reader.set_format(v.try_into().unwrap());
