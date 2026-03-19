@@ -52,7 +52,7 @@ pub struct ImageRsOverlay {
 }
 
 impl ImageRsOverlay {
-    fn update_composition<'a>(&'a self, state: &mut MutexGuard<'a, State>) {
+    fn update_composition(&self, state: &mut State) {
         let in_info = self.obj().input_video_info().unwrap();
         let video_width: i64 = in_info.width().into();
         let video_height: i64 = in_info.height().into();
@@ -387,33 +387,6 @@ impl ElementImpl for ImageRsOverlay {
         });
 
         PAD_TEMPLATES.as_ref()
-    }
-
-    fn change_state(
-        &self,
-        transition: gst::StateChange,
-    ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
-        gst::trace!(CAT, imp = self, "Changing state {:?}", transition);
-
-        match transition {
-            gst::StateChange::ReadyToPaused => {
-                let mut state = self.state.lock().unwrap();
-                *state = State::default();
-            }
-            _ => (),
-        }
-
-        let ret = self.parent_change_state(transition)?;
-
-        match transition {
-            gst::StateChange::PausedToReady => {
-                let mut state = self.state.lock().unwrap();
-                *state = State::default();
-            }
-            _ => (),
-        }
-
-        Ok(ret)
     }
 }
 
