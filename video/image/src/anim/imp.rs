@@ -310,7 +310,7 @@ impl Decoder {
                 *state = State::default();
                 gst::Pad::event_default(pad, Some(&*self.obj()), event)
             }
-            EventView::Eos(..) => {
+            EventView::Eos(..) | EventView::SegmentDone(..) => {
                 if let Err(err) = self.decode() {
                     self.post_error_message(err);
                 }
