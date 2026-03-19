@@ -34,7 +34,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     gst::Element::register(
         Some(plugin),
         "imagersoverlay",
-        gst::Rank::SECONDARY + 1,
+        gst::Rank::NONE,
         Overlay::static_type(),
     )
 }
