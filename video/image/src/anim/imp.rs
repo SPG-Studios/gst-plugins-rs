@@ -290,8 +290,9 @@ impl Decoder {
             EventView::Caps(v) => {
                 if let Err(err) = self.set_format_from_caps(v) {
                     self.post_error_message(err);
+                    return false;
                 }
-                gst::Pad::event_default(pad, Some(&*self.obj()), event)
+                true
             }
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
