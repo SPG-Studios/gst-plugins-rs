@@ -94,7 +94,11 @@ impl Decoder {
                     {
                         Ok(v) => Some(v),
                         Err(v) => {
-                            gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                            gst::warning!(
+                                CAT,
+                                imp = self,
+                                "Failed converting to VideoColorimetry: {v}"
+                            );
                             None
                         }
                     }
@@ -166,10 +170,10 @@ impl Decoder {
     }
 
     fn set_format_from_caps(&self, event_caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
-        let mime = event_caps.caps().structure(0).unwrap();
+        let s = event_caps.caps().structure(0).unwrap();
         let mut state = self.state.lock().unwrap();
-        state.format_from_caps = Some(mime.name().as_str().try_into()?);
-        state.in_par = mime.get::<gst::Fraction>("pixel-aspect-ratio").ok();
+        state.format_from_caps = Some(s.name().as_str().try_into()?);
+        state.in_par = s.get::<gst::Fraction>("pixel-aspect-ratio").ok();
 
         Ok(())
     }

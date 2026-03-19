@@ -166,10 +166,10 @@ impl ImageRsDecoder {
     }
 
     fn set_format_from_caps(&self, event_caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
-        let mime = event_caps.caps().structure(0).unwrap();
+        let s = event_caps.caps().structure(0).unwrap();
         let mut state = self.state.lock().unwrap();
-        state.format_from_caps = Some(mime.name().as_str().try_into()?);
-        state.in_fps = match mime.get::<gst::Fraction>("framerate") {
+        state.format_from_caps = Some(s.name().as_str().try_into()?);
+        state.in_fps = match s.get::<gst::Fraction>("framerate") {
             Ok(v) => {
                 gst::debug!(
                     CAT,
@@ -189,7 +189,7 @@ impl ImageRsDecoder {
                 None
             }
         };
-        state.in_par = mime.get::<gst::Fraction>("pixel-aspect-ratio").ok();
+        state.in_par = s.get::<gst::Fraction>("pixel-aspect-ratio").ok();
 
         Ok(())
     }
@@ -352,7 +352,11 @@ impl ImageRsDecoder {
             {
                 Ok(v) => Some(v),
                 Err(v) => {
-                    gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "Failed converting to VideoColorimetry: {v}"
+                    );
                     None
                 }
             };

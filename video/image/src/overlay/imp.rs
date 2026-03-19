@@ -167,12 +167,15 @@ impl ImageRsOverlay {
             let cwh_stride = argb_image.as_flat_samples().strides_cwh();
             // RGBA is a single plane
             let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
-            // FIXME: should this be unwrapped?
             let color_info =
                 match VideoColorimetry::try_from(ImageCicp::from(argb_image.color_space())) {
                     Ok(v) => Some(v),
                     Err(v) => {
-                        gst::warning!(CAT, imp = self, "Failed converting to VideoInfo: {v}");
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "Failed converting to VideoColorimetry: {v}"
+                        );
                         None
                     }
                 };
