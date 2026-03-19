@@ -170,28 +170,19 @@ impl ImageRsDecoder {
         let s = event_caps.caps().structure(0).unwrap();
         let mut state = self.state.lock().unwrap();
         state.format_from_caps = Some(s.name().as_str().try_into()?);
-        state.in_fps = match s.get::<gst::Fraction>("framerate") {
-            Ok(v) => {
-                gst::debug!(
-                    CAT,
-                    imp = self,
-                    "got framerate of {} fps => packetized mode",
-                    v,
-                );
-                v.into()
-            }
-            Err(v) => {
-                gst::debug!(
-                    CAT,
-                    imp = self,
-                    // FIXME: this needs changing in gdkpixbufdec too
-                    "no framerate available: {v:?}"
-                );
-                None
-            }
-        };
+        state.in_fps = s.get::<gst::Fraction>("framerate").ok();
         state.in_par = s.get::<gst::Fraction>("pixel-aspect-ratio").ok();
         state.duration = s.get::<gst::ClockTime>("duration").ok();
+
+        gst::info!(
+            CAT,
+            imp = self,
+            "format {:?} fps {:?} pixel-aspect-ratio {:?} duration {:?}",
+            state.format_from_caps,
+            state.in_fps,
+            state.in_par,
+            state.duration
+        );
 
         Ok(())
     }
