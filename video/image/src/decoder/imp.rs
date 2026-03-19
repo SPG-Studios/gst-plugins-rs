@@ -670,6 +670,16 @@ impl ImageRsDecoder {
 
         ret
     }
+
+    fn src_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
+        use gst::EventView;
+
+        gst::log!(CAT, obj = pad, "Handling event {event:?}");
+        match event.view() {
+            EventView::Seek(..) => false,
+            _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
+        }
+    }
 }
 
 #[glib::object_subclass]
@@ -706,6 +716,13 @@ impl ObjectSubclass for ImageRsDecoder {
 
         let templ = klass.pad_template("src").unwrap();
         let srcpad = gst::Pad::builder_from_template(&templ)
+            .event_function(|pad, parent, event| {
+                ImageRsDecoder::catch_panic_pad_function(
+                    parent,
+                    || false,
+                    |dec| dec.src_event(pad, event),
+                )
+            })
             .flags(gst::PadFlags::FIXED_CAPS)
             .build();
 
