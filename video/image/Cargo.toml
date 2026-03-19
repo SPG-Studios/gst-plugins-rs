@@ -29,7 +29,7 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["v1_24", "still_formats", "still_formats_extras", "animated_formats"]
+default = ["gst-video/v1_24", "still_formats", "still_formats_extras", "animated_formats"]
 static = []
 capi = []
 doc = []
@@ -63,8 +63,6 @@ wbmp = ["image_extras/wbmp"]
 webp = ["image/webp"]
 xbm = ["image_extras/xbm"]
 xpm = ["image_extras/xpm"]
-v1_20 = ["gst-video/v1_20"]
-v1_24 = ["v1_20", "gst-video/v1_24"]
 
 [package.metadata.capi]
 min_version = "0.9.21"
