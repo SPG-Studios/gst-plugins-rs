@@ -276,21 +276,23 @@ impl Encoder {
             gst::FlowError::NotSupported
         })?;
 
-        let color_space = ImageCicp::try_from(video_info.colorimetry()).map_err(|v| {
-            gst::element_error!(
-                self.obj(),
-                gst::StreamError::Decode,
-                ["Format {video_info:?} not supported: {v}"]
-            );
-            gst::FlowError::NotNegotiated
-        })?;
+        let color_space = ImageCicp::try_from(video_info.colorimetry())
+            .inspect_err(|v| {
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "Failed converting to VideoColorimetry: {v}"
+                );
+            })
+            .ok();
 
         let output_buffer = if layout.is_normal(NormalForm::RowMajorPacked) {
             let mut image = ImageBuffer::<T, _>::from_raw(layout.width, layout.height, samples)
                 .ok_or(gst::FlowError::NotSupported)?;
 
-            if color_space.is_rgb()
-                && let Err(e) = image.set_color_space(color_space.into())
+            if let Some(v) = color_space
+                && v.is_rgb()
+                && let Err(e) = image.set_color_space(v.into())
             {
                 gst::warning!(CAT, imp = self, "Failed to set color space: {e}");
             }
@@ -318,8 +320,9 @@ impl Encoder {
                 .copy_from(&view, 0, 0)
                 .expect("Image buffer too small");
 
-            if color_space.is_rgb()
-                && let Err(e) = image.set_color_space(color_space.into())
+            if let Some(v) = color_space
+                && v.is_rgb()
+                && let Err(e) = image.set_color_space(v.into())
             {
                 gst::warning!(CAT, imp = self, "Failed to set color space: {e}");
             }

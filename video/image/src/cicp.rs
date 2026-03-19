@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use gst_video::{
     VideoColorMatrix, VideoColorPrimaries, VideoColorRange, VideoColorimetry, VideoTransferFunction,
 };
@@ -33,30 +35,61 @@ impl CanCicpRgb for ImageCicp {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UnsupportedCicp {
+    ColorRange(CicpVideoFullRangeFlag),
+    ColorMatrix(CicpMatrixCoefficients),
+    TransferFunction(CicpTransferCharacteristics),
+    Primaries(CicpColorPrimaries),
+}
+
+impl Display for UnsupportedCicp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            UnsupportedCicp::ColorRange(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown color range {v:?}"]
+            ),
+            UnsupportedCicp::ColorMatrix(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown color matrix {v:?}"]
+            ),
+            UnsupportedCicp::TransferFunction(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown transfer function {v:?}"]
+            ),
+            UnsupportedCicp::Primaries(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown color primaries {v:?}"]
+            ),
+        };
+        write!(f, "{}", msg)?;
+        Ok(())
+    }
+}
+
+impl From<UnsupportedCicp> for Result<VideoColorimetry, UnsupportedCicp> {
+    fn from(value: UnsupportedCicp) -> Self {
+        Err(value)
+    }
+}
+
 impl TryFrom<ImageCicp> for VideoColorimetry {
-    type Error = gst::ErrorMessage;
+    type Error = UnsupportedCicp;
 
     fn try_from(value: ImageCicp) -> Result<Self, Self::Error> {
+        use UnsupportedCicp::*;
+
         let rg = match value.0.full_range {
             CicpVideoFullRangeFlag::NarrowRange => VideoColorRange::Range16_235,
             CicpVideoFullRangeFlag::FullRange => VideoColorRange::Range0_255,
-            v => {
-                return Err(gst::error_msg!(
-                    gst::CoreError::NotImplemented,
-                    ["Unknown color range {v:?}"]
-                ));
-            }
+            v => return ColorRange(v).into(),
         };
 
         let mx = match value.0.matrix {
             CicpMatrixCoefficients::Unspecified => VideoColorMatrix::Unknown,
             v => match VideoColorMatrix::from_iso(v as u32) {
-                VideoColorMatrix::Unknown => {
-                    return Err(gst::error_msg!(
-                        gst::CoreError::NotImplemented,
-                        ["Unknown color matrix {v:?}"]
-                    ));
-                }
+                VideoColorMatrix::Unknown => return ColorMatrix(v).into(),
                 v => v,
             },
         };
@@ -64,12 +97,7 @@ impl TryFrom<ImageCicp> for VideoColorimetry {
         let tf = match value.0.transfer {
             CicpTransferCharacteristics::Unspecified => VideoTransferFunction::Unknown,
             v => match VideoTransferFunction::from_iso(v as u32) {
-                VideoTransferFunction::Unknown => {
-                    return Err(gst::error_msg!(
-                        gst::CoreError::NotImplemented,
-                        ["Unknown transfer function {v:?}"]
-                    ));
-                }
+                VideoTransferFunction::Unknown => return TransferFunction(v).into(),
                 v => v,
             },
         };
@@ -79,12 +107,7 @@ impl TryFrom<ImageCicp> for VideoColorimetry {
         let pr = match value.0.primaries {
             CicpColorPrimaries::Unspecified => VideoColorPrimaries::Unknown,
             v => match VideoColorPrimaries::from_iso(v as u32) {
-                VideoColorPrimaries::Unknown => {
-                    return Err(gst::error_msg!(
-                        gst::CoreError::NotImplemented,
-                        ["Unknown color primaries {v:?}"]
-                    ));
-                }
+                VideoColorPrimaries::Unknown => return Primaries(v).into(),
                 v => v,
             },
         };
@@ -93,10 +116,53 @@ impl TryFrom<ImageCicp> for VideoColorimetry {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum UnsupportedVideoColorimetry {
+    ColorRange(VideoColorRange),
+    ColorMatrix(VideoColorMatrix),
+    TransferFunction(VideoTransferFunction),
+    Primaries(VideoColorPrimaries),
+}
+
+impl Display for UnsupportedVideoColorimetry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use UnsupportedVideoColorimetry::*;
+
+        let msg = match self {
+            ColorRange(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown color range {v:?}"]
+            ),
+            ColorMatrix(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown color matrix {v:?}"]
+            ),
+            TransferFunction(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown transfer function {v:?}"]
+            ),
+            Primaries(v) => gst::error_msg!(
+                gst::CoreError::NotImplemented,
+                ["Unknown color primaries {v:?}"]
+            ),
+        };
+        write!(f, "{}", msg)?;
+        Ok(())
+    }
+}
+
+impl From<UnsupportedVideoColorimetry> for Result<ImageCicp, UnsupportedVideoColorimetry> {
+    fn from(value: UnsupportedVideoColorimetry) -> Self {
+        Err(value)
+    }
+}
+
 impl TryFrom<VideoColorimetry> for ImageCicp {
-    type Error = gst::ErrorMessage;
+    type Error = UnsupportedVideoColorimetry;
 
     fn try_from(value: VideoColorimetry) -> Result<Self, Self::Error> {
+        use UnsupportedVideoColorimetry::*;
+
         // This can NOT be done with VideoColorPrimaries::to_iso because it
         // is unsafe to convert an integer to an enum value.
         let mx = match value.matrix() {
@@ -107,12 +173,7 @@ impl TryFrom<VideoColorimetry> for ImageCicp {
             VideoColorMatrix::Bt601 => CicpMatrixCoefficients::Smpte170m,
             VideoColorMatrix::Smpte240m => CicpMatrixCoefficients::Smpte240m,
             VideoColorMatrix::Bt2020 => CicpMatrixCoefficients::Bt2020NonConstant,
-            v => {
-                return Err(gst::error_msg!(
-                    gst::CoreError::NotImplemented,
-                    ["Unknown color matrix {v:?}"]
-                ));
-            }
+            v => return ColorMatrix(v).into(),
         };
 
         let tf = match value.transfer() {
@@ -130,12 +191,7 @@ impl TryFrom<VideoColorimetry> for ImageCicp {
             VideoTransferFunction::Smpte2084 => CicpTransferCharacteristics::Smpte2084,
             VideoTransferFunction::AribStdB67 => CicpTransferCharacteristics::Bt2100Hlg,
             VideoTransferFunction::Bt601 => CicpTransferCharacteristics::Bt601,
-            v => {
-                return Err(gst::error_msg!(
-                    gst::CoreError::NotImplemented,
-                    ["Unknown transfer function {v:?}"]
-                ));
-            }
+            v => return TransferFunction(v).into(),
         };
 
         let pr = match value.primaries() {
@@ -151,12 +207,7 @@ impl TryFrom<VideoColorimetry> for ImageCicp {
             VideoColorPrimaries::Smpterp431 => CicpColorPrimaries::SmpteRp431,
             VideoColorPrimaries::Smpteeg432 => CicpColorPrimaries::SmpteRp432,
             VideoColorPrimaries::Ebu3213 => CicpColorPrimaries::Industry22,
-            v => {
-                return Err(gst::error_msg!(
-                    gst::CoreError::NotImplemented,
-                    ["Unknown color primaries {v:?}"]
-                ));
-            }
+            v => return Primaries(v).into(),
         };
 
         let rg = match value.range() {
@@ -166,12 +217,7 @@ impl TryFrom<VideoColorimetry> for ImageCicp {
             gst_video::VideoColorRange::Range16_235 => {
                 image::metadata::CicpVideoFullRangeFlag::NarrowRange
             }
-            v => {
-                return Err(gst::error_msg!(
-                    gst::CoreError::NotImplemented,
-                    ["Unknown color range {v:?}"]
-                ));
-            }
+            v => return ColorRange(v).into(),
         };
 
         Ok(Cicp {

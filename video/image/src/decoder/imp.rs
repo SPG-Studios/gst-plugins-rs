@@ -340,18 +340,15 @@ impl ImageRsDecoder {
 
             let strides: [i32; 4] = [strides.2.try_into().unwrap(), 0, 0, 0];
 
-            let color_info = match VideoColorimetry::try_from(ImageCicp::from(image.color_space()))
-            {
-                Ok(v) => Some(v),
-                Err(v) => {
+            let color_info = VideoColorimetry::try_from(ImageCicp::from(image.color_space()))
+                .inspect_err(|v| {
                     gst::warning!(
                         CAT,
                         imp = self,
                         "Failed converting to VideoColorimetry: {v}"
                     );
-                    None
-                }
-            };
+                })
+                .ok();
 
             gst_video::VideoInfo::builder(fmt, wh.0, wh.1)
                 .fps_if_some(fps)

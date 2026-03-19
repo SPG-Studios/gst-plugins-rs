@@ -87,22 +87,18 @@ impl Decoder {
 
         let mut frame_list = frames.peekable();
 
-        let color_info = match frame_list.peek() {
+        let color_info: Option<VideoColorimetry> = match frame_list.peek() {
             Some(v) => match v {
-                Ok(frame) => {
-                    match VideoColorimetry::try_from(ImageCicp::from(frame.buffer().color_space()))
-                    {
-                        Ok(v) => Some(v),
-                        Err(v) => {
-                            gst::warning!(
-                                CAT,
-                                imp = self,
-                                "Failed converting to VideoColorimetry: {v}"
-                            );
-                            None
-                        }
-                    }
-                }
+                Ok(frame) => ImageCicp::from(frame.buffer().color_space())
+                    .try_into()
+                    .inspect_err(|e| {
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "Failed converting to VideoColorimetry: {e}"
+                        );
+                    })
+                    .ok(),
                 Err(v) => {
                     gst::warning!(
                         CAT,
