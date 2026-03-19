@@ -138,16 +138,12 @@ impl ImageRsOverlay {
             settings.location.clone()
         };
 
-        // Using BufReader removes the code duplication that happens
-        // when using image-rs's own reading facilities: 7.6 => 7.2MB
-        let fs = std::fs::File::open(&location).map_err(|v| {
+        let reader = ImageReader::open(&location).map_err(|v| {
             gst::error_msg!(
                 gst::ResourceError::OpenRead,
                 ["Could not load overlay image: {}", v]
             )
         })?;
-        let cursor = std::io::BufReader::new(fs);
-        let reader = ImageReader::new(cursor);
         let mut argb_image = match reader.decode().map_err(|v| {
             gst::error_msg!(
                 gst::StreamError::Decode,
