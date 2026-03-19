@@ -10,7 +10,7 @@ use gst_video::VideoColorimetry;
 use image::codecs::gif::GifDecoder;
 use image::codecs::png::PngDecoder;
 use image::codecs::webp::WebPDecoder;
-use image::{AnimationDecoder, Frame, Frames, ImageDecoder, ImageFormat, ImageReader, Limits};
+use image::{AnimationDecoder, Frames, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 use std::io::Cursor;
 use std::sync::LazyLock;
@@ -46,14 +46,6 @@ pub struct Decoder {
     sinkpad: gst::Pad,
     state: Mutex<State>,
     settings: Mutex<Settings>,
-}
-
-struct AnimatedImageWrapper(Frame);
-
-impl AsRef<[u8]> for AnimatedImageWrapper {
-    fn as_ref(&self) -> &[u8] {
-        self.0.buffer()
-    }
 }
 
 impl Decoder {
@@ -150,8 +142,10 @@ impl Decoder {
                     gst::error_msg!(gst::StreamError::Decode, ["Invalid frame duration: {}", v])
                 })?;
 
-            // AnimatedEncoder doesn't support anything other than RGBA
-            let mut out_buf = gst::Buffer::from_slice(AnimatedImageWrapper(frame));
+            // We can consume the frame here because AnimatedEncoder
+            // supports only RGBA output, and image-rs's ImageBuffer
+            // class only accepts tightly packed buffers.
+            let mut out_buf = gst::Buffer::from_slice(frame.into_buffer().into_vec());
             {
                 let out_buf_mut = out_buf.get_mut().unwrap();
                 out_buf_mut.set_pts(prev_timestamp);

@@ -9,7 +9,7 @@ use gst_base::prelude::*;
 use gst_video::VideoColorimetry;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
-use image::{DynamicImage, ImageReader};
+use image::ImageReader;
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -49,14 +49,6 @@ struct Settings {
 pub struct ImageRsOverlay {
     state: Mutex<State>,
     settings: Mutex<Settings>,
-}
-
-struct Wrapper(image::DynamicImage);
-
-impl AsRef<[u8]> for Wrapper {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
 }
 
 impl ImageRsOverlay {
@@ -194,7 +186,7 @@ impl ImageRsOverlay {
                 .build()
                 .unwrap()
         };
-        let mut buffer = gst::Buffer::from_slice(Wrapper(DynamicImage::from(argb_image)));
+        let mut buffer = gst::Buffer::from_slice(argb_image.into_vec());
 
         gst_video::VideoMeta::add_full(
             buffer.get_mut().unwrap(),
