@@ -103,22 +103,10 @@ impl ImageRsDecoder {
         image: DynamicImage,
     ) -> (DynamicImage, gst_video::VideoFormat, (usize, usize, usize)) {
         match image {
-            #[cfg(target_endian = "little")]
             DynamicImage::ImageRgb8(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Rgb, strides)
             }
-            #[cfg(target_endian = "big")]
-            DynamicImage::ImageRgb8(ref p) => {
-                let strides = p.as_flat_samples().strides_cwh();
-                (image, gst_video::VideoFormat::Bgr, strides)
-            }
-            #[cfg(target_endian = "little")]
-            DynamicImage::ImageRgba8(ref p) => {
-                let strides = p.as_flat_samples().strides_cwh();
-                (image, gst_video::VideoFormat::Rgba, strides)
-            }
-            #[cfg(target_endian = "big")]
             DynamicImage::ImageRgba8(ref p) => {
                 let strides = p.as_flat_samples().strides_cwh();
                 (image, gst_video::VideoFormat::Rgba, strides)
@@ -148,20 +136,31 @@ impl ImageRsDecoder {
                 (image, gst_video::VideoFormat::Rgba64Be, strides)
             }
             v => {
-                gst::debug!(
+                gst::trace!(
                     CAT,
                     imp = self,
-                    "Format {:?} not supported, converting to RGBA",
+                    "Format {:?} not supported, converting to RGB(A)",
                     v.color()
                 );
-                let image_rgba8 = v.to_rgba8();
-                let strides = image_rgba8.as_flat_samples().strides_cwh();
-
-                (
-                    DynamicImage::from(image_rgba8),
-                    gst_video::VideoFormat::Rgba,
-                    strides,
-                )
+                if v.has_alpha() {
+                    let image = v.to_rgba8();
+                    let strides = image.as_flat_samples().strides_cwh();
+    
+                    (
+                        DynamicImage::from(image),
+                        gst_video::VideoFormat::Rgba,
+                        strides,
+                    )
+                } else {
+                    let image = v.to_rgb8();
+                    let strides = image.as_flat_samples().strides_cwh();
+    
+                    (
+                        DynamicImage::from(image),
+                        gst_video::VideoFormat::Rgb,
+                        strides,
+                    )
+                }
             }
         }
     }
