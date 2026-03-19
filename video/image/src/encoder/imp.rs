@@ -295,11 +295,10 @@ impl Encoder {
                 ImageBuffer::<T, _>::from_raw(video_info.width(), video_info.height(), samples)
                     .ok_or(gst::FlowError::NotSupported)?;
 
-            if color_space.is_rgb() {
-                image.set_color_space(color_space.into()).map_err(|e| {
-                    gst::error!(CAT, imp = self, "Failed to set color space: {e}");
-                    gst::FlowError::NotNegotiated
-                })?;
+            if color_space.is_rgb()
+                && let Err(e) = image.set_color_space(color_space.into())
+            {
+                gst::warning!(CAT, imp = self, "Failed to set color space: {e}");
             }
 
             let mut cursor = Cursor::new(Vec::with_capacity(4096));
@@ -325,11 +324,10 @@ impl Encoder {
                 .copy_from(&view, 0, 0)
                 .expect("Image buffer too small");
 
-            if color_space.is_rgb() {
-                image.set_color_space(color_space.into()).map_err(|e| {
-                    gst::error!(CAT, imp = self, "Failed to set color space: {e}");
-                    gst::FlowError::NotNegotiated
-                })?;
+            if color_space.is_rgb()
+                && let Err(e) = image.set_color_space(color_space.into())
+            {
+                gst::warning!(CAT, imp = self, "Failed to set color space: {e}");
             }
 
             let mut cursor = Cursor::new(Vec::with_capacity(4096));

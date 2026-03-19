@@ -54,14 +54,10 @@ impl Decoder {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        gst::log!(CAT, obj = pad, "Handling buffer {:?}", buffer);
+        gst::log!(CAT, obj = pad, "Handling buffer {buffer:?}");
 
         let mut state = self.state.lock().unwrap();
         let settings = self.settings.lock().unwrap();
-
-        let timestamp = buffer.pts();
-
-        gst::log!(CAT, imp = self, "buffer with ts: {timestamp:?}");
 
         if settings.max_size == 0 || (state.total_size + buffer.size()) as u64 <= settings.max_size
         {
