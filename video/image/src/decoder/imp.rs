@@ -34,6 +34,7 @@ struct State {
     buffers: Vec<gst::Buffer>,
     format_from_caps: Option<Format>,
     total_size: usize,
+    duration: Option<gst::ClockTime>,
     in_fps: Option<gst::Fraction>,
     in_par: Option<gst::Fraction>,
     info: Option<gst_video::VideoInfo>,
@@ -190,6 +191,7 @@ impl ImageRsDecoder {
             }
         };
         state.in_par = s.get::<gst::Fraction>("pixel-aspect-ratio").ok();
+        state.duration = s.get::<gst::ClockTime>("duration").ok();
 
         Ok(())
     }
@@ -381,6 +383,9 @@ impl ImageRsDecoder {
                 })
         }?;
 
+        let packetized = state.packetized;
+        let duration = state.duration;
+
         let pending_events = if state.info.as_ref().is_none_or(|v| !v.eq(&new_info)) {
             let caps = new_info.to_caps().map_err(|_| {
                 gst::element_imp_error!(
@@ -421,7 +426,9 @@ impl ImageRsDecoder {
         {
             let outbuf = outbuf.get_mut().unwrap();
             outbuf.set_pts(timestamp);
-            outbuf.set_duration(None);
+            if packetized {
+                outbuf.set_duration(duration);
+            }
         }
 
         gst::debug!(CAT, imp = self, "pushing... {} bytes", outbuf.size());
@@ -850,6 +857,7 @@ impl ElementImpl for ImageRsDecoder {
 
         if transition == gst::StateChange::ReadyToPaused {
             /* default to single image mode, setcaps function might not be called */
+            state.duration = None;
             state.in_fps = None;
             state.in_par = None;
             state.info = None;
