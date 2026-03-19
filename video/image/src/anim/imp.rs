@@ -179,13 +179,7 @@ impl Decoder {
         let mime = event_caps.caps().structure(0).unwrap();
         let mut state = self.state.lock().unwrap();
         state.format_from_caps = Some(mime.name().as_str().try_into()?);
-        state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
-            Ok(v) => v.into(),
-            Err(v) => {
-                gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
-                None
-            }
-        };
+        state.in_par = mime.get::<gst::Fraction>("pixel-aspect-ratio").ok();
 
         Ok(())
     }

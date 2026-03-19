@@ -191,13 +191,7 @@ impl ImageRsDecoder {
                 None
             }
         };
-        state.in_par = match mime.get::<gst::Fraction>("pixel-aspect-ratio") {
-            Ok(v) => v.into(),
-            Err(v) => {
-                gst::debug!(CAT, imp = self, "no pixel aspect ratio found: {v:?}");
-                None
-            }
-        };
+        state.in_par = mime.get::<gst::Fraction>("pixel-aspect-ratio").ok();
 
         Ok(())
     }
