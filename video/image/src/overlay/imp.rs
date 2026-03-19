@@ -215,11 +215,6 @@ impl ObjectSubclass for ImageRsOverlay {
 }
 
 impl ObjectImpl for ImageRsOverlay {
-    fn constructed(&self) {
-        self.parent_constructed();
-
-        image_extras::register();
-    }
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![

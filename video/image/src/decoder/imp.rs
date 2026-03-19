@@ -712,8 +712,6 @@ impl ObjectImpl for ImageRsDecoder {
         let obj = self.obj();
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.srcpad).unwrap();
-
-        image_extras::register();
     }
 
     fn properties() -> &'static [glib::ParamSpec] {

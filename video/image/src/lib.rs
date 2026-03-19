@@ -21,6 +21,7 @@ mod encoder;
 mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    image_extras::register();
     decoder::register(plugin)?;
     #[cfg(feature = "v1_24")]
     encoder::register(plugin)?;
