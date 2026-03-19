@@ -444,9 +444,12 @@ impl BaseTransformImpl for ImageRsOverlay {
             .obj()
             .segment()
             .downcast::<gst::ClockTime>()
-            .map(|v| v.to_stream_time(timestamp));
-        if let Ok(Some(stream_time)) = stream_time {
-            self.obj().sync_values(stream_time).unwrap();
+            .ok()
+            .and_then(|v| v.to_stream_time(timestamp));
+        if let Some(stream_time) = stream_time
+            && let Err(e) = self.obj().sync_values(stream_time)
+        {
+            gst::log!(CAT, imp = self, "{e}");
         }
 
         let mut set_passthrough = false;
