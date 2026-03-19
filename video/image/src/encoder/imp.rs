@@ -244,33 +244,42 @@ impl Encoder {
         [T::Subpixel]: EncodableLayout,
         T::Subpixel: byte_slice_cast::FromByteSlice,
     {
-        let input_buffer = frame
-            .input_buffer_owned()
-            .expect("frame without input buffer");
+        let input_buffer = frame.input_buffer_owned().ok_or_else(|| {
+            gst::error!(CAT, imp = self, "Frame without input buffer");
+            gst::FlowError::Error
+        })?;
+
+        let input_frame = gst_video::VideoFrame::from_buffer_readable(input_buffer, video_info)
+            .map_err(|v| {
+                gst::error!(CAT, imp = self, "Buffer {v:?} is not readable");
+                gst::FlowError::Error
+            })?;
 
         let layout = {
-            let video_frame =
-                gst_video::VideoFrameRef::from_buffer_ref_readable(&input_buffer, video_info)
-                    .unwrap();
-
             let sample_size = std::mem::size_of::<T::Subpixel>();
 
             SampleLayout {
-                channels: video_info.n_components().try_into().unwrap(),
+                channels: input_frame.n_components().try_into().unwrap(),
                 // Planar format (contiguous channels)
                 channel_stride: 1,
-                width: video_info.width(),
-                width_stride: (video_frame.comp_pstride(0) / sample_size as i32)
+                width: input_frame.width(),
+                width_stride: (input_frame.comp_pstride(0) / sample_size as i32)
                     .try_into()
                     .unwrap(),
-                height: video_info.height(),
-                height_stride: (video_frame.comp_stride(0) / sample_size as i32)
+                height: input_frame.height(),
+                height_stride: (input_frame.comp_stride(0) / sample_size as i32)
                     .try_into()
                     .unwrap(),
             }
         };
 
-        let input_map = input_buffer.into_mapped_buffer_readable().unwrap();
+        let input_map = input_frame
+            .into_buffer()
+            .into_mapped_buffer_readable()
+            .map_err(|v| {
+                gst::error!(CAT, imp = self, "Buffer {v:?} is not readable");
+                gst::FlowError::Error
+            })?;
 
         let samples = input_map.as_slice_of::<T::Subpixel>().map_err(|v| {
             gst::error!(
@@ -291,9 +300,8 @@ impl Encoder {
         })?;
 
         let output_buffer = if layout.is_normal(NormalForm::RowMajorPacked) {
-            let mut image =
-                ImageBuffer::<T, _>::from_raw(video_info.width(), video_info.height(), samples)
-                    .ok_or(gst::FlowError::NotSupported)?;
+            let mut image = ImageBuffer::<T, _>::from_raw(layout.width, layout.height, samples)
+                .ok_or(gst::FlowError::NotSupported)?;
 
             if color_space.is_rgb()
                 && let Err(e) = image.set_color_space(color_space.into())
