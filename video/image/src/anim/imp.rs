@@ -198,8 +198,6 @@ impl Decoder {
 
         let par = state.in_par;
 
-        drop(state);
-
         let mut reader = ImageReader::new(Cursor::new(buf));
 
         {
@@ -211,6 +209,8 @@ impl Decoder {
                 reader.limits(limits);
             }
         }
+
+        drop(state);
 
         if let Some(v) = format {
             reader.set_format(v.try_into().unwrap());
