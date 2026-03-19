@@ -70,14 +70,8 @@ impl ElementImpl for Encoder {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst_video::VideoCapsBuilder::new()
                 .format_list([
-                    #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Rgb,
-                    #[cfg(target_endian = "big")]
-                    gst_video::VideoFormat::Bgr,
-                    #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Rgba,
-                    #[cfg(target_endian = "big")]
-                    gst_video::VideoFormat::Abgr,
                     gst_video::VideoFormat::Gray8,
                     #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Gray16Le,
@@ -189,20 +183,12 @@ impl VideoEncoderImpl for Encoder {
         );
 
         match video_info.format() {
-            #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba => {
                 self.render_to_image::<Rgba<u8>>(frame, &video_info, format)
             }
-            #[cfg(target_endian = "big")]
-            gst_video::VideoFormat::Abgr => {
-                self.render_to_image::<Rgba<u8>>(frame, &video_info, format)
-            }
-            #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgb => {
                 self.render_to_image::<Rgb<u8>>(frame, &video_info, format)
             }
-            #[cfg(target_endian = "big")]
-            gst_video::VideoFormat::Bgr => self.ingest_image::<Rgb<u8>>(frame, &video_info, format),
             gst_video::VideoFormat::Gray8 => {
                 self.render_to_image::<Luma<u8>>(frame, &video_info, format)
             }

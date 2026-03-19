@@ -805,14 +805,8 @@ impl ElementImpl for ImageRsDecoder {
 
             let caps = gst_video::VideoCapsBuilder::new()
                 .format_list([
-                    #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Rgb,
-                    #[cfg(target_endian = "big")]
-                    gst_video::VideoFormat::Bgr,
-                    #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Rgba,
-                    #[cfg(target_endian = "big")]
-                    gst_video::VideoFormat::Abgr,
                     gst_video::VideoFormat::Gray8,
                     #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Gray16Le,
