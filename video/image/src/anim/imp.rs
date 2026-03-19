@@ -362,6 +362,7 @@ impl ObjectSubclass for Decoder {
             .event_function(|pad, parent, event| {
                 Decoder::catch_panic_pad_function(parent, || false, |dec| dec.src_event(pad, event))
             })
+            .flags(gst::PadFlags::FIXED_CAPS)
             .build();
 
         Self {
