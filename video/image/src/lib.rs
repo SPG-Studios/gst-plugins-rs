@@ -9,6 +9,7 @@
  */
 use gst::glib;
 
+mod buffer;
 mod cicp;
 mod format;
 

@@ -9,11 +9,13 @@ use gst_base::prelude::*;
 use gst_video::VideoColorimetry;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
-use image::ImageReader;
+
+use image::{DynamicImage, ImageReader};
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
+use crate::buffer::GStreamerImage;
 use crate::cicp::ImageCicp;
 
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -146,7 +148,7 @@ impl ImageRsOverlay {
                 ["Could not decode overlay image container: {}", v]
             )
         })? {
-            image::DynamicImage::ImageRgba8(v) => v,
+            DynamicImage::ImageRgba8(v) => v,
             v => v.to_rgba8(),
         };
         // image-rs always outputs image in RGBA channel order (individual
@@ -162,9 +164,6 @@ impl ImageRsOverlay {
         let format = {
             let width = argb_image.width();
             let height = argb_image.height();
-            let cwh_stride = argb_image.as_flat_samples().strides_cwh();
-            // RGBA is a single plane
-            let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
             let color_info: Option<VideoColorimetry> = ImageCicp(argb_image.color_space())
                 .try_into()
                 .inspect_err(|e| {
@@ -176,12 +175,12 @@ impl ImageRsOverlay {
                 })
                 .ok();
             gst_video::VideoInfo::builder(gst_video::VideoFormat::Bgra, width, height)
-                .stride(&strides)
                 .colorimetry_if_some(color_info.as_ref())
                 .build()
                 .unwrap()
         };
-        let mut buffer = gst::Buffer::from_slice(argb_image.into_vec());
+        let wrapper = DynamicImage::from(argb_image).wrap_for_gstreamer();
+        let mut buffer = gst::Buffer::from_slice(wrapper);
 
         gst_video::VideoMeta::add_full(
             buffer.get_mut().unwrap(),
