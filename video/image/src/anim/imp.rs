@@ -83,53 +83,42 @@ impl Decoder {
         pixel_aspect_ratio: Option<gst::Fraction>,
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
+        let mut prev_caps = gst::Caps::new_empty();
 
-        let mut frame_list = frames.peekable();
-
-        let color_info: Option<VideoColorimetry> = match frame_list.peek() {
-            Some(v) => match v {
-                Ok(frame) => ImageCicp(frame.buffer().color_space())
-                    .try_into()
-                    .inspect_err(|e| {
-                        gst::warning!(
-                            CAT,
-                            imp = self,
-                            "Failed converting to VideoColorimetry: {e}"
-                        );
-                    })
-                    .ok(),
-                Err(v) => {
-                    gst::warning!(
-                        CAT,
-                        imp = self,
-                        "Failed retrieving color information from first frame: {v}"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-
-        let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgba, wh.0, wh.1)
-            .par_if_some(pixel_aspect_ratio)
-            .colorimetry_if_some(color_info.as_ref())
-            .build()
-            .unwrap()
-            .to_caps()
-            .unwrap();
-
-        let segment = gst::FormattedSegment::<gst::ClockTime>::new();
-
-        let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
-        let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
-
-        for frame in frame_list {
+        for frame in frames {
             let frame = frame.map_err(|v| {
                 gst::error_msg!(
                     gst::StreamError::Decode,
                     ["Failed to get next frame: {}", v]
                 )
             })?;
+
+            let color_info: Option<VideoColorimetry> = ImageCicp(frame.buffer().color_space())
+                .try_into()
+                .inspect_err(|e| {
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "Failed converting to VideoColorimetry: {e}"
+                    );
+                })
+                .ok();
+
+            let caps = gst_video::VideoInfo::builder(gst_video::VideoFormat::Rgba, wh.0, wh.1)
+                .par_if_some(pixel_aspect_ratio)
+                .colorimetry_if_some(color_info.as_ref())
+                .build()
+                .and_then(|v| v.to_caps())
+                .map_err(|e| gst::error_msg!(gst::StreamError::Format, ["{}", e]))?;
+
+            if caps != prev_caps {
+                let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
+                prev_caps = caps;
+            }
+            if prev_timestamp.is_zero() {
+                let segment = gst::FormattedSegment::<gst::ClockTime>::new();
+                let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
+            }
 
             let delay: gst::ClockTime = std::time::Duration::from(frame.delay())
                 .try_into()
