@@ -8,13 +8,8 @@ use image::metadata::{
     CicpVideoFullRangeFlag,
 };
 
-pub(crate) struct ImageCicp(Cicp);
-
-impl From<Cicp> for ImageCicp {
-    fn from(value: Cicp) -> Self {
-        ImageCicp(value)
-    }
-}
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct ImageCicp(pub Cicp);
 
 impl From<ImageCicp> for Cicp {
     fn from(value: ImageCicp) -> Self {
@@ -220,12 +215,11 @@ impl TryFrom<VideoColorimetry> for ImageCicp {
             v => return ColorRange(v).into(),
         };
 
-        Ok(Cicp {
+        Ok(ImageCicp(Cicp {
             full_range: rg,
             matrix: mx,
             primaries: pr,
             transfer: tf,
-        }
-        .into())
+        }))
     }
 }

@@ -165,7 +165,7 @@ impl ImageRsOverlay {
             let cwh_stride = argb_image.as_flat_samples().strides_cwh();
             // RGBA is a single plane
             let strides: [i32; 4] = [cwh_stride.2.try_into().unwrap(), 0, 0, 0];
-            let color_info: Option<VideoColorimetry> = ImageCicp::from(argb_image.color_space())
+            let color_info: Option<VideoColorimetry> = ImageCicp(argb_image.color_space())
                 .try_into()
                 .inspect_err(|e| {
                     gst::warning!(

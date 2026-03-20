@@ -88,7 +88,7 @@ impl Decoder {
 
         let color_info: Option<VideoColorimetry> = match frame_list.peek() {
             Some(v) => match v {
-                Ok(frame) => ImageCicp::from(frame.buffer().color_space())
+                Ok(frame) => ImageCicp(frame.buffer().color_space())
                     .try_into()
                     .inspect_err(|e| {
                         gst::warning!(
