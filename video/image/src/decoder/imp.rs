@@ -622,6 +622,11 @@ impl ImageRsDecoder {
         gst::log!(CAT, obj = pad, "Handling event {event:?}");
         match event.view() {
             EventView::Seek(..) => false,
+            EventView::FlushStop(..) => {
+                let mut state = self.state.lock().unwrap();
+                state.pending_events.clear();
+                true
+            }
             _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
         }
     }
