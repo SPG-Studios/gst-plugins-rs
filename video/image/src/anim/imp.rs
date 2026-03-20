@@ -268,12 +268,7 @@ impl Decoder {
 
                 self.render_many_frames(frames, wh, par)
             }
-            // Some(v) => image-rs default format
-            // None => either failure to detect or an image-extras format
-            v => Err(gst::error_msg!(
-                gst::StreamError::Decode,
-                ["Unknown or non animated format: {v:?}"]
-            )),
+            v => unreachable!("Unhandled format {v:?}"),
         }
     }
 
