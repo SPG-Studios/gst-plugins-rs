@@ -17,6 +17,12 @@ impl AsRef<[u8]> for Wrapper {
     }
 }
 
+impl Wrapper {
+    pub fn into_gst_buffer(self) -> gst::Buffer {
+        gst::Buffer::from_slice(self)
+    }
+}
+
 #[track_caller]
 #[inline(never)]
 fn convert_strides<P, C>(image: &ImageBuffer<P, C>) -> Option<Vec<u8>>
@@ -61,34 +67,17 @@ impl GStreamerImage for DynamicImage {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
-            ImageRgba8(ref v) => match convert_strides(v) {
-                Some(v) => Vec(v),
-                None => Image(self),
-            },
+            ImageRgba8(_) => Image(self),
             ImageLuma8(ref v) => match convert_strides(v) {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
-            #[cfg(target_endian = "little")]
-            ImageLuma16(ref v) => match convert_strides(v) {
-                Some(v) => Vec(v),
-                None => Image(self),
-            },
-            #[cfg(target_endian = "big")]
             ImageLuma16(ref v) => match convert_strides(v) {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
             #[cfg(target_endian = "little")]
-            ImageRgba16(ref v) => match convert_strides(v) {
-                Some(v) => Vec(v),
-                None => Image(self),
-            },
-            #[cfg(target_endian = "big")]
-            ImageRgba16(ref v) => match convert_strides(v) {
-                Some(v) => Vec(v),
-                None => Image(self),
-            },
+            ImageRgba16(_) => Image(self),
             _ => unreachable!(),
         }
     }

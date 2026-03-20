@@ -367,9 +367,7 @@ impl ImageRsDecoder {
             self.srcpad.push_event(l);
         }
 
-        let wrapper = image.wrap_for_gstreamer();
-
-        let mut outbuf = gst::Buffer::from_slice(wrapper);
+        let mut outbuf = image.wrap_for_gstreamer().into_gst_buffer();
         {
             let outbuf = outbuf.get_mut().unwrap();
             outbuf.set_pts(timestamp);

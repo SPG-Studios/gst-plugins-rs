@@ -179,8 +179,10 @@ impl ImageRsOverlay {
                 .build()
                 .unwrap()
         };
-        let wrapper = DynamicImage::from(argb_image).wrap_for_gstreamer();
-        let mut buffer = gst::Buffer::from_slice(wrapper);
+
+        let mut buffer = DynamicImage::from(argb_image)
+            .wrap_for_gstreamer()
+            .into_gst_buffer();
 
         gst_video::VideoMeta::add_full(
             buffer.get_mut().unwrap(),
