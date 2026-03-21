@@ -7,6 +7,8 @@ use image::ImageFormat;
 #[repr(u32)]
 #[enum_type(name = "GstRsImageFormat")]
 pub(crate) enum Format {
+    #[enum_value(name = "Animated PNG", nick = "apng")]
+    Apng,
     #[enum_value(name = "AV1 image file format", nick = "avif")]
     Avif,
     #[enum_value(name = "Microsoft bitmap", nick = "bmp")]
@@ -91,6 +93,7 @@ impl TryFrom<Format> for ImageFormat {
     fn try_from(value: Format) -> Result<Self, Self::Error> {
         match value {
             Format::Avif => Ok(ImageFormat::Avif),
+            Format::Apng => Ok(ImageFormat::Png),
             Format::Bmp => Ok(ImageFormat::Bmp),
             Format::Dds => Ok(ImageFormat::Dds),
             Format::Exr => Ok(ImageFormat::OpenExr),
@@ -138,6 +141,7 @@ impl<'a> TryFrom<&'a str> for Format {
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
         match value {
+            "image/x-gst-apng" => Ok(Format::Apng),
             "image/x-MS-bmp" => Ok(Format::Bmp),
             "image/x-direct-draw-surface" => Ok(Format::Dds),
             "image/x-farbfeld" => Ok(Format::Farbfeld),
@@ -167,14 +171,14 @@ impl<'a> TryFrom<&'a str> for Format {
 impl Format {
     pub(crate) fn all_animated_formats() -> impl IntoIterator<Item = Format> {
         [
+            #[cfg(any(feature = "png", feature = "ico"))]
+            Format::Apng,
             // FIXME upstream: AVIF also supports animations
             // but needs image-rs support
             // #[cfg(feature = "avif")]
             // Format::Avif,
             #[cfg(feature = "gif")]
             Format::Gif,
-            #[cfg(any(feature = "png", feature = "ico"))]
-            Format::Png,
             #[cfg(feature = "webp")]
             Format::WebP,
         ]
@@ -226,8 +230,6 @@ impl Format {
             Format::Tiff,
             #[cfg(feature = "wbmp")]
             Format::Wbmp,
-            #[cfg(feature = "webp")]
-            Format::WebP,
             #[cfg(feature = "xbm")]
             Format::Xbm,
             #[cfg(feature = "xpm")]
@@ -259,6 +261,12 @@ impl Format {
     }
 
     pub(crate) fn to_mimetypes(self) -> impl IntoIterator<Item = &'static str> {
+        if self == Format::Apng {
+            return vec![
+                // Fake MIME type for enabling just the animated decoder
+                "image/x-gst-apng",
+            ];
+        }
         match ImageFormat::try_from(self) {
             Ok(v) => match v {
                 ImageFormat::Bmp => vec![v.to_mime_type(), "image/x-MS-bmp"],

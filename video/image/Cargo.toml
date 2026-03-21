@@ -16,6 +16,7 @@ gst-video.workspace = true
 byte-slice-cast = "1.2"
 image = { version = "0.25", default-features = false }
 image_extras = { package = "image-extras", version = "0.1", default-features = false}
+png = "0.18.0"
 
 [dev-dependencies]
 gst-check.workspace = true
