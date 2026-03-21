@@ -821,11 +821,7 @@ impl ElementImpl for ImageRsDecoder {
         let mut state = self.state.lock().unwrap();
 
         if transition == gst::StateChange::ReadyToPaused {
-            /* default to single image mode, setcaps function might not be called */
-            state.duration = None;
-            state.in_fps = None;
-            state.in_par = None;
-            state.info = None;
+            *state = Default::default();
         }
 
         let v = self.parent_change_state(transition)?;
