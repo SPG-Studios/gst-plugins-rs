@@ -290,9 +290,9 @@ impl ImageRsDecoder {
             })?);
 
         let wh = image.dimensions();
+        let fps = state.in_fps;
 
         let new_info = {
-            let fps = state.in_fps;
             let par = state.in_par;
 
             let color_info = if image.color().has_color() {
@@ -372,6 +372,19 @@ impl ImageRsDecoder {
             let outbuf = outbuf.get_mut().unwrap();
             outbuf.set_pts(timestamp);
             if packetized {
+                let duration = duration.map_or_else(
+                    || {
+                        fps.and_then(|v| {
+                            let ms = v.to_integer();
+                            let rest = v.numer() % v.denom();
+                            let nanos = (i64::from(rest) * 1_000_000) / i64::from(v.denom());
+                            let f = gst::ClockTime::from_mseconds(ms.try_into().unwrap());
+                            let g = gst::ClockTime::from_nseconds(nanos.try_into().unwrap());
+                            f.checked_add(g)
+                        })
+                    },
+                    Some,
+                );
                 outbuf.set_duration(duration);
             }
         }
