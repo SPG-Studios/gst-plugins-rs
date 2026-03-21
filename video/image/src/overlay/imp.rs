@@ -55,12 +55,10 @@ pub struct ImageRsOverlay {
 impl ImageRsOverlay {
     fn update_composition(&self, state: &mut State) {
         let in_info = self.obj().input_video_info().unwrap();
-        let video_width: i64 = in_info.width().into();
-        let video_height: i64 = in_info.height().into();
+        let video_width = i64::from(in_info.width());
+        let video_height = i64::from(in_info.height());
 
-        if state.composition.is_some() {
-            state.composition = None;
-        }
+        state.composition = None;
 
         let settings = self.settings.lock().unwrap();
         if settings.alpha == 0.0 || state.image.is_none() {

@@ -161,7 +161,7 @@ impl<'a> TryFrom<&'a str> for Format {
             "image/x-xpixmap" => Ok(Format::Xpm),
 
             v => match ImageFormat::from_mime_type(value) {
-                Some(v) => Ok(v.into()),
+                Some(v) => Ok(Format::from(v)),
                 None => Err(UnsupportedFormat::MimetypeNotFound(v)),
             },
         }
