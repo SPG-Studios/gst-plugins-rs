@@ -189,10 +189,18 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 
     #[cfg(feature = "v1_28")]
     {
-        tags::register::<PrecisionClockTypeTag>();
-        tags::register::<PrecisionClockTimeUncertaintyNanosecondsTag>();
-        tags::register::<GimiTrackContentIDTag>();
-        tags::register::<GimiComponentContentIDTag>();
+        if !tags::tag_exists(PrecisionClockTypeTag::TAG_NAME) {
+            tags::register::<PrecisionClockTypeTag>();
+        }
+        if !tags::tag_exists(PrecisionClockTimeUncertaintyNanosecondsTag::TAG_NAME) {
+            tags::register::<PrecisionClockTimeUncertaintyNanosecondsTag>();
+        }
+        if !tags::tag_exists(GimiTrackContentIDTag::TAG_NAME) {
+            tags::register::<GimiTrackContentIDTag>();
+        }
+        if !tags::tag_exists(GimiComponentContentIDTag::TAG_NAME) {
+            tags::register::<GimiComponentContentIDTag>();
+        }
     }
     if !tags::tag_exists(GimiSecurityMarkingsXMLTag::TAG_NAME) {
         tags::register::<GimiSecurityMarkingsXMLTag>();
