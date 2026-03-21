@@ -239,24 +239,22 @@ impl Format {
 
     pub(crate) fn all_encoder_formats() -> impl IntoIterator<Item = Format> {
         [
-            #[cfg(feature = "avif")]
-            Format::Avif,
-            #[cfg(feature = "bmp")]
-            Format::Bmp,
-            #[cfg(feature = "exr")]
-            Format::Exr,
-            #[cfg(feature = "ff")]
-            Format::Farbfeld,
-            #[cfg(feature = "jpeg")]
-            Format::Jpeg,
             #[cfg(any(feature = "png", feature = "ico"))]
             Format::Png,
-            #[cfg(feature = "qoi")]
-            Format::Qoi,
-            #[cfg(feature = "tga")]
-            Format::Tga,
             #[cfg(feature = "tiff")]
             Format::Tiff,
+            #[cfg(feature = "jpeg")]
+            Format::Jpeg,
+            #[cfg(feature = "bmp")]
+            Format::Bmp,
+            #[cfg(feature = "tga")]
+            Format::Tga,
+            #[cfg(feature = "avif")]
+            Format::Avif,
+            #[cfg(feature = "ff")]
+            Format::Farbfeld,
+            #[cfg(feature = "qoi")]
+            Format::Qoi,
         ]
     }
 
