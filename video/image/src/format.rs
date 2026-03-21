@@ -237,6 +237,39 @@ impl Format {
         ]
     }
 
+    pub(crate) fn supported_depths(&self) -> impl IntoIterator<Item = gst_video::VideoFormat> {
+        match self {
+            Format::Avif | Format::Qoi => {
+                vec![gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Rgb]
+            }
+            Format::Bmp | Format::Jpeg | Format::Tga => vec![
+                gst_video::VideoFormat::Rgba,
+                gst_video::VideoFormat::Rgb,
+                gst_video::VideoFormat::Gray8,
+            ],
+            Format::Farbfeld => vec![
+                #[cfg(target_endian = "big")]
+                gst_video::VideoFormat::Rgba64Be,
+                #[cfg(target_endian = "little")]
+                gst_video::VideoFormat::Rgba64Le,
+            ],
+            Format::Png | Format::Tiff => vec![
+                #[cfg(target_endian = "big")]
+                gst_video::VideoFormat::Rgba64Be,
+                #[cfg(target_endian = "little")]
+                gst_video::VideoFormat::Rgba64Le,
+                gst_video::VideoFormat::Rgba,
+                gst_video::VideoFormat::Rgb,
+                #[cfg(target_endian = "big")]
+                gst_video::VideoFormat::Gray16Be,
+                #[cfg(target_endian = "little")]
+                gst_video::VideoFormat::Gray16Le,
+                gst_video::VideoFormat::Gray8,
+            ],
+            v => unimplemented!("Complete this list {v:?}"),
+        }
+    }
+
     pub(crate) fn all_encoder_formats() -> impl IntoIterator<Item = Format> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]

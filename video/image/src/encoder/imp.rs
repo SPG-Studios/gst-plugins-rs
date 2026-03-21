@@ -16,6 +16,7 @@ use image::{
     PixelWithColorType, Rgb, Rgba,
 };
 
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::{LazyLock, Mutex};
 
@@ -69,17 +70,17 @@ impl ElementImpl for Encoder {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let sink_caps = gst_video::VideoCapsBuilder::new()
                 .format_list([
-                    gst_video::VideoFormat::Rgb,
-                    gst_video::VideoFormat::Rgba,
-                    gst_video::VideoFormat::Gray8,
-                    #[cfg(target_endian = "little")]
-                    gst_video::VideoFormat::Gray16Le,
-                    #[cfg(target_endian = "big")]
-                    gst_video::VideoFormat::Gray16Be,
                     #[cfg(target_endian = "little")]
                     gst_video::VideoFormat::Rgba64Le,
                     #[cfg(target_endian = "big")]
                     gst_video::VideoFormat::Rgba64Be,
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    gst_video::VideoFormat::Gray8,
                 ])
                 .build();
             let sink_pad_template = gst::PadTemplate::new(
@@ -96,7 +97,15 @@ impl ElementImpl for Encoder {
 
                 for f in Format::all_encoder_formats() {
                     for v in f.to_mimetypes() {
-                        caps.append(gst::Caps::new_empty_simple(v));
+                        let c = gst::Caps::builder(v)
+                            .field(
+                                "format",
+                                gst::List::new(
+                                    f.supported_depths().into_iter().map(|f| f.to_str()),
+                                ),
+                            )
+                            .build();
+                        caps.append(c);
                     }
                 }
             };
@@ -119,6 +128,73 @@ impl VideoEncoderImpl for Encoder {
     fn stop(&self) -> Result<(), gst::ErrorMessage> {
         *self.state.lock().unwrap() = None;
         Ok(())
+    }
+
+    /// Generates the caps corresponding to the given filter
+    /// and current src configuration.
+    ///
+    /// Thanks Seungha for the explanation in qsvvp9enc!
+    fn caps(&self, filter: Option<&gst::Caps>) -> gst::Caps {
+        match self.obj().src_pad().allowed_caps() {
+            Some(allowed_caps) => {
+                // Shouldn't be any or empty though, just return template caps in this case
+                if allowed_caps.is_empty() || allowed_caps.is_any() {
+                    return self.obj().proxy_getcaps(None, filter);
+                }
+
+                let mut downstream_depths = HashSet::new();
+
+                // Check if downstream specified profile explicitly, then filter out incompatible raw video format
+                for s in allowed_caps.iter() {
+                    if let Ok(fs) = s.get::<gst::List>("format") {
+                        for f in fs.iter() {
+                            if let Ok(v) = f.get::<gst::glib::GString>() {
+                                downstream_depths.insert(v);
+                            }
+                        }
+                    } else if let Ok(v) = s.get::<gst::glib::GString>("format") {
+                        downstream_depths.insert(v);
+                    }
+                }
+
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "Downstream specified {} bit depths",
+                    downstream_depths.len()
+                );
+
+                if downstream_depths.is_empty() {
+                    // Something is wrong, these should've been
+                    // narrowed by media type at most
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "Allowed caps holds no format field: {}",
+                        allowed_caps
+                    );
+                    return self.obj().proxy_getcaps(None, filter);
+                }
+
+                let mut template_caps = self.obj().sink_pad().pad_template_caps();
+                {
+                    let template_caps_mut = template_caps.make_mut();
+
+                    if downstream_depths.len() == 1 {
+                        template_caps_mut.set_if_some("format", downstream_depths.iter().nth(0));
+                    } else {
+                        let formats = gst::List::new(downstream_depths);
+                        template_caps_mut.set("format", formats);
+                    }
+                }
+                let supported_caps = self.obj().proxy_getcaps(Some(&template_caps), filter);
+
+                gst::debug!(CAT, imp = self, "Returning {}", supported_caps);
+
+                supported_caps
+            }
+            None => self.obj().proxy_getcaps(None, filter),
+        }
     }
 
     fn set_format(
