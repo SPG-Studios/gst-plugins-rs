@@ -67,7 +67,10 @@ impl GStreamerImage for DynamicImage {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
-            ImageRgba8(_) => Image(self),
+            ImageRgba8(ref v) =>  match convert_strides(v) {
+                Some(v) => Vec(v),
+                None => Image(self),
+            },
             ImageLuma8(ref v) => match convert_strides(v) {
                 Some(v) => Vec(v),
                 None => Image(self),
@@ -77,7 +80,10 @@ impl GStreamerImage for DynamicImage {
                 None => Image(self),
             },
             #[cfg(target_endian = "little")]
-            ImageRgba16(_) => Image(self),
+            ImageRgba16(ref v) =>  match convert_strides(v) {
+                Some(v) => Vec(v),
+                None => Image(self),
+            },
             _ => unreachable!(),
         }
     }
