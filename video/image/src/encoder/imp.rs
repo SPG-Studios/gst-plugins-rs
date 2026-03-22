@@ -130,6 +130,33 @@ impl VideoEncoderImpl for Encoder {
         Ok(())
     }
 
+    /// Minimize padding, please!
+    /// References:
+    /// https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/1.28.1/subprojects/gst-plugins-base/gst-libs/gst/video/video-info.c#L893-900
+    /// 
+    /// https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/1.28.1/subprojects/gst-plugins-base/gst-libs/gst/video/gstvideoencoder.c#L895
+    fn propose_allocation(
+        &self,
+        query: &mut gst::query::Allocation,
+    ) -> Result<(), gst::LoggableError> {
+        let params = gst::AllocationParams::default();
+        query.add_allocation_param(None::<&gst::Allocator>, params);
+        let video_meta = gst::Structure::builder("video-meta")
+            .field("padding-top", 0)
+            .field("padding-left", 0)
+            .field("padding-bottom", 0)
+            .field("padding-right", 0)
+            .field("stride-align0", 1)
+            .field("stride-align1", 1)
+            .field("stride-align2", 1)
+            .field("stride-align3", 1)
+            .build();
+        query.add_allocation_meta::<gst_video::VideoMeta>(Some(&video_meta));
+        let res = self.parent_propose_allocation(query);
+        gst::debug!(CAT, imp = self, "Minimized padding query: {:?}", query);
+        res
+    }
+
     /// Generates the caps corresponding to the given filter
     /// and current src configuration.
     ///
@@ -362,6 +389,8 @@ impl Encoder {
             .ok();
 
         let output_buffer = if layout.is_normal(NormalForm::RowMajorPacked) {
+            gst::trace!(CAT, imp = self, "{:?} requires no repacking o/", layout);
+
             let mut image = ImageBuffer::<T, _>::from_raw(layout.width, layout.height, samples)
                 .ok_or(gst::FlowError::NotSupported)?;
 
@@ -380,6 +409,8 @@ impl Encoder {
 
             gst::Buffer::from_mut_slice(cursor.into_inner())
         } else {
+            gst::trace!(CAT, imp = self, "{:?} requires repacking", layout);
+
             let container = FlatSamples {
                 samples,
                 layout,
