@@ -17,7 +17,7 @@ use image::{
 use std::io::Cursor;
 use std::sync::{LazyLock, Mutex};
 
-use crate::buffer::GStreamerImage;
+use crate::buffer::*;
 use crate::cicp::ImageCicp;
 use crate::format::Format;
 
@@ -87,6 +87,7 @@ impl Decoder {
     ) -> Result<(), gst::ErrorMessage> {
         let mut prev_timestamp = gst::ClockTime::ZERO;
         let mut prev_caps = gst::Caps::new_empty();
+        let mut allow_zerocopy = false;
 
         for frame in frames {
             let frame = frame.map_err(|v| {
@@ -117,7 +118,21 @@ impl Decoder {
             if caps != prev_caps {
                 let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
                 prev_caps = caps;
+
+                allow_zerocopy = if let Some(caps) = self.srcpad.current_caps() {
+                    let mut query = gst::query::Allocation::new(Some(&caps), false);
+                    self.srcpad.peer_query(&mut query);
+
+                    gst::debug!(CAT, imp = self, "Updated caps, querying zerocopy support: {:?}", query);
+
+                    query
+                        .find_allocation_meta::<gst_video::VideoMeta>()
+                        .is_some()
+                } else {
+                    false
+                };
             }
+
             if prev_timestamp.is_zero() {
                 let segment = gst::FormattedSegment::<gst::ClockTime>::new();
                 let _ = self.srcpad.push_event(gst::event::Segment::new(&segment));
@@ -132,9 +147,29 @@ impl Decoder {
             // We can consume the frame here because AnimatedEncoder
             // supports only RGBA output, and image-rs's ImageBuffer
             // class only accepts tightly packed buffers.
-            let mut out_buf = DynamicImage::from(frame.into_buffer())
-                .wrap_for_gstreamer()
-                .into_gst_buffer();
+
+            let mut out_buf = if allow_zerocopy {
+                let image = frame.into_buffer();
+                let stride = [
+                    i32::try_from(image.sample_layout().height_stride).unwrap(),
+                ];
+                let mut b = Wrapper::Image(image.into()).into_gst_buffer();
+                gst_video::VideoMeta::add_full(
+                    b.make_mut(),
+                    gst_video::VideoFrameFlags::empty(),
+                    gst_video::VideoFormat::Rgba,
+                    wh.0,
+                    wh.1,
+                    &[0],
+                    &stride,
+                )
+                .map_err(|v| gst::error_msg!(gst::StreamError::Format, ["{}", v]))?;
+                b
+            } else {
+                DynamicImage::from(frame.into_buffer())
+                    .wrap_for_gstreamer()
+                    .into_gst_buffer()
+            };
             {
                 let out_buf_mut = out_buf.get_mut().unwrap();
                 out_buf_mut.set_pts(prev_timestamp);
