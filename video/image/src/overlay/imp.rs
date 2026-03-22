@@ -15,7 +15,7 @@ use image::{DynamicImage, ImageReader};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
-use crate::buffer::GStreamerImage;
+use crate::buffer::{GStreamerImage, Wrapper};
 use crate::cicp::ImageCicp;
 
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -32,6 +32,8 @@ struct State {
     location: String,
     image: Option<gst::Buffer>,
     update_composition: bool,
+    can_attach_buffer: bool,
+    needs_realignment: bool,
 }
 
 #[derive(Default)]
@@ -178,20 +180,39 @@ impl ImageRsOverlay {
                 .unwrap()
         };
 
-        let mut buffer = DynamicImage::from(argb_image)
-            .wrap_for_gstreamer()
-            .into_gst_buffer();
+        let buffer = if state.needs_realignment {
+            let mut buffer = DynamicImage::from(argb_image)
+                .wrap_for_gstreamer()
+                .into_gst_buffer();
 
-        gst_video::VideoMeta::add_full(
-            buffer.get_mut().unwrap(),
-            gst_video::VideoFrameFlags::empty(),
-            format.format(),
-            format.width(),
-            format.height(),
-            format.offset(),
-            format.stride(),
-        )
-        .unwrap();
+            gst_video::VideoMeta::add_full(
+                buffer.get_mut().unwrap(),
+                gst_video::VideoFrameFlags::empty(),
+                format.format(),
+                format.width(),
+                format.height(),
+                format.offset(),
+                format.stride(),
+            )
+            .unwrap();
+
+            buffer
+        } else {
+            let stride = i32::try_from(argb_image.as_flat_samples().layout.height_stride).unwrap();
+            let mut buffer = Wrapper::Image(argb_image.into()).into_gst_buffer();
+            gst_video::VideoMeta::add_full(
+                buffer.get_mut().unwrap(),
+                gst_video::VideoFrameFlags::empty(),
+                format.format(),
+                format.width(),
+                format.height(),
+                format.offset(),
+                &[stride, 0, 0, 0],
+            )
+            .unwrap();
+
+            buffer
+        };
 
         state.location = location;
         state.image = Some(buffer);
@@ -440,6 +461,38 @@ impl BaseTransformImpl for ImageRsOverlay {
             self.obj().set_passthrough(has_no_composition);
         }
     }
+
+    // See gst_cairo_overlay_query, cea608overlay and
+    // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/merge_requests/2856#note_3330298
+    fn query(&self, direction: gst::PadDirection, query: &mut gst::QueryRef) -> bool {
+        use gst::QueryViewMut;
+        match query.view_mut() {
+            QueryViewMut::Allocation(..) => {
+                // We're always running in passthrough mode, which means that
+                // basetransform just passes through ALLOCATION queries and
+                // never ever calls BaseTransform::decide_allocation().
+                // We hook into the query handling for that reason
+                {
+                    let mut state = self.state.lock().unwrap();
+                    state.can_attach_buffer = false;
+                    state.needs_realignment = false;
+                }
+                if !BaseTransformImplExt::parent_query(self, direction, query) {
+                    return false;
+                }
+                if let QueryViewMut::Allocation(v) = query.view_mut() {
+                    let mut state = self.state.lock().unwrap();
+                    state.can_attach_buffer = v
+                        .find_allocation_meta::<gst_video::VideoOverlayCompositionMeta>()
+                        .is_some();
+                    state.needs_realignment = v.find_allocation_meta::<gst_video::VideoMeta>().is_none();
+                    return true;
+                }
+                unreachable!()
+            }
+            _ => BaseTransformImplExt::parent_query(self, direction, query),
+        }
+    }
 }
 
 impl VideoFilterImpl for ImageRsOverlay {
@@ -447,15 +500,22 @@ impl VideoFilterImpl for ImageRsOverlay {
         &self,
         frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        use gst_video::video_frame::IsVideoFrame;
+
         let state = self.state.lock().unwrap();
         if let Some(v) = &state.composition {
-            // FIXME: negotiate and do metadata attaching when possible
-            // See cea608overlay and
-            // https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs/-/merge_requests/2856#note_3330298
-            v.blend(frame).map_err(|v| {
-                gst::error!(CAT, imp = self, "Blending failed: {}", v);
-                gst::FlowError::Error
-            })?
+            if state.can_attach_buffer {
+                // frame.buffer() returns a IMMUTABLE reference,
+                // not respecting the T parameter of VideoFrameRef.
+                // This makes it impossible to use from VideoFilterImpl
+                let buffer = unsafe { gst::BufferRef::from_mut_ptr(frame.as_raw().buffer) };
+                gst_video::VideoOverlayCompositionMeta::add(buffer, v);
+            } else {
+                v.blend(frame).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Blending failed: {}", v);
+                    gst::FlowError::Error
+                })?
+            }
         }
         Ok(gst::FlowSuccess::Ok)
     }
