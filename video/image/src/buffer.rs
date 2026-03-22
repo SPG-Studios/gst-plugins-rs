@@ -1,6 +1,7 @@
 use byte_slice_cast::*;
 use image::{DynamicImage, ImageBuffer, PixelWithColorType};
 
+use std::num::TryFromIntError;
 use std::ops::Deref;
 
 pub(crate) enum Wrapper {
@@ -21,6 +22,14 @@ impl Wrapper {
     pub fn into_gst_buffer(self) -> gst::Buffer {
         gst::Buffer::from_slice(self)
     }
+}
+
+fn stride_in_bytes<P, C>(v: &ImageBuffer<P, C>) -> Result<i32, TryFromIntError>
+where
+    P: PixelWithColorType,
+    C: Deref<Target = [P::Subpixel]>,
+{
+    i32::try_from(v.sample_layout().height_stride * std::mem::size_of::<P::Subpixel>())
 }
 
 #[track_caller]
@@ -53,10 +62,29 @@ where
 }
 
 pub(crate) trait GStreamerImage {
+    fn stride_in_bytes(&self) -> Result<i32, TryFromIntError>;
     fn wrap_for_gstreamer(self) -> Wrapper;
 }
 
 impl GStreamerImage for DynamicImage {
+    fn stride_in_bytes(&self) -> Result<i32, TryFromIntError> {
+        use DynamicImage::*;
+        match self {
+            ImageRgb8(v) => stride_in_bytes(v),
+            ImageRgba8(v) => stride_in_bytes(v),
+            ImageLuma8(v) => stride_in_bytes(v),
+            #[cfg(target_endian = "little")]
+            ImageLuma16(v) => stride_in_bytes(v),
+            #[cfg(target_endian = "big")]
+            ImageLuma16(v) => stride_in_bytes(v),
+            #[cfg(target_endian = "little")]
+            ImageRgba16(v) => stride_in_bytes(v),
+            #[cfg(target_endian = "big")]
+            ImageRgba16(v) => stride_in_bytes(v),
+            _ => unreachable!(),
+        }
+    }
+
     /// TODO: if VideoMeta is supported, just reuse the image
     /// and broadcast the strides
     fn wrap_for_gstreamer(self) -> Wrapper {
@@ -67,7 +95,7 @@ impl GStreamerImage for DynamicImage {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
-            ImageRgba8(ref v) =>  match convert_strides(v) {
+            ImageRgba8(ref v) => match convert_strides(v) {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
@@ -80,7 +108,7 @@ impl GStreamerImage for DynamicImage {
                 None => Image(self),
             },
             #[cfg(target_endian = "little")]
-            ImageRgba16(ref v) =>  match convert_strides(v) {
+            ImageRgba16(ref v) => match convert_strides(v) {
                 Some(v) => Vec(v),
                 None => Image(self),
             },

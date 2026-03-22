@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, Cursor, Seek};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
-use crate::buffer::GStreamerImage;
+use crate::buffer::{GStreamerImage, Wrapper};
 use crate::cicp::ImageCicp;
 use crate::format::Format;
 
@@ -367,7 +367,46 @@ impl ImageRsDecoder {
             self.srcpad.push_event(l);
         }
 
-        let mut outbuf = image.wrap_for_gstreamer().into_gst_buffer();
+        let allow_zerocopy = if let Some(caps) = self.srcpad.current_caps() {
+            let mut query = gst::query::Allocation::new(Some(&caps), false);
+            self.srcpad.peer_query(&mut query);
+
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Updated caps, querying zerocopy support: {:?}",
+                query
+            );
+
+            query
+                .find_allocation_meta::<gst_video::VideoMeta>()
+                .is_some()
+        } else {
+            false
+        };
+
+        let mut outbuf = if allow_zerocopy {
+            let stride = [image.stride_in_bytes().unwrap()];
+            let mut b = Wrapper::Image(image).into_gst_buffer();
+            gst_video::VideoMeta::add_full(
+                b.make_mut(),
+                gst_video::VideoFrameFlags::empty(),
+                fmt,
+                wh.0,
+                wh.1,
+                &[0],
+                &stride,
+            )
+            .map_err(|v| {
+                gst::error_msg!(gst::StreamError::Format, ["{}", v]);
+                gst::FlowError::NotNegotiated
+            })?;
+            b
+        } else {
+            image
+                .wrap_for_gstreamer()
+                .into_gst_buffer()
+        };
         {
             let outbuf = outbuf.get_mut().unwrap();
             outbuf.set_pts(timestamp);
