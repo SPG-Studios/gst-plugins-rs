@@ -67,8 +67,18 @@ impl ImageRsOverlay {
 
         let overlay_pixels = state.image.as_ref().unwrap();
         let overlay_meta = overlay_pixels.meta::<gst_video::VideoMeta>().unwrap();
-        let width: i64 = settings.overlay_width.max(overlay_meta.width()).into();
-        let height: i64 = settings.overlay_height.max(overlay_meta.height()).into();
+        let width: i64 = if settings.overlay_width == 0 {
+            overlay_meta.width()
+        } else {
+            settings.overlay_width
+        }
+        .into();
+        let height: i64 = if settings.overlay_height == 0 {
+            overlay_meta.height()
+        } else {
+            settings.overlay_height
+        }
+        .into();
 
         let x = if settings.offset_x < 0 {
             video_width + settings.offset_x as i64 - width
