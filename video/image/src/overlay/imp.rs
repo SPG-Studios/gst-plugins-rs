@@ -150,12 +150,12 @@ impl ImageRsOverlay {
             gst_video::VideoOverlayFormatFlags::empty(),
         );
         if settings.alpha != 1.0 {
-            rect.get_mut().unwrap().set_global_alpha(settings.alpha);
+            rect.make_mut().set_global_alpha(settings.alpha);
         }
 
         drop(settings);
 
-        state.composition = Some(gst_video::VideoOverlayComposition::new(Some(&rect)).unwrap());
+        state.composition = Some(rect.into());
 
         gst::debug!(CAT, imp = self, "Composition updated");
     }
@@ -266,7 +266,7 @@ impl ImageRsOverlay {
         state.image = Some(buffer);
         state.update_composition = true;
 
-        gst::warning!(CAT, imp = self, "Image loaded and composition requested");
+        gst::info!(CAT, imp = self, "Updated pixbuf, {} x {}", width, height);
 
         Ok(())
     }
@@ -505,13 +505,13 @@ impl BaseTransformImpl for ImageRsOverlay {
     }
 
     fn before_transform(&self, inbuf: &gst::BufferRef) {
-        let timestamp = inbuf.pts();
+        let mut set_passthrough = false;
         let stream_time = self
             .obj()
             .segment()
             .downcast::<gst::ClockTime>()
             .ok()
-            .and_then(|v| v.to_stream_time(timestamp));
+            .and_then(|v| v.to_stream_time(inbuf.pts()));
         if let Some(stream_time) = stream_time
             && let Err(e) = self.obj().sync_values(stream_time)
         {
@@ -519,7 +519,6 @@ impl BaseTransformImpl for ImageRsOverlay {
         }
 
         // now properties have been sync'ed; maybe need to update composition
-        let mut set_passthrough = false;
         let has_no_composition = {
             let mut state = self.state.lock().unwrap();
             if let Err(err) = self.load_image(&mut state) {
