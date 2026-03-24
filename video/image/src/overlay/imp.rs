@@ -6,17 +6,14 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::prelude::*;
-use gst_video::VideoColorimetry;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
 use image::{DynamicImage, ImageReader, Limits};
 
-use std::sync::LazyLock;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use crate::buffer::{GStreamerImage, Wrapper};
-use crate::cicp::ImageCicp;
 
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -44,6 +41,22 @@ struct Settings {
     overlay_height: u32,
     alpha: f32,
     max_alloc: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            location: Default::default(),
+            offset_x: Default::default(),
+            offset_y: Default::default(),
+            relative_x: Default::default(),
+            relative_y: Default::default(),
+            overlay_width: Default::default(),
+            overlay_height: Default::default(),
+            alpha: 1.0,
+            max_alloc: Default::default(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -114,6 +127,17 @@ impl ImageRsOverlay {
             settings.relative_y * 100.0,
             settings.overlay_width,
             settings.overlay_height
+        );
+        gst::debug!(
+            CAT,
+            imp = self,
+            "overlay rendered: {} x {} @ {},{} (onto {} x {})",
+            width,
+            height,
+            x,
+            y,
+            video_width,
+            video_height
         );
 
         let mut rect = gst_video::VideoOverlayRectangle::new_raw(
@@ -456,6 +480,12 @@ impl BaseTransformImpl for ImageRsOverlay {
             gst::warning!(CAT, imp = self, "no image location set, doing nothing");
             self.obj().set_passthrough(true);
         }
+        gst::debug!(
+            CAT,
+            imp = self,
+            "Passthrough: {}",
+            self.obj().is_passthrough()
+        );
         Ok(())
     }
 
@@ -463,6 +493,7 @@ impl BaseTransformImpl for ImageRsOverlay {
         let mut state = self.state.lock().unwrap();
         state.composition = None;
         state.image = None;
+        gst::debug!(CAT, imp = self, "Image removed");
         Ok(())
     }
 
@@ -480,6 +511,7 @@ impl BaseTransformImpl for ImageRsOverlay {
             gst::log!(CAT, imp = self, "{e}");
         }
 
+        // now properties have been sync'ed; maybe need to update composition
         let mut set_passthrough = false;
         let has_no_composition = {
             let mut state = self.state.lock().unwrap();
@@ -493,9 +525,17 @@ impl BaseTransformImpl for ImageRsOverlay {
             }
             state.composition.is_none()
         };
+        // determine passthrough mode so the buffer is writable if needed
+        // when passed into _transform_ip
         if set_passthrough {
             self.obj().set_passthrough(has_no_composition);
         }
+        gst::debug!(
+            CAT,
+            imp = self,
+            "Passthrough: {}",
+            self.obj().is_passthrough()
+        );
     }
 
     // See gst_cairo_overlay_query, cea608overlay and
