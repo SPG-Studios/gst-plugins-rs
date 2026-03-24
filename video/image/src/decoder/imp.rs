@@ -623,6 +623,8 @@ impl Decoder {
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
                 state.pending_events.clear();
+                state.buffers.clear();
+                state.total_size = 0;
                 // The original has a fallthrough here; that will trigger
                 // a CRITICAL warning here, see gst_event_parse_segment
             }
@@ -668,6 +670,8 @@ impl Decoder {
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
                 state.pending_events.clear();
+                state.buffers.clear();
+                state.total_size = 0;
                 true
             }
             _ => gst::Pad::event_default(pad, Some(&*self.obj()), event),
