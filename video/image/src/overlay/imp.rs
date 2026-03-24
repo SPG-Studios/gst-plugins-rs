@@ -572,6 +572,17 @@ impl BaseTransformImpl for ImageRsOverlay {
 }
 
 impl VideoFilterImpl for ImageRsOverlay {
+    fn set_info(
+        &self,
+        incaps: &gst::Caps,
+        _in_info: &gst_video::VideoInfo,
+        _outcaps: &gst::Caps,
+        _out_info: &gst_video::VideoInfo,
+    ) -> Result<(), gst::LoggableError> {
+        gst::info!(CAT, imp = self, "caps: {:?}", incaps);
+        Ok(())
+    }
+
     fn transform_frame_ip(
         &self,
         frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
