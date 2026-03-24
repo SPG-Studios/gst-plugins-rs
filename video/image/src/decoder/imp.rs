@@ -48,14 +48,14 @@ trait ImageRsBuffer<'a>: BufRead + Seek {}
 
 impl<'a, T: BufRead + Seek> ImageRsBuffer<'a> for T {}
 
-pub struct ImageRsDecoder {
+pub struct Decoder {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
     settings: Mutex<Settings>,
     state: Mutex<State>,
 }
 
-impl ImageRsDecoder {
+impl Decoder {
     fn dec_chain(
         &self,
         pad: &gst::Pad,
@@ -676,7 +676,7 @@ impl ImageRsDecoder {
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for ImageRsDecoder {
+impl ObjectSubclass for Decoder {
     const NAME: &'static str = "GstImageRsDecoder";
     type Type = super::Decoder;
     type ParentType = gst::Element;
@@ -685,21 +685,21 @@ impl ObjectSubclass for ImageRsDecoder {
         let templ = klass.pad_template("sink").unwrap();
         let sinkpad = gst::Pad::builder_from_template(&templ)
             .chain_function(|pad, parent, buffer| {
-                ImageRsDecoder::catch_panic_pad_function(
+                Decoder::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
                     |dec| dec.dec_chain(pad, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
-                ImageRsDecoder::catch_panic_pad_function(
+                Decoder::catch_panic_pad_function(
                     parent,
                     || false,
                     |dec| dec.sink_event(pad, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                ImageRsDecoder::catch_panic_pad_function(
+                Decoder::catch_panic_pad_function(
                     parent,
                     || false,
                     |dec| dec.sink_query(pad, query),
@@ -710,11 +710,7 @@ impl ObjectSubclass for ImageRsDecoder {
         let templ = klass.pad_template("src").unwrap();
         let srcpad = gst::Pad::builder_from_template(&templ)
             .event_function(|pad, parent, event| {
-                ImageRsDecoder::catch_panic_pad_function(
-                    parent,
-                    || false,
-                    |dec| dec.src_event(pad, event),
-                )
+                Decoder::catch_panic_pad_function(parent, || false, |dec| dec.src_event(pad, event))
             })
             .flags(gst::PadFlags::FIXED_CAPS)
             .build();
@@ -728,7 +724,7 @@ impl ObjectSubclass for ImageRsDecoder {
     }
 }
 
-impl ObjectImpl for ImageRsDecoder {
+impl ObjectImpl for Decoder {
     fn constructed(&self) {
         self.parent_constructed();
 
@@ -787,9 +783,9 @@ impl ObjectImpl for ImageRsDecoder {
     }
 }
 
-impl GstObjectImpl for ImageRsDecoder {}
+impl GstObjectImpl for Decoder {}
 
-impl ElementImpl for ImageRsDecoder {
+impl ElementImpl for Decoder {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(

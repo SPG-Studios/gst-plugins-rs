@@ -20,7 +20,7 @@ use gst::prelude::*;
 mod imp;
 
 glib::wrapper! {
-    pub struct Decoder(ObjectSubclass<imp::ImageRsDecoder>) @extends gst::Element, gst::Object;
+    pub struct Decoder(ObjectSubclass<imp::Decoder>) @extends gst::Element, gst::Object;
 }
 
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
