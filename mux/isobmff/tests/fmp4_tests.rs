@@ -1357,6 +1357,219 @@ fn test_buffer_multi_stream_short_gops() {
     assert_eq!(ev.type_(), gst::EventType::Eos);
 }
 
+// Test closest-boundary mode: with 3s GOPs and 5s target the first fragment
+// should be 6s (|6-5|=1 < |3-5|=2) instead of 3s.
+#[test]
+fn test_single_stream_closest_fragment_boundary() {
+    init();
+
+    let mut h = gst_check::Harness::with_padnames("isofmp4mux", Some("sink_0"), Some("src"));
+
+    h.element()
+        .unwrap()
+        .set_property("fragment-duration", 5.seconds());
+    h.element()
+        .unwrap()
+        .set_property_from_str("fragment-boundary-mode", "closest");
+
+    h.set_src_caps(
+        gst::Caps::builder("video/x-h264")
+            .field("width", 1920i32)
+            .field("height", 1080i32)
+            .field("framerate", gst::Fraction::new(30, 1))
+            .field("stream-format", "avc")
+            .field("alignment", "au")
+            .field("codec_data", gst::Buffer::with_size(1).unwrap())
+            .build(),
+    );
+    h.play();
+
+    let output_offset = (60 * 60 * 1000).seconds();
+
+    // Push 8 buffers of 1s each, keyframes at 0, 3, 6 → GOPs: [0-2] [3-5] [6-7]
+    for i in 0..8 {
+        let mut buffer = gst::Buffer::with_size(1).unwrap();
+        {
+            let buffer = buffer.get_mut().unwrap();
+            buffer.set_pts(i.seconds());
+            buffer.set_dts(i.seconds());
+            buffer.set_duration(gst::ClockTime::SECOND);
+            if i != 0 && i != 3 && i != 6 {
+                buffer.set_flags(gst::BufferFlags::DELTA_UNIT);
+            }
+        }
+        assert_eq!(h.push(buffer), Ok(gst::FlowSuccess::Ok));
+    }
+
+    // Header
+    let header = h.pull().unwrap();
+    assert_eq!(
+        header.flags(),
+        gst::BufferFlags::HEADER | gst::BufferFlags::DISCONT
+    );
+
+    // Fragment 1: GOPs 0+1 = 6s (closest to 5s target)
+    let fragment_header = h.pull().unwrap();
+    assert_eq!(fragment_header.flags(), gst::BufferFlags::HEADER);
+    assert_eq!(
+        fragment_header.pts(),
+        Some(gst::ClockTime::ZERO + output_offset)
+    );
+    assert_eq!(fragment_header.duration(), Some(6.seconds()));
+
+    for i in 0..6 {
+        let buffer = h.pull().unwrap();
+        if i == 5 {
+            assert_eq!(
+                buffer.flags(),
+                gst::BufferFlags::DELTA_UNIT | gst::BufferFlags::MARKER
+            );
+        } else {
+            assert_eq!(buffer.flags(), gst::BufferFlags::DELTA_UNIT);
+        }
+        assert_eq!(buffer.pts(), Some(i.seconds() + output_offset));
+        assert_eq!(buffer.duration(), Some(gst::ClockTime::SECOND));
+    }
+
+    h.push_event(gst::event::Eos::new());
+
+    // Fragment 2: GOP 2 = 2s (remaining after EOS)
+    let fragment_header = h.pull().unwrap();
+    assert_eq!(fragment_header.flags(), gst::BufferFlags::HEADER);
+    assert_eq!(fragment_header.pts(), Some(6.seconds() + output_offset));
+    assert_eq!(fragment_header.duration(), Some(2.seconds()));
+
+    for i in 6..8 {
+        let buffer = h.pull().unwrap();
+        if i == 7 {
+            assert_eq!(
+                buffer.flags(),
+                gst::BufferFlags::DELTA_UNIT | gst::BufferFlags::MARKER
+            );
+        } else {
+            assert_eq!(buffer.flags(), gst::BufferFlags::DELTA_UNIT);
+        }
+        assert_eq!(buffer.pts(), Some(i.seconds() + output_offset));
+        assert_eq!(buffer.duration(), Some(gst::ClockTime::SECOND));
+    }
+
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::StreamStart);
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::Caps);
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::Segment);
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::Eos);
+}
+
+// Test that closest-boundary mode does NOT include a crossing GOP when
+// the distance is equal (tie).  2s GOPs, 5s target: after 2 GOPs (4s)
+// the next crosses to 6s.  |6-5|=1 == |4-5|=1 → don't include.
+#[test]
+fn test_single_stream_closest_boundary_tie() {
+    init();
+
+    let mut h = gst_check::Harness::with_padnames("isofmp4mux", Some("sink_0"), Some("src"));
+
+    h.element()
+        .unwrap()
+        .set_property("fragment-duration", 5.seconds());
+    h.element()
+        .unwrap()
+        .set_property_from_str("fragment-boundary-mode", "closest");
+
+    h.set_src_caps(
+        gst::Caps::builder("video/x-h264")
+            .field("width", 1920i32)
+            .field("height", 1080i32)
+            .field("framerate", gst::Fraction::new(30, 1))
+            .field("stream-format", "avc")
+            .field("alignment", "au")
+            .field("codec_data", gst::Buffer::with_size(1).unwrap())
+            .build(),
+    );
+    h.play();
+
+    let output_offset = (60 * 60 * 1000).seconds();
+
+    // Push 8 buffers of 1s each, keyframes at 0, 2, 4, 6 → GOPs: [0-1] [2-3] [4-5] [6-7]
+    for i in 0..8 {
+        let mut buffer = gst::Buffer::with_size(1).unwrap();
+        {
+            let buffer = buffer.get_mut().unwrap();
+            buffer.set_pts(i.seconds());
+            buffer.set_dts(i.seconds());
+            buffer.set_duration(gst::ClockTime::SECOND);
+            if i % 2 != 0 {
+                buffer.set_flags(gst::BufferFlags::DELTA_UNIT);
+            }
+        }
+        assert_eq!(h.push(buffer), Ok(gst::FlowSuccess::Ok));
+    }
+
+    // Header
+    let header = h.pull().unwrap();
+    assert_eq!(
+        header.flags(),
+        gst::BufferFlags::HEADER | gst::BufferFlags::DISCONT
+    );
+
+    // Fragment 1: GOPs 0+1 = 4s (tie: |6-5|=1 is NOT < |4-5|=1)
+    let fragment_header = h.pull().unwrap();
+    assert_eq!(fragment_header.flags(), gst::BufferFlags::HEADER);
+    assert_eq!(
+        fragment_header.pts(),
+        Some(gst::ClockTime::ZERO + output_offset)
+    );
+    assert_eq!(fragment_header.duration(), Some(4.seconds()));
+
+    for i in 0..4 {
+        let buffer = h.pull().unwrap();
+        if i == 3 {
+            assert_eq!(
+                buffer.flags(),
+                gst::BufferFlags::DELTA_UNIT | gst::BufferFlags::MARKER
+            );
+        } else {
+            assert_eq!(buffer.flags(), gst::BufferFlags::DELTA_UNIT);
+        }
+        assert_eq!(buffer.pts(), Some(i.seconds() + output_offset));
+        assert_eq!(buffer.duration(), Some(gst::ClockTime::SECOND));
+    }
+
+    h.push_event(gst::event::Eos::new());
+
+    // Fragment 2: GOPs 2+3 = 4s (remaining after EOS)
+    let fragment_header = h.pull().unwrap();
+    assert_eq!(fragment_header.flags(), gst::BufferFlags::HEADER);
+    assert_eq!(fragment_header.pts(), Some(4.seconds() + output_offset));
+    assert_eq!(fragment_header.duration(), Some(4.seconds()));
+
+    for i in 4..8 {
+        let buffer = h.pull().unwrap();
+        if i == 7 {
+            assert_eq!(
+                buffer.flags(),
+                gst::BufferFlags::DELTA_UNIT | gst::BufferFlags::MARKER
+            );
+        } else {
+            assert_eq!(buffer.flags(), gst::BufferFlags::DELTA_UNIT);
+        }
+        assert_eq!(buffer.pts(), Some(i.seconds() + output_offset));
+        assert_eq!(buffer.duration(), Some(gst::ClockTime::SECOND));
+    }
+
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::StreamStart);
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::Caps);
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::Segment);
+    let ev = h.pull_event().unwrap();
+    assert_eq!(ev.type_(), gst::EventType::Eos);
+}
+
 #[test]
 fn test_single_stream_manual_fragment() {
     init();

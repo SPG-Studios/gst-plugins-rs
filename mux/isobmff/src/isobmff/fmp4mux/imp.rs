@@ -26,6 +26,7 @@ use crate::isobmff::ChnlLayoutInfo;
 use crate::isobmff::ChunkMode;
 use crate::isobmff::DeltaFrames;
 use crate::isobmff::ElstInfo;
+use crate::isobmff::FragmentBoundaryMode;
 use crate::isobmff::FragmentHeaderConfiguration;
 use crate::isobmff::FragmentHeaderStream;
 use crate::isobmff::FragmentOffset;
@@ -159,6 +160,7 @@ const DEFAULT_DECODE_TIME_OFFSET: gst::ClockTimeDiff = 0;
 const DEFAULT_START_FRAGMENT_SEQUENCE_NUMBER: u32 = 1;
 const DEFAULT_ENABLE_KEYFRAME_META: bool = false;
 const DEFAULT_CHUNK_MODE: ChunkMode = ChunkMode::None;
+const DEFAULT_FRAGMENT_BOUNDARY_MODE: FragmentBoundaryMode = FragmentBoundaryMode::Before;
 
 #[derive(Debug, Clone)]
 struct Settings {
@@ -178,6 +180,7 @@ struct Settings {
     start_fragment_sequence_number: u32,
     enable_keyframe_meta: bool,
     chunk_mode: ChunkMode,
+    fragment_boundary_mode: FragmentBoundaryMode,
 }
 
 impl Default for Settings {
@@ -199,6 +202,7 @@ impl Default for Settings {
             start_fragment_sequence_number: DEFAULT_START_FRAGMENT_SEQUENCE_NUMBER,
             enable_keyframe_meta: DEFAULT_ENABLE_KEYFRAME_META,
             chunk_mode: DEFAULT_CHUNK_MODE,
+            fragment_boundary_mode: DEFAULT_FRAGMENT_BOUNDARY_MODE,
         }
     }
 }
@@ -2522,7 +2526,27 @@ impl FMP4Mux {
                     && end_pts > dequeue_end_pts
                     && (chunk_end_pts.is_some() || !gops.is_empty())
                 {
-                    gst::trace!(CAT, obj = stream.sinkpad, "Not including GOP yet",);
+                    // In non-chunk mode for the first stream with closest boundary
+                    // mode, check if including this crossing GOP brings us closer
+                    // to the target duration.
+                    if settings.fragment_boundary_mode == FragmentBoundaryMode::Closest
+                        && chunk_end_pts.is_none()
+                        && !gops.is_empty()
+                    {
+                        let last_end_pts = gops.last().unwrap().end_pts;
+                        let dist_without = dequeue_end_pts.saturating_sub(last_end_pts);
+                        let dist_with = end_pts.saturating_sub(dequeue_end_pts);
+                        if dist_with < dist_without {
+                            gst::trace!(
+                                CAT,
+                                obj = stream.sinkpad,
+                                "Including crossing GOP: distance with ({dist_with}) < without ({dist_without})",
+                            );
+                            gops.push(stream.queued_gops.pop_back().unwrap());
+                            break;
+                        }
+                    }
+                    gst::trace!(CAT, obj = stream.sinkpad, "Not including GOP yet");
                     break;
                 }
 
@@ -4381,6 +4405,26 @@ impl ObjectImpl for FMP4Mux {
                     .blurb("Mode to control chunking on key frame or duration")
                     .mutable_ready()
                     .build(),
+               /**
+                 * GstFMP4Mux:fragment-boundary-mode:
+                 *
+                 * Controls how the fragment boundary is chosen when a GOP crosses
+                 * the target fragment duration.
+                 *
+                 * In `before` mode (default) the fragment always ends at the last
+                 * GOP boundary before the target, which may produce fragments
+                 * significantly shorter than the configured duration.
+                 *
+                 * In `closest` mode the fragment ends at whichever GOP boundary
+                 * is closest to the target duration.
+                 *
+                 * Since: plugins-rs-0.16.0
+                 */
+                glib::ParamSpecEnum::builder_with_default("fragment-boundary-mode", DEFAULT_FRAGMENT_BOUNDARY_MODE)
+                    .nick("Fragment boundary mode")
+                    .blurb("Whether to end fragments at the closest or previous GOP boundary")
+                    .mutable_ready()
+                    .build(),
             ]
         });
 
@@ -4480,6 +4524,10 @@ impl ObjectImpl for FMP4Mux {
                 let mut settings = self.settings.lock().unwrap();
                 settings.chunk_mode = value.get().expect("type checked upstream");
             }
+            "fragment-boundary-mode" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.fragment_boundary_mode = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -4552,6 +4600,10 @@ impl ObjectImpl for FMP4Mux {
             "chunk-mode" => {
                 let settings = self.settings.lock().unwrap();
                 settings.chunk_mode.to_value()
+            }
+            "fragment-boundary-mode" => {
+                let settings = self.settings.lock().unwrap();
+                settings.fragment_boundary_mode.to_value()
             }
             _ => unimplemented!(),
         }
