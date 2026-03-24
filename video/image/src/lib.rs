@@ -18,13 +18,18 @@ mod anim;
 mod decoder;
 mod encoder;
 mod overlay;
+#[cfg(feature = "animated_formats")]
+mod typefind;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     image_extras::register();
     decoder::register(plugin)?;
     encoder::register(plugin)?;
     #[cfg(feature = "animated_formats")]
-    anim::register(plugin)?;
+    {
+        anim::register(plugin)?;
+        typefind::register(plugin)?;
+    }
     overlay::register(plugin)?;
     Ok(())
 }
