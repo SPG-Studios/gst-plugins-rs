@@ -331,7 +331,7 @@ impl Decoder {
         let packetized = state.packetized;
         let duration = state.duration;
 
-        let pending_events = if state.info.as_ref().is_none_or(|v| !v.eq(&new_info)) {
+        let caps = if state.info.as_ref().is_none_or(|v| !v.eq(&new_info)) {
             let caps = new_info.to_caps().map_err(|_| {
                 gst::element_imp_error!(
                     self,
@@ -351,20 +351,27 @@ impl Decoder {
 
             state.info = Some(new_info);
 
-            let pending_events = state.pending_events.drain(..).collect::<Vec<_>>();
-
-            drop(state);
-
-            let _ = self.srcpad.push_event(gst::event::Caps::new(&caps));
-
-            pending_events
+            Some(caps)
         } else {
-            drop(state);
-            vec![]
+            None
         };
 
-        for l in pending_events {
-            self.srcpad.push_event(l);
+        drop(state);
+
+        if packetized || caps.is_some() {
+            if let Some(v) = caps {
+                let _ = self.srcpad.push_event(gst::event::Caps::new(&v));
+            }
+            let pending_events = self
+                .state
+                .lock()
+                .unwrap()
+                .pending_events
+                .drain(..)
+                .collect::<Vec<_>>();
+            for l in pending_events {
+                self.srcpad.push_event(l);
+            }
         }
 
         let allow_zerocopy = if let Some(caps) = self.srcpad.current_caps() {
