@@ -403,9 +403,7 @@ impl ImageRsDecoder {
             })?;
             b
         } else {
-            image
-                .wrap_for_gstreamer()
-                .into_gst_buffer()
+            image.wrap_for_gstreamer().into_gst_buffer()
         };
         {
             let outbuf = outbuf.get_mut().unwrap();
