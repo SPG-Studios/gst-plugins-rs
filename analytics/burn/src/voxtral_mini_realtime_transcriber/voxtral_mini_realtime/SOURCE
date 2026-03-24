@@ -1,0 +1,9 @@
+Based on https://github.com/TrevorS/voxtral-mini-realtime-rs commit
+ffad466b6729acbe1a1d2e1b815f0275693b6f5d
+
+Plus:
+  * https://github.com/TrevorS/voxtral-mini-realtime-rs/pull/6
+  * https://github.com/TrevorS/voxtral-mini-realtime-rs/pull/8
+  * https://github.com/TrevorS/voxtral-mini-realtime-rs/pull/9
+
+Licensed under the Apache 2.0 license.
