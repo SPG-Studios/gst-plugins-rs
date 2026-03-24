@@ -466,7 +466,10 @@ impl Decoder {
 
             let mut cursor = Cursor::new(buf);
 
-            self.render_single_frame(settings, state, &mut cursor, timestamp)
+            // If not packetized this should have gotten no timestamp
+            assert!(timestamp.is_none());
+
+            self.render_single_frame(settings, state, &mut cursor, None)
         }
     }
 
