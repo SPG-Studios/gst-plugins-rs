@@ -133,7 +133,7 @@ impl VideoEncoderImpl for Encoder {
     /// Minimize padding, please!
     /// References:
     /// https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/1.28.1/subprojects/gst-plugins-base/gst-libs/gst/video/video-info.c#L893-900
-    /// 
+    ///
     /// https://gitlab.freedesktop.org/gstreamer/gstreamer/-/blob/1.28.1/subprojects/gst-plugins-base/gst-libs/gst/video/gstvideoencoder.c#L895
     fn propose_allocation(
         &self,

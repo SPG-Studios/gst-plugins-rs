@@ -32,11 +32,8 @@ struct State {
     location: String,
     image: Option<gst::Buffer>,
     update_composition: bool,
-    can_attach_buffer: bool,
-    needs_realignment: bool,
 }
 
-#[derive(Default)]
 struct Settings {
     location: String,
     offset_x: i32,
@@ -124,13 +121,15 @@ impl ImageRsOverlay {
         drop(settings);
 
         state.composition = Some(gst_video::VideoOverlayComposition::new(Some(&rect)).unwrap());
-        state.update_composition = false;
+
+        gst::debug!(CAT, imp = self, "Composition updated");
     }
 
     fn load_image(&self, state: &mut State) -> Result<(), gst::ErrorMessage> {
         let settings = self.settings.lock().unwrap();
 
         if state.location == settings.location {
+            gst::debug!(CAT, imp = self, "No need to update");
             return Ok(());
         }
 
@@ -170,53 +169,58 @@ impl ImageRsOverlay {
                 pix.swap(0, 2);
             }
         }
-        let format = {
-            let width = argb_image.width();
-            let height = argb_image.height();
-            let color_info: Option<VideoColorimetry> = ImageCicp(argb_image.color_space())
-                .try_into()
-                .inspect_err(|e| {
-                    gst::warning!(
-                        CAT,
-                        imp = self,
-                        "Failed converting to VideoColorimetry: {e}"
-                    );
-                })
-                .ok();
-            gst_video::VideoInfo::builder(gst_video::VideoFormat::Bgra, width, height)
-                .colorimetry_if_some(color_info.as_ref())
-                .build()
-                .unwrap()
+
+        // FIXME: BGRA caps should include CICP information
+        // That needs to be sent as a Caps event
+
+        let (width, height) = argb_image.dimensions();
+
+        let allow_zerocopy = if let Some(caps) = self.obj().src_pad().current_caps() {
+            let mut query = gst::query::Allocation::new(Some(&caps), false);
+            self.obj().src_pad().peer_query(&mut query);
+
+            gst::debug!(
+                CAT,
+                imp = self,
+                "Updated caps, querying zerocopy support: {:?}",
+                query
+            );
+
+            query
+                .find_allocation_meta::<gst_video::VideoMeta>()
+                .is_some()
+        } else {
+            false
         };
 
-        let buffer = if state.needs_realignment {
+        let buffer = if !allow_zerocopy {
             let mut buffer = DynamicImage::from(argb_image)
                 .wrap_for_gstreamer()
                 .into_gst_buffer();
 
-            gst_video::VideoMeta::add_full(
+            gst_video::VideoMeta::add(
                 buffer.get_mut().unwrap(),
                 gst_video::VideoFrameFlags::empty(),
-                format.format(),
-                format.width(),
-                format.height(),
-                format.offset(),
-                format.stride(),
+                gst_video::VideoFormat::Bgra,
+                width,
+                height,
             )
             .unwrap();
 
             buffer
         } else {
-            let stride = i32::try_from(argb_image.as_flat_samples().layout.height_stride).unwrap();
+            let stride =
+                [i32::try_from(argb_image.as_flat_samples().layout.height_stride).unwrap()];
             let mut buffer = Wrapper::Image(argb_image.into()).into_gst_buffer();
+
             gst_video::VideoMeta::add_full(
                 buffer.get_mut().unwrap(),
                 gst_video::VideoFrameFlags::empty(),
-                format.format(),
-                format.width(),
-                format.height(),
-                format.offset(),
-                &[stride, 0, 0, 0],
+                gst_video::VideoFormat::Bgra,
+                width,
+                height,
+                &[0],
+                &stride,
             )
             .unwrap();
 
@@ -226,6 +230,8 @@ impl ImageRsOverlay {
         state.location = location;
         state.image = Some(buffer);
         state.update_composition = true;
+
+        gst::warning!(CAT, imp = self, "Image loaded and composition requested");
 
         Ok(())
     }
@@ -487,31 +493,25 @@ impl BaseTransformImpl for ImageRsOverlay {
     fn query(&self, direction: gst::PadDirection, query: &mut gst::QueryRef) -> bool {
         use gst::QueryViewMut;
         match query.view_mut() {
-            QueryViewMut::Allocation(..) => {
+            QueryViewMut::Allocation(v) => {
                 // We're always running in passthrough mode, which means that
                 // basetransform just passes through ALLOCATION queries and
                 // never ever calls BaseTransform::decide_allocation().
                 // We hook into the query handling for that reason
-                {
-                    let mut state = self.state.lock().unwrap();
-                    state.can_attach_buffer = false;
-                    state.needs_realignment = false;
-                }
-                if !BaseTransformImplExt::parent_query(self, direction, query) {
-                    return false;
-                }
-                if let QueryViewMut::Allocation(v) = query.view_mut() {
-                    let mut state = self.state.lock().unwrap();
-                    state.can_attach_buffer = v
-                        .find_allocation_meta::<gst_video::VideoOverlayCompositionMeta>()
-                        .is_some();
-                    state.needs_realignment = v.find_allocation_meta::<gst_video::VideoMeta>().is_none();
-                    return true;
-                }
-                unreachable!()
+                self.propose_allocation(None, v).is_ok()
             }
             _ => BaseTransformImplExt::parent_query(self, direction, query),
         }
+    }
+
+    fn propose_allocation(
+        &self,
+        decide_query: Option<&gst::query::Allocation>,
+        query: &mut gst::query::Allocation,
+    ) -> Result<(), gst::LoggableError> {
+        query.add_allocation_meta::<gst_video::VideoMeta>(None);
+        query.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(None);
+        self.parent_propose_allocation(decide_query, query)
     }
 }
 
@@ -524,7 +524,17 @@ impl VideoFilterImpl for ImageRsOverlay {
 
         let state = self.state.lock().unwrap();
         if let Some(v) = &state.composition {
-            if state.can_attach_buffer {
+            let can_attach_buffer = self
+                .obj()
+                .src_pad()
+                .current_caps()
+                .and_then(|v| {
+                    v.features(0).map(|v| {
+                        v.contains(gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION)
+                    })
+                })
+                .unwrap_or(false);
+            if can_attach_buffer {
                 // frame.buffer() returns a IMMUTABLE reference,
                 // not respecting the T parameter of VideoFrameRef.
                 // This makes it impossible to use from VideoFilterImpl

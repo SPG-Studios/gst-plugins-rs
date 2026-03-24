@@ -123,7 +123,12 @@ impl Decoder {
                     let mut query = gst::query::Allocation::new(Some(&caps), false);
                     self.srcpad.peer_query(&mut query);
 
-                    gst::debug!(CAT, imp = self, "Updated caps, querying zerocopy support: {:?}", query);
+                    gst::debug!(
+                        CAT,
+                        imp = self,
+                        "Updated caps, querying zerocopy support: {:?}",
+                        query
+                    );
 
                     query
                         .find_allocation_meta::<gst_video::VideoMeta>()
@@ -150,9 +155,7 @@ impl Decoder {
 
             let mut out_buf = if allow_zerocopy {
                 let image = frame.into_buffer();
-                let stride = [
-                    i32::try_from(image.sample_layout().height_stride).unwrap(),
-                ];
+                let stride = [i32::try_from(image.sample_layout().height_stride).unwrap()];
                 let mut b = Wrapper::Image(image.into()).into_gst_buffer();
                 gst_video::VideoMeta::add_full(
                     b.make_mut(),

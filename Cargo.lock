@@ -5072,6 +5072,7 @@ dependencies = [
  "gstreamer-video",
  "image",
  "image-extras",
+ "png",
 ]
 
 [[package]]
