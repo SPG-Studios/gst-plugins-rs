@@ -467,7 +467,13 @@ impl ElementImpl for ImageRsOverlay {
 }
 
 impl BaseTransformImpl for ImageRsOverlay {
-    const MODE: gst_base::subclass::BaseTransformMode = gst_base::subclass::BaseTransformMode::Both;
+    /// GstBaseTransform expects, for in-place transforms like
+    /// the one required by this plugin, that a transform_frame_ip
+    /// function is provided AND that a transform function is
+    /// NOT provided.
+    ///
+    /// See gst_base_transform_init and default_generate_output
+    const MODE: gst_base::subclass::BaseTransformMode = gst_base::subclass::BaseTransformMode::AlwaysInPlace;
     const PASSTHROUGH_ON_SAME_CAPS: bool = false;
     const TRANSFORM_IP_ON_PASSTHROUGH: bool = true;
 
