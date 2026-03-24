@@ -10,7 +10,7 @@ use gst_video::VideoColorimetry;
 use gst_video::prelude::*;
 use gst_video::subclass::prelude::*;
 
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageReader, Limits};
 
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -46,6 +46,7 @@ struct Settings {
     overlay_width: u32,
     overlay_height: u32,
     alpha: f32,
+    max_alloc: u64,
 }
 
 #[derive(Default)]
@@ -127,21 +128,29 @@ impl ImageRsOverlay {
     }
 
     fn load_image(&self, state: &mut State) -> Result<(), gst::ErrorMessage> {
-        let location = {
-            let settings = self.settings.lock().unwrap();
-            if state.location == settings.location {
-                return Ok(());
-            }
+        let settings = self.settings.lock().unwrap();
 
-            settings.location.clone()
-        };
+        if state.location == settings.location {
+            return Ok(());
+        }
 
-        let reader = ImageReader::open(&location).map_err(|v| {
+        let location = settings.location.clone();
+
+        let mut reader = ImageReader::open(&location).map_err(|v| {
             gst::error_msg!(
                 gst::ResourceError::OpenRead,
                 ["Could not load overlay image: {}", v]
             )
         })?;
+
+        if settings.max_alloc != 0 {
+            let mut limits = Limits::default();
+            limits.max_alloc = Some(settings.max_alloc);
+            reader.limits(limits);
+        }
+
+        drop(settings);
+
         let mut argb_image = match reader.decode().map_err(|v| {
             gst::error_msg!(
                 gst::StreamError::Decode,
@@ -293,6 +302,12 @@ impl ObjectImpl for ImageRsOverlay {
                     .controllable()
                     .mutable_playing()
                     .build(),
+                glib::ParamSpecUInt64::builder("max-alloc-bytes")
+                    .nick("Memory allocation limits")
+                    .blurb("Max. amount of data to allocate for decoding (bytes, 0=disable)")
+                    .default_value(128 * 1024 * 1024)
+                    .mutable_ready()
+                    .build(),
             ]
         });
 
@@ -310,6 +325,7 @@ impl ObjectImpl for ImageRsOverlay {
             "overlay-width" => settings.overlay_width.to_value(),
             "overlay-height" => settings.overlay_height.to_value(),
             "alpha" => settings.alpha.to_value(),
+            "max-alloc-bytes" => settings.max_alloc.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -357,6 +373,10 @@ impl ObjectImpl for ImageRsOverlay {
                 let value = value.get().expect("type checked upstream");
                 settings.alpha = value;
                 state.update_composition = true;
+            }
+            "max-alloc-bytes" => {
+                let value = value.get::<u64>().expect("type checked upstream");
+                settings.max_alloc = value;
             }
             _ => unimplemented!(),
         }
