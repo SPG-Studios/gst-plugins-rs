@@ -451,6 +451,7 @@ impl Decoder {
             assert_eq!(state.buffers.len(), 1);
 
             let buffer = state.buffers.drain(..).nth(0).unwrap();
+            state.total_size = 0;
 
             let mut cursor = Cursor::new(buffer.map_readable().unwrap());
 
@@ -461,6 +462,7 @@ impl Decoder {
             for buffer in state.buffers.drain(..) {
                 buf.extend_from_slice(&buffer.map_readable().expect("Failed to map buffer"));
             }
+            state.total_size = 0;
 
             let mut cursor = Cursor::new(buf);
 
