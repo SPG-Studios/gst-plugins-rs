@@ -590,11 +590,10 @@ impl ImageRsDecoder {
         }
     }
 
-    fn sink_event(&self, pad: &gst::Pad, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, mut event: gst::Event) -> bool {
         use gst::EventView;
         gst::log!(CAT, obj = pad, "Handling event {:?}", event);
 
-        let mut event_replace: Option<gst::Event> = None;
         let mut ret = true;
         let mut forward = true;
 
@@ -624,19 +623,18 @@ impl ImageRsDecoder {
             EventView::FlushStop(..) => {
                 let mut state = self.state.lock().unwrap();
                 state.pending_events.clear();
+                // The original has a fallthrough here; that will trigger
+                // a CRITICAL warning here, see gst_event_parse_segment
             }
             EventView::Segment(v) => {
-                let mut state = self.state.lock().unwrap();
                 let segment = v.segment();
-                state.packetized = segment.format() == gst::Format::Time;
+                self.state.lock().unwrap().packetized = segment.format() == gst::Format::Time;
                 if segment.format() != gst::Format::Time {
                     let seqnum = event.seqnum();
                     let output_segment = gst::FormattedSegment::<gst::ClockTime>::new();
-                    event_replace = Some(
-                        gst::event::Segment::builder(&output_segment)
-                            .seqnum(seqnum)
-                            .build(),
-                    )
+                    event = gst::event::Segment::builder(&output_segment)
+                        .seqnum(seqnum)
+                        .build();
                 }
             }
             _ => {}
@@ -652,10 +650,7 @@ impl ImageRsDecoder {
             {
                 ret = true;
                 let mut state = self.state.lock().unwrap();
-                match event_replace {
-                    Some(v) => state.pending_events.push_front(v),
-                    None => state.pending_events.push_front(event),
-                };
+                state.pending_events.push_front(event);
             } else {
                 ret = gst::Pad::event_default(pad, Some(&*self.obj()), event);
             }
