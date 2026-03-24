@@ -220,9 +220,9 @@ impl Decoder {
                 .info(info)
                 .build();
 
-            if let Some(v) = metadata_blobs.get_mut() {
-                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
-            }
+            metadata_blobs
+                .make_mut()
+                .add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
         };
 
         if let Some(v) = icc {
@@ -238,9 +238,9 @@ impl Decoder {
                 .info(info)
                 .build();
 
-            if let Some(v) = metadata_blobs.get_mut() {
-                v.add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
-            }
+            metadata_blobs
+                .make_mut()
+                .add::<gst::tags::Attachment>(&tagsample, gst::TagMergeMode::Append);
         }
 
         if metadata_blobs.n_tags() > 0 {
