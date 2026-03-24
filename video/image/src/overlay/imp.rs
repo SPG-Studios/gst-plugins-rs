@@ -75,6 +75,7 @@ impl ImageRsOverlay {
 
         let settings = self.settings.lock().unwrap();
         if settings.alpha == 0.0 || state.image.is_none() {
+            state.update_composition = false;
             return;
         }
 
