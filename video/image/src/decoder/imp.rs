@@ -114,7 +114,13 @@ impl Decoder {
                     "Format {:?} not supported, converting to RGB(A)",
                     v.color()
                 );
-                if v.has_alpha() {
+                if v.color().bits_per_pixel() > 16 {
+                    if cfg!(target_endian = "little") {
+                        (v.to_rgba16().into(), VideoFormat::Rgba64Le)
+                    } else {
+                        (v.to_rgba16().into(), VideoFormat::Rgba64Be)
+                    }
+                } else if v.has_alpha() {
                     (v.to_rgba8().into(), VideoFormat::Rgba)
                 } else {
                     (v.to_rgb8().into(), VideoFormat::Rgb)
