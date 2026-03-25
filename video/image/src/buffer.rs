@@ -73,20 +73,12 @@ impl GStreamerImage for DynamicImage {
             ImageRgb8(v) => stride_in_bytes(v),
             ImageRgba8(v) => stride_in_bytes(v),
             ImageLuma8(v) => stride_in_bytes(v),
-            #[cfg(target_endian = "little")]
             ImageLuma16(v) => stride_in_bytes(v),
-            #[cfg(target_endian = "big")]
-            ImageLuma16(v) => stride_in_bytes(v),
-            #[cfg(target_endian = "little")]
-            ImageRgba16(v) => stride_in_bytes(v),
-            #[cfg(target_endian = "big")]
             ImageRgba16(v) => stride_in_bytes(v),
             _ => unreachable!(),
         }
     }
 
-    /// TODO: if VideoMeta is supported, just reuse the image
-    /// and broadcast the strides
     fn wrap_for_gstreamer(self) -> Wrapper {
         use DynamicImage::*;
         use Wrapper::*;
@@ -107,7 +99,6 @@ impl GStreamerImage for DynamicImage {
                 Some(v) => Vec(v),
                 None => Image(self),
             },
-            #[cfg(target_endian = "little")]
             ImageRgba16(ref v) => match convert_strides(v) {
                 Some(v) => Vec(v),
                 None => Image(self),
