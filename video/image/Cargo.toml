@@ -30,7 +30,7 @@ path = "src/lib.rs"
 gst-plugin-version-helper.workspace = true
 
 [features]
-default = ["gst-video/v1_24", "still_formats", "still_formats_extras", "animated_formats"]
+default = ["gst-video/v1_26", "still_formats", "still_formats_extras", "animated_formats"]
 static = []
 capi = []
 doc = []
