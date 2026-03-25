@@ -121,6 +121,11 @@ impl ElementPtr {
     }
 }
 
+/**
+ * GstPipelineSnapshotCleanupMode:
+ *
+ * Since: plugins-rs-0.14.0
+ */
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstPipelineSnapshotCleanupMode")]
@@ -154,6 +159,11 @@ impl std::str::FromStr for CleanupMode {
     }
 }
 
+/**
+ * GstPipelineSnapshotFolderMode:
+ *
+ * Since: plugins-rs-0.14.0
+ */
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstPipelineSnapshotFolderMode")]
