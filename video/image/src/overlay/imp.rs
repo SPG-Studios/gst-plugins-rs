@@ -426,7 +426,7 @@ impl ElementImpl for ImageRsOverlay {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
-            let caps = gst_video::VideoCapsBuilder::new().build();
+            let caps = gst::Caps::new_any();
 
             let sink_pad_template = gst::PadTemplate::new(
                 "sink",
