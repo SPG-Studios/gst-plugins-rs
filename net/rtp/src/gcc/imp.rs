@@ -1057,11 +1057,7 @@ impl State {
                 }
             }
             NetworkUsage::Under => {
-                if let BandwidthEstimationOp::Increase(..) = self.last_control_op
-                    && let Some(bitrate) = self.compute_increased_rate(bwe)
-                {
-                    return self.set_bitrate(bwe, bitrate, ControllerType::Delay);
-                }
+                // From 5.5: Under-use always transitions to Hold.
             }
         }
 
