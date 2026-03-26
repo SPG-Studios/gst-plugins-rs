@@ -67,7 +67,7 @@ const MOVING_AVERAGE_SMOOTHING_FACTOR: f64 = 0.5;
 // `N(i)` is the number of packets received the past T seconds and `L(j)` is
 // the payload size of packet j.  A window between 0.5 and 1 second is
 // RECOMMENDED.
-const PACKETS_RECEIVED_WINDOW: Duration = Duration::milliseconds(1000); // ms
+const PACKETS_RECEIVED_WINDOW: Duration = Duration::milliseconds(500); // ms
 
 // from "5.4 Over-use detector" ->
 // Moreover, del_var_th(i) SHOULD NOT be updated if this condition
