@@ -571,7 +571,8 @@ impl Detector {
             self.loss_average = loss_fraction
                 + (-Duration::try_from(now - *last_update)
                     .unwrap()
-                    .whole_milliseconds() as f64)
+                    .whole_milliseconds() as f64
+                    / 200.0)
                     .exp()
                     * (self.loss_average - loss_fraction);
         }
