@@ -10,7 +10,7 @@ use gst::glib;
 use gst::prelude::*;
 
 mod imp;
-mod manifest;
+pub mod manifest;
 
 glib::wrapper! {
     pub struct DashSink2(ObjectSubclass<imp::DashSink2>) @extends gst::Bin, gst::Element, gst::Object;

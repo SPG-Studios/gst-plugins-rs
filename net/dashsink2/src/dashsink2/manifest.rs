@@ -52,7 +52,7 @@ impl Manifest {
                 xmlns: Some("urn:mpeg:dash:schema:mpd:2011".into()),
                 schemaLocation: Some("urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd".into()),
                 mpdtype: Some("static".into()),
-                profiles: Some("urn:mpeg:dash:profile:isoff-on-demand:2011".into()),
+                profiles: Some("urn:mpeg:dash:profile:isoff-live:2011".into()),
                 minBufferTime: Some(Duration::from_secs(10)),
                 minimumUpdatePeriod: None,
                 periods: vec![period],
@@ -68,7 +68,7 @@ impl Manifest {
         match mpdtype {
             ManifestType::Static => {
                 self.inner.mpdtype = Some("static".into());
-                self.inner.profiles = Some("urn:mpeg:dash:profile:isoff-on-demand:2011".into());
+                self.inner.profiles = Some("urn:mpeg:dash:profile:isoff-live:2011".into());
                 self.inner.minimumUpdatePeriod = None;
                 // If availabilityStartTime, it means that the Live DASH is turning VOD
                 if let Some(start_time) = self.inner.availabilityStartTime {
@@ -103,13 +103,13 @@ impl Manifest {
     }
 
     pub fn set_min_buffer_time(&mut self, time: u32) {
-        self.inner.minBufferTime = Some(Duration::from_secs(time as u64));
+        self.inner.minBufferTime = Some(Duration::from_millis(time as u64));
     }
 
     pub fn set_minimum_update_period(&mut self, time: u32) {
-        self.minimum_update_period = Some(Duration::from_secs(time as u64));
+        self.minimum_update_period = Some(Duration::from_millis(time as u64));
         if self.mpd_type == ManifestType::Dynamic {
-            self.inner.minimumUpdatePeriod = Some(Duration::from_secs(time as u64));
+            self.inner.minimumUpdatePeriod = Some(Duration::from_millis(time as u64));
         }
     }
 
@@ -158,7 +158,7 @@ impl Manifest {
                     contentType: Some("video".into()),
                     mimeType: Some("video/mp4".into()),
                     segmentAlignment: Some(true),
-                    subsegmentStartsWithSAP: Some(1),
+                    startWithSAP: Some(1),
                     ..Default::default()
                 });
             }
@@ -178,7 +178,7 @@ impl Manifest {
                     contentType: Some("audio".into()),
                     mimeType: Some("audio/mp4".into()),
                     segmentAlignment: Some(true),
-                    subsegmentStartsWithSAP: Some(1),
+                    startWithSAP: Some(1),
                     ..Default::default()
                 });
             }
