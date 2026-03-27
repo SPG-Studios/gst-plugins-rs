@@ -256,6 +256,97 @@ impl Decoder {
         tags
     }
 
+    /// Create decoders using the typefound format. Affects primarily
+    /// formats supplied by image-extras, which lacks signature values
+    /// for all but SGI, PCX and XPM.
+    ///
+    /// See:
+    /// - https://github.com/image-rs/image-extras/issues/40
+    /// - https://github.com/image-rs/image-extras/issues/42
+    fn create_decoder<'a, 'b>(
+        &self,
+        format: Format,
+        source: &'b mut dyn ImageRsBuffer<'a>,
+        limits: Option<Limits>,
+    ) -> Result<Box<dyn ImageDecoder + 'b>, gst::FlowError> {
+        match format {
+            #[cfg(feature = "ora")]
+            Format::OpenRaster => {
+                let decoder = image_extras::ora::OpenRasterDecoder::with_limits(
+                    source,
+                    limits.unwrap_or(Default::default()),
+                )
+                .map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            }
+            #[cfg(feature = "otb")]
+            Format::Nokia => {
+                let decoder = image_extras::otb::OtbDecoder::new(source).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            }
+            #[cfg(feature = "pcx")]
+            Format::Pcx => {
+                let decoder = image_extras::pcx::PCXDecoder::new(source).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            },
+            #[cfg(feature = "sgi")]
+            Format::Sgi => {
+                let decoder = image_extras::sgi::SgiDecoder::new(source).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            },
+            #[cfg(feature = "wbmp")]
+            Format::Wbmp => {
+                let decoder = image_extras::wbmp::WbmpDecoder::new(source).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            },
+            #[cfg(feature = "xbm")]
+            Format::Xbm => {
+                let decoder = image_extras::xbm::XbmDecoder::new(source).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            },
+            #[cfg(feature = "xpm")]
+            Format::Xpm => {
+                let decoder = image_extras::xpm::XpmDecoder::new(source).map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            },
+            v => {
+                let mut reader = ImageReader::new(source);
+                if let Ok(v) = ImageFormat::try_from(v) {
+                    reader.set_format(v);
+                }
+                if let Some(v) = limits {
+                    reader.limits(v);
+                }
+                let decoder = reader.into_decoder().map_err(|v| {
+                    gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
+                    gst::FlowError::Error
+                })?;
+                Ok(Box::new(decoder))
+            }
+        }
+    }
+
     #[inline]
     fn render_single_frame<'a>(
         &'a self,
@@ -264,28 +355,21 @@ impl Decoder {
         source: &mut dyn ImageRsBuffer<'a>,
         timestamp: Option<gst::ClockTime>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let mut reader = ImageReader::new(source);
-
         let format = state
             .format_from_caps
             .ok_or(gst::FlowError::NotNegotiated)?;
 
-        if let Ok(v) = ImageFormat::try_from(format) {
-            reader.set_format(v);
-        }
-
-        if settings.max_alloc != 0 {
+        let limits = if settings.max_alloc != 0 {
             let mut limits = Limits::default();
             limits.max_alloc = Some(settings.max_alloc);
-            reader.limits(limits);
-        }
+            Some(limits)
+        } else {
+            None
+        };
 
         drop(settings);
 
-        let mut decoder = reader.into_decoder().map_err(|v| {
-            gst::error!(CAT, imp = self, "Failed decoding single image: {v}");
-            gst::FlowError::Error
-        })?;
+        let mut decoder = self.create_decoder(format, source, limits)?;
 
         let metadata = self.metadata_from_decoder(&mut decoder);
 

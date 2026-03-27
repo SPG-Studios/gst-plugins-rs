@@ -204,6 +204,8 @@ impl Format {
             Format::Exr,
             #[cfg(feature = "ff")]
             Format::Farbfeld,
+            #[cfg(feature = "hdr")]
+            Format::Hdr,
             #[cfg(feature = "ico")]
             Format::Ico,
             #[cfg(feature = "jpeg")]

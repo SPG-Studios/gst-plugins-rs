@@ -18,18 +18,17 @@ mod anim;
 mod decoder;
 mod encoder;
 mod overlay;
-#[cfg(feature = "animated_formats")]
 mod typefind;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-    image_extras::register();
+    // FIXME: uncomment once upstream has signature sniffing
+    // for all formats (and remove the manual decoding dispatch)
+    // image_extras::register();
+    typefind::register(plugin)?;
     decoder::register(plugin)?;
     encoder::register(plugin)?;
     #[cfg(feature = "animated_formats")]
-    {
-        anim::register(plugin)?;
-        typefind::register(plugin)?;
-    }
+    anim::register(plugin)?;
     overlay::register(plugin)?;
     Ok(())
 }
