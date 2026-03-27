@@ -217,12 +217,10 @@ impl Decoder {
 
         if let Some(v) = iptc {
             let buf = gst::Buffer::from_mut_slice(v);
-            let caps = gst::Caps::new_empty_simple("application/rdf+xml");
             let info = gst::Structure::new_empty("application/rdf+xml");
 
             let tagsample = gst::Sample::builder()
                 .buffer(&buf)
-                .caps(&caps)
                 .info(info)
                 .build();
 
@@ -233,14 +231,12 @@ impl Decoder {
 
         if let Some(v) = icc {
             let buf = gst::Buffer::from_mut_slice(v);
-            let caps = gst::Caps::new_empty_simple("application/vnd.iccprofile");
             let mut info = gst::Structure::new_empty("application/vnd.iccprofile");
             // FIXME: image-rs's png reader does not expose the profile name
             // see impl StreamingDecoder::parse_iccp_raw in the PNG crate
             info.set("icc-name", "(embedded profile from image-rs)");
             let tagsample = gst::Sample::builder()
                 .buffer(&buf)
-                .caps(&caps)
                 .info(info)
                 .build();
 
