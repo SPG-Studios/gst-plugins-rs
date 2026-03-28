@@ -92,6 +92,7 @@ impl Decoder {
         }
     }
 
+    #[inline(never)]
     fn convert_format(&self, image: DynamicImage) -> (DynamicImage, gst_video::VideoFormat) {
         use DynamicImage::*;
         use gst_video::VideoFormat;
