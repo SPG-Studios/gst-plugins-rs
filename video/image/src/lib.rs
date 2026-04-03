@@ -10,6 +10,7 @@
 use gst::glib;
 
 mod buffer;
+mod caps;
 mod cicp;
 mod format;
 

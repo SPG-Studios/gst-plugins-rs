@@ -93,20 +93,10 @@ impl ElementImpl for Encoder {
 
             let mut src_caps = gst::Caps::new_empty();
             {
-                let caps = src_caps.get_mut().unwrap();
+                let caps = src_caps.make_mut();
 
                 for f in Format::all_encoder_formats() {
-                    for v in f.to_mimetypes() {
-                        let c = gst::Caps::builder(v)
-                            .field(
-                                "format",
-                                gst::List::new(
-                                    f.supported_depths().into_iter().map(|f| f.to_str()),
-                                ),
-                            )
-                            .build();
-                        caps.append(c);
-                    }
+                    caps.append(f.clone());
                 }
             };
             let src_pad_template = gst::PadTemplate::new(
@@ -257,8 +247,6 @@ impl VideoEncoderImpl for Encoder {
 
         *self.state.lock().unwrap() = Some(State {
             format: s
-                .name()
-                .as_str()
                 .try_into()
                 .map_err(|v| gst::loggable_error!(CAT, "Failed to determine format: {v}"))?,
             video_info: state.info().clone(),

@@ -3,6 +3,8 @@ use std::fmt::Display;
 use gst::glib;
 use image::ImageFormat;
 
+use crate::caps::*;
+
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstRsImageFormat")]
@@ -136,11 +138,11 @@ impl From<ImageFormat> for Format {
     }
 }
 
-impl<'a> TryFrom<&'a str> for Format {
+impl<'a> TryFrom<&'a gst::StructureRef> for Format {
     type Error = UnsupportedFormat<'a>;
 
-    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-        match value {
+    fn try_from(value: &'a gst::StructureRef) -> Result<Self, Self::Error> {
+        match value.name().as_str() {
             "image/x-gst-apng" => Ok(Format::Apng),
             "image/x-MS-bmp" => Ok(Format::Bmp),
             "image/x-direct-draw-surface" => Ok(Format::Dds),
@@ -159,8 +161,23 @@ impl<'a> TryFrom<&'a str> for Format {
             "image/vnd.wap.wbmp" => Ok(Format::Wbmp),
             "image/x-xbitmap" | "image/x-xbm" => Ok(Format::Xbm),
             "image/x-xpixmap" => Ok(Format::Xpm),
-
-            v => match ImageFormat::from_mime_type(value) {
+            "image/png" => {
+                if let Ok(v) = value.get::<bool>("animated") {
+                    if v {
+                        return Ok(Format::Apng);
+                    }
+                }
+                Ok(Format::Png)
+            }
+            "video/quicktime" => {
+                if let Ok(v) = value.get::<String>("variant") {
+                    if v == "avif" {
+                        return Ok(Format::Avif);
+                    }
+                }
+                Err(UnsupportedFormat::MimetypeNotFound(value.name().as_str()))
+            }
+            v => match ImageFormat::from_mime_type(v) {
                 Some(v) => Ok(Format::from(v)),
                 None => Err(UnsupportedFormat::MimetypeNotFound(v)),
             },
@@ -169,172 +186,92 @@ impl<'a> TryFrom<&'a str> for Format {
 }
 
 impl Format {
-    pub(crate) fn all_animated_formats() -> impl IntoIterator<Item = Format> {
+    pub(crate) fn all_animated_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]
-            Format::Apng,
+            &*APNG_CAPS,
             // FIXME upstream: AVIF also supports animations
             // but needs image-rs support
             // #[cfg(feature = "avif")]
             // Format::Avif,
             #[cfg(feature = "gif")]
-            Format::Gif,
+            &GIF_CAPS,
             #[cfg(feature = "webp")]
-            Format::WebP,
+            &WEBP_CAPS,
         ]
     }
 
     /// Missing formats from gdkpixbufdec:
     /// - application/x-navi-animation
-    /// - image/x-cmu-raster
-    /// - image/x-sun-raster
     /// - image/svg
     /// - image/svg+xml
-    pub(crate) fn all_decoding_formats() -> impl IntoIterator<Item = Format> {
+    pub(crate) fn all_decoding_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
         [
             // FIXME upstream: AVIF also supports animations
             // but needs image-rs support
             #[cfg(feature = "avif")]
-            Format::Avif,
+            &*AVIF_CAPS,
             #[cfg(any(feature = "bmp", feature = "ico"))]
-            Format::Bmp,
+            &*BMP_CAPS,
             #[cfg(feature = "dds")]
-            Format::Dds,
+            &*DDS_CAPS,
             #[cfg(feature = "exr")]
-            Format::Exr,
+            &*OPENEXR_CAPS,
             #[cfg(feature = "ff")]
-            Format::Farbfeld,
+            &*FARBFELD_CAPS,
             #[cfg(feature = "hdr")]
-            Format::Hdr,
+            &*HDR_CAPS,
             #[cfg(feature = "ico")]
-            Format::Ico,
+            &*ICO_CAPS,
             #[cfg(feature = "jpeg")]
             // FIXME upstream: doesn't support MJPEG
-            Format::Jpeg,
+            &*JPEG_CAPS,
             #[cfg(feature = "ora")]
-            Format::OpenRaster,
+            &*ORA_CAPS,
             #[cfg(feature = "otb")]
-            Format::Nokia,
+            &*OTB_CAPS,
             #[cfg(feature = "pcx")]
-            Format::Pcx,
+            &*PCX_CAPS,
             #[cfg(any(feature = "png", feature = "ico"))]
-            Format::Png,
+            &*PNG_CAPS,
             #[cfg(feature = "pnm")]
-            Format::Pnm,
+            &*PNM_CAPS,
             // https://github.com/phoboslab/qoi/issues/167
             #[cfg(feature = "qoi")]
-            Format::Qoi,
+            &*QOI_CAPS,
             #[cfg(feature = "sgi")]
-            Format::Sgi,
+            &*SGI_CAPS,
             #[cfg(feature = "tga")]
-            Format::Tga,
+            &*TGA_CAPS,
             #[cfg(feature = "tiff")]
-            Format::Tiff,
+            &*TIFF_CAPS,
             #[cfg(feature = "wbmp")]
-            Format::Wbmp,
+            &*WBMP_CAPS,
             #[cfg(feature = "xbm")]
-            Format::Xbm,
+            &*XBM_CAPS,
             #[cfg(feature = "xpm")]
-            Format::Xpm,
+            &*XPM_CAPS,
         ]
     }
 
-    pub(crate) fn supported_depths(&self) -> impl IntoIterator<Item = gst_video::VideoFormat> {
-        match self {
-            Format::Avif | Format::Qoi => {
-                vec![gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Rgb]
-            }
-            Format::Bmp | Format::Jpeg | Format::Tga => vec![
-                gst_video::VideoFormat::Rgba,
-                gst_video::VideoFormat::Rgb,
-                gst_video::VideoFormat::Gray8,
-            ],
-            Format::Farbfeld => vec![
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Rgba64Be,
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Rgba64Le,
-            ],
-            Format::Png | Format::Tiff => vec![
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Rgba64Be,
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Rgba64Le,
-                gst_video::VideoFormat::Rgba,
-                gst_video::VideoFormat::Rgb,
-                #[cfg(target_endian = "big")]
-                gst_video::VideoFormat::Gray16Be,
-                #[cfg(target_endian = "little")]
-                gst_video::VideoFormat::Gray16Le,
-                gst_video::VideoFormat::Gray8,
-            ],
-            v => unimplemented!("Complete this list {v:?}"),
-        }
-    }
-
-    pub(crate) fn all_encoder_formats() -> impl IntoIterator<Item = Format> {
+    pub(crate) fn all_encoder_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]
-            Format::Png,
+            &*PNG_ENC_CAPS,
             #[cfg(feature = "tiff")]
-            Format::Tiff,
+            &*TIFF_ENC_CAPS,
             #[cfg(feature = "jpeg")]
-            Format::Jpeg,
+            &*JPEG_ENC_CAPS,
             #[cfg(feature = "bmp")]
-            Format::Bmp,
+            &*BMP_ENC_CAPS,
             #[cfg(feature = "tga")]
-            Format::Tga,
+            &*TGA_ENC_CAPS,
             #[cfg(feature = "avif")]
-            Format::Avif,
+            &*AVIF_ENC_CAPS,
             #[cfg(feature = "ff")]
-            Format::Farbfeld,
+            &*FARBFELD_ENC_CAPS,
             #[cfg(feature = "qoi")]
-            Format::Qoi,
+            &*QOI_ENC_CAPS,
         ]
-    }
-
-    pub(crate) fn to_mimetypes(self) -> impl IntoIterator<Item = &'static str> {
-        if self == Format::Apng {
-            return vec![
-                // Fake MIME type for enabling just the animated decoder
-                "image/x-gst-apng",
-            ];
-        }
-        match ImageFormat::try_from(self) {
-            Ok(v) => match v {
-                ImageFormat::Bmp => vec![v.to_mime_type(), "image/x-MS-bmp"],
-                ImageFormat::Dds => vec![v.to_mime_type(), "image/x-direct-draw-surface"],
-                // farbfeld's MIME type in image-rs is
-                // application/octet-stream, correct it here
-                ImageFormat::Farbfeld => vec!["image/x-farbfeld"],
-                ImageFormat::Pnm => vec![
-                    "image/x-portable-bitmap",
-                    "image/x-portable-graymap",
-                    "image/x-portable-pixmap",
-                    v.to_mime_type(),
-                ],
-                ImageFormat::Qoi => vec![
-                    v.to_mime_type(),
-                    // https://github.com/phoboslab/qoi/issues/167
-                    "image/qoi",
-                ],
-                ImageFormat::Tga => vec![v.to_mime_type(), "image/x-tga"],
-                _ => vec![v.to_mime_type()],
-            },
-            // image-extras
-            Err(_) => match self {
-                Format::Nokia => vec![
-                    // https://snisurset.net/code/abydos/supported.html
-                    "image/x-nokia-over-the-air-bitmap",
-                ],
-                Format::OpenRaster => vec!["image/openraster"],
-                Format::Pcx => vec!["image/vnd.zbrush.pcx", "image/x-pcx"],
-                Format::Sgi => vec!["image/sgi"],
-                Format::Wbmp => vec!["image/vnd.wap.wbmp"],
-                Format::Xbm => vec!["image/x-xbitmap", "image/x-xbm"],
-                Format::Xpm => vec!["image/x-xpixmap"],
-                _ => vec![],
-            },
-        }
     }
 }

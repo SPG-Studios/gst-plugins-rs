@@ -199,7 +199,7 @@ impl Decoder {
     fn set_format_from_caps(&self, event_caps: &gst::event::Caps) -> Result<(), gst::ErrorMessage> {
         let s = event_caps.caps().structure(0).unwrap();
         let mut state = self.state.lock().unwrap();
-        state.format_from_caps = Some(s.name().as_str().try_into()?);
+        state.format_from_caps = Some(s.try_into()?);
         state.in_par = s.get::<gst::Fraction>("pixel-aspect-ratio").ok();
 
         Ok(())
@@ -469,12 +469,10 @@ impl ElementImpl for Decoder {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
             let mut caps = gst::Caps::new_empty();
             {
-                let caps = caps.get_mut().unwrap();
+                let caps = caps.make_mut();
 
                 for f in Format::all_animated_formats() {
-                    for v in f.to_mimetypes() {
-                        caps.append(gst::Caps::new_empty_simple(v));
-                    }
+                    caps.append(f.clone());
                 }
             }
 
