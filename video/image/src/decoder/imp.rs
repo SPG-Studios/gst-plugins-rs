@@ -220,10 +220,7 @@ impl Decoder {
             let buf = gst::Buffer::from_mut_slice(v);
             let info = gst::Structure::new_empty("application/rdf+xml");
 
-            let tagsample = gst::Sample::builder()
-                .buffer(&buf)
-                .info(info)
-                .build();
+            let tagsample = gst::Sample::builder().buffer(&buf).info(info).build();
 
             metadata_blobs
                 .make_mut()
@@ -236,10 +233,7 @@ impl Decoder {
             // FIXME: image-rs's png reader does not expose the profile name
             // see impl StreamingDecoder::parse_iccp_raw in the PNG crate
             info.set("icc-name", "(embedded profile from image-rs)");
-            let tagsample = gst::Sample::builder()
-                .buffer(&buf)
-                .info(info)
-                .build();
+            let tagsample = gst::Sample::builder().buffer(&buf).info(info).build();
 
             metadata_blobs
                 .make_mut()
@@ -294,7 +288,7 @@ impl Decoder {
                     gst::FlowError::Error
                 })?;
                 Ok(Box::new(decoder))
-            },
+            }
             #[cfg(feature = "sgi")]
             Format::Sgi => {
                 let decoder = image_extras::sgi::SgiDecoder::new(source).map_err(|v| {
@@ -302,7 +296,7 @@ impl Decoder {
                     gst::FlowError::Error
                 })?;
                 Ok(Box::new(decoder))
-            },
+            }
             #[cfg(feature = "wbmp")]
             Format::Wbmp => {
                 let decoder = image_extras::wbmp::WbmpDecoder::new(source).map_err(|v| {
@@ -310,7 +304,7 @@ impl Decoder {
                     gst::FlowError::Error
                 })?;
                 Ok(Box::new(decoder))
-            },
+            }
             #[cfg(feature = "xbm")]
             Format::Xbm => {
                 let decoder = image_extras::xbm::XbmDecoder::new(source).map_err(|v| {
@@ -318,7 +312,7 @@ impl Decoder {
                     gst::FlowError::Error
                 })?;
                 Ok(Box::new(decoder))
-            },
+            }
             #[cfg(feature = "xpm")]
             Format::Xpm => {
                 let decoder = image_extras::xpm::XpmDecoder::new(source).map_err(|v| {
@@ -326,7 +320,7 @@ impl Decoder {
                     gst::FlowError::Error
                 })?;
                 Ok(Box::new(decoder))
-            },
+            }
             v => {
                 let mut reader = ImageReader::new(source);
                 if let Ok(v) = ImageFormat::try_from(v) {

@@ -17,9 +17,9 @@ fn type_find(typefind: &mut gst::TypeFind) {
         })
         .and_then(|_| {
             typefind.suggest(
-            TypeFindProbability::Maximum,
-            &Caps::builder("image/x-xpixmap").build(),
-        );
+                TypeFindProbability::Maximum,
+                &Caps::builder("image/x-xpixmap").build(),
+            );
             Ok(())
         })
         .inspect_err(|e| gst::log!(CAT, "File is not X Pixmap: {:?}", e));
