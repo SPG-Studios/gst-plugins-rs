@@ -12,7 +12,7 @@ use gst::glib;
 mod buffer;
 mod caps;
 mod cicp;
-mod format;
+pub mod format;
 
 #[cfg(feature = "animated_formats")]
 mod anim;

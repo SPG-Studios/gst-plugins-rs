@@ -8,7 +8,7 @@ use crate::caps::*;
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstRsImageFormat")]
-pub(crate) enum Format {
+pub enum Format {
     #[enum_value(name = "Animated PNG", nick = "apng")]
     Apng,
     #[enum_value(name = "AV1 image file format", nick = "avif")]
@@ -58,7 +58,7 @@ pub(crate) enum Format {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub(crate) enum UnsupportedFormat<'a> {
+pub enum UnsupportedFormat<'a> {
     MimetypeNotFound(&'a str),
     NonNativeFormat(Format),
 }
@@ -186,7 +186,7 @@ impl<'a> TryFrom<&'a gst::StructureRef> for Format {
 }
 
 impl Format {
-    pub(crate) fn all_animated_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
+    pub fn all_animated_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]
             &*APNG_CAPS,
@@ -205,7 +205,7 @@ impl Format {
     /// - application/x-navi-animation
     /// - image/svg
     /// - image/svg+xml
-    pub(crate) fn all_decoding_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
+    pub fn all_decoding_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
         [
             // FIXME upstream: AVIF also supports animations
             // but needs image-rs support
@@ -254,7 +254,7 @@ impl Format {
         ]
     }
 
-    pub(crate) fn all_encoder_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
+    pub fn all_encoder_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]
             &*PNG_ENC_CAPS,
