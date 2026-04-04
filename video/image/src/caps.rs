@@ -191,7 +191,8 @@ make_new_encoder_caps!(
     [
         gst_video::VideoFormat::Rgba,
         gst_video::VideoFormat::Rgb,
-        gst_video::VideoFormat::Gray8,
+        // FIXME upstream: image-rs stores grayscale BMP as RGBA
+        // gst_video::VideoFormat::Gray8,
     ]
 );
 #[cfg(feature = "tga")]
