@@ -96,7 +96,7 @@ impl ElementImpl for Encoder {
                 let caps = src_caps.make_mut();
 
                 for f in Format::all_encoder_formats() {
-                    caps.append(f.clone());
+                    caps.append(f);
                 }
             };
             let src_pad_template = gst::PadTemplate::new(

@@ -903,7 +903,7 @@ impl ElementImpl for Decoder {
                 let caps = caps.make_mut();
 
                 for f in Format::all_decoding_formats() {
-                    caps.append(f.clone());
+                    caps.append(f);
                 }
             }
 

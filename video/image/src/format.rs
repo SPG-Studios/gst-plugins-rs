@@ -3,8 +3,6 @@ use std::fmt::Display;
 use gst::glib;
 use image::ImageFormat;
 
-use crate::caps::*;
-
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Clone, Copy, glib::Enum)]
 #[repr(u32)]
 #[enum_type(name = "GstRsImageFormat")]
@@ -186,18 +184,28 @@ impl<'a> TryFrom<&'a gst::StructureRef> for Format {
 }
 
 impl Format {
-    pub fn all_animated_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
+    pub fn all_animated_formats() -> impl IntoIterator<Item = gst::Caps> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]
-            &*APNG_CAPS,
+            {
+                let mut caps = gst::Caps::new_empty();
+                let c = caps.make_mut();
+                c.append(gst::Caps::builder("image/x-gst-apng").build());
+                c.append(
+                    gst::Caps::builder("image/png")
+                        .field("animated", true)
+                        .build(),
+                );
+                caps
+            },
             // FIXME upstream: AVIF also supports animations
             // but needs image-rs support
             // #[cfg(feature = "avif")]
             // Format::Avif,
             #[cfg(feature = "gif")]
-            &GIF_CAPS,
+            make_caps!(ImageFormat::Gif),
             #[cfg(feature = "webp")]
-            &WEBP_CAPS,
+            make_caps!(ImageFormat::WebP),
         ]
     }
 
@@ -205,73 +213,155 @@ impl Format {
     /// - application/x-navi-animation
     /// - image/svg
     /// - image/svg+xml
-    pub fn all_decoding_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
+    pub fn all_decoding_formats() -> impl IntoIterator<Item = gst::Caps> {
         [
             // FIXME upstream: AVIF also supports animations
             // but needs image-rs support
             #[cfg(feature = "avif")]
-            &*AVIF_CAPS,
+            {
+                let mut caps = gst::Caps::new_empty();
+                let c = caps.make_mut();
+                c.append(gst::Caps::builder(ImageFormat::Avif.to_mime_type()).build());
+                c.append(
+                    gst::Caps::builder("video/quicktime")
+                        .field("variant", "avif")
+                        .build(),
+                );
+                caps
+            },
             #[cfg(any(feature = "bmp", feature = "ico"))]
-            &*BMP_CAPS,
+            make_caps_with_extra_mimetypes!(ImageFormat::Bmp, "image/x-MS-bmp"),
             #[cfg(feature = "dds")]
-            &*DDS_CAPS,
+            make_caps_with_extra_mimetypes!(ImageFormat::Dds, "image/x-direct-draw-surface"),
             #[cfg(feature = "exr")]
-            &*OPENEXR_CAPS,
+            make_caps!(ImageFormat::OpenExr),
             #[cfg(feature = "ff")]
-            &*FARBFELD_CAPS,
+            /// farbfeld's MIME type in image-rs is application/octet-stream, correct it here
+            make_caps!("image/x-farbfeld"),
             #[cfg(feature = "hdr")]
-            &*HDR_CAPS,
+            make_caps!(ImageFormat::Hdr),
             #[cfg(feature = "ico")]
-            &*ICO_CAPS,
+            make_caps!(ImageFormat::Ico),
             #[cfg(feature = "jpeg")]
             // FIXME upstream: doesn't support MJPEG
-            &*JPEG_CAPS,
+            make_caps!(ImageFormat::Jpeg),
             #[cfg(feature = "ora")]
-            &*ORA_CAPS,
+            make_caps!("image/openraster"),
             #[cfg(feature = "otb")]
-            &*OTB_CAPS,
+            /// https://snisurset.net/code/abydos/supported.html
+            make_caps!("image/x-nokia-over-the-air-bitmap"),
             #[cfg(feature = "pcx")]
-            &*PCX_CAPS,
+            make_caps!("image/vnd.zbrush.pcx", "image/x-pcx"),
             #[cfg(any(feature = "png", feature = "ico"))]
-            &*PNG_CAPS,
+            make_caps!(ImageFormat::Png),
             #[cfg(feature = "pnm")]
-            &*PNM_CAPS,
+            make_caps_with_extra_mimetypes!(
+                ImageFormat::Pnm,
+                "image/x-portable-bitmap",
+                "image/x-portable-graymap",
+                "image/x-portable-pixmap"
+            ),
             // https://github.com/phoboslab/qoi/issues/167
             #[cfg(feature = "qoi")]
-            &*QOI_CAPS,
+            make_caps_with_extra_mimetypes!(ImageFormat::Qoi, "image/qoi"),
             #[cfg(feature = "sgi")]
-            &*SGI_CAPS,
+            make_caps!("image/sgi"),
             #[cfg(feature = "tga")]
-            &*TGA_CAPS,
+            make_caps_with_extra_mimetypes!(ImageFormat::Tga, "image/x-tga"),
             #[cfg(feature = "tiff")]
-            &*TIFF_CAPS,
+            make_caps!(ImageFormat::Tiff),
             #[cfg(feature = "wbmp")]
-            &*WBMP_CAPS,
+            make_caps!("image/vnd.wap.wbmp"),
             #[cfg(feature = "xbm")]
-            &*XBM_CAPS,
+            make_caps!("image/x-xbitmap", "image/x-xbm"),
             #[cfg(feature = "xpm")]
-            &*XPM_CAPS,
+            make_caps!("image/x-xpixmap"),
         ]
     }
 
-    pub fn all_encoder_formats() -> impl IntoIterator<Item = &'static gst::Caps> {
+    pub fn all_encoder_formats() -> impl IntoIterator<Item = gst::Caps> {
         [
             #[cfg(any(feature = "png", feature = "ico"))]
-            &*PNG_ENC_CAPS,
+            make_encoder_caps!(
+                ImageFormat::Png,
+                [
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    gst_video::VideoFormat::Gray8,
+                ]
+            ),
             #[cfg(feature = "tiff")]
-            &*TIFF_ENC_CAPS,
+            make_encoder_caps!(
+                ImageFormat::Tiff,
+                [
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    gst_video::VideoFormat::Gray8,
+                ]
+            ),
             #[cfg(feature = "jpeg")]
-            &*JPEG_ENC_CAPS,
+            make_encoder_caps!(
+                ImageFormat::Jpeg,
+                [gst_video::VideoFormat::Rgb, gst_video::VideoFormat::Gray8,]
+            ),
             #[cfg(feature = "bmp")]
-            &*BMP_ENC_CAPS,
+            make_encoder_caps_with_extra_mimetypes!(
+                ImageFormat::Bmp,
+                "image/x-MS-bmp",
+                [
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    // FIXME upstream: image-rs stores grayscale BMP as RGBA
+                    // gst_video::VideoFormat::Gray8,
+                ]
+            ),
             #[cfg(feature = "tga")]
-            &*TGA_ENC_CAPS,
+            make_encoder_caps_with_extra_mimetypes!(
+                ImageFormat::Tga,
+                "image/x-tga",
+                [
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    gst_video::VideoFormat::Gray8,
+                ]
+            ),
             #[cfg(feature = "avif")]
-            &*AVIF_ENC_CAPS,
+            make_encoder_caps!(
+                ImageFormat::Avif,
+                [gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Rgb]
+            ),
             #[cfg(feature = "ff")]
-            &*FARBFELD_ENC_CAPS,
+            make_encoder_caps!(
+                "image/x-farbfeld",
+                [
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                ]
+            ),
             #[cfg(feature = "qoi")]
-            &*QOI_ENC_CAPS,
+            make_encoder_caps_with_extra_mimetypes!(
+                ImageFormat::Qoi,
+                "image/qoi",
+                [gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Rgb]
+            ),
         ]
     }
 }
