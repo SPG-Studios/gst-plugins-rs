@@ -89,9 +89,9 @@ impl Args {
                 clock.wait_for_sync(clock_sync_timeout)?;
                 Ok(clock)
             })
-                .await
-                .with_context(|| format!("Syncing to {:?}", self.clock))?
-                .with_context(|| format!("Syncing to {:?}", self.clock))?;
+            .await
+            .with_context(|| format!("Syncing to {:?}", self.clock))?
+            .with_context(|| format!("Syncing to {:?}", self.clock))?;
 
         info!("Synced to {:?}", self.clock);
 
@@ -460,7 +460,7 @@ impl App {
                 self.pipeline().clone(),
                 self.args.clone(),
             ))
-                .fuse(),
+            .fuse(),
         );
 
         Ok(())
@@ -557,12 +557,12 @@ impl App {
 async fn connect_as_listener(
     signaller_url: &Url,
 ) -> anyhow::Result<(
-    Pin<Box<impl Sink<ToSignaller, Error=anyhow::Error> + use < >>>,
-    Pin<Box<impl Stream<Item=anyhow::Result<FromSignaller>> + use < >>>,
+    Pin<Box<impl Sink<ToSignaller, Error = anyhow::Error> + use<>>>,
+    Pin<Box<impl Stream<Item = anyhow::Result<FromSignaller>> + use<>>>,
 )> {
     async fn register(
-        mut signaller_tx: Pin<&mut impl Sink<ToSignaller, Error=anyhow::Error>>,
-        mut signaller_rx: Pin<&mut impl Stream<Item=anyhow::Result<FromSignaller>>>,
+        mut signaller_tx: Pin<&mut impl Sink<ToSignaller, Error = anyhow::Error>>,
+        mut signaller_rx: Pin<&mut impl Stream<Item = anyhow::Result<FromSignaller>>>,
     ) -> anyhow::Result<()> {
         match signaller_rx
             .next()
@@ -647,8 +647,8 @@ async fn connect_as_listener(
 }
 
 async fn listen(
-    signaller_tx: &mut Pin<Box<impl Sink<ToSignaller, Error=anyhow::Error>>>,
-    mut signaller_rx: Pin<Box<impl Stream<Item=anyhow::Result<FromSignaller>>>>,
+    signaller_tx: &mut Pin<Box<impl Sink<ToSignaller, Error = anyhow::Error>>>,
+    mut signaller_rx: Pin<Box<impl Stream<Item = anyhow::Result<FromSignaller>>>>,
     signaller_url: Url,
     pipeline: gst::Pipeline,
     args: Arc<Args>,
@@ -696,7 +696,7 @@ async fn listen(
                     peer_status.peer_id.expect("producer with peer_id"),
                     peer_status.meta,
                 )
-                    .context("Spawning consumer")?;
+                .context("Spawning consumer")?;
             }
             FromSignaller::EndSession(_) => {
                 info!("Signaller ended session");
@@ -715,8 +715,8 @@ async fn listen(
 /// the listener is aborted.
 async fn listener_task(
     abort_reg: future::AbortRegistration,
-    mut signaller_tx: Pin<Box<impl Sink<ToSignaller, Error=anyhow::Error>>>,
-    signaller_rx: Pin<Box<impl Stream<Item=anyhow::Result<FromSignaller>>>>,
+    mut signaller_tx: Pin<Box<impl Sink<ToSignaller, Error = anyhow::Error>>>,
+    signaller_rx: Pin<Box<impl Stream<Item = anyhow::Result<FromSignaller>>>>,
     signaller_url: Url,
     pipeline: gst::Pipeline,
     args: Arc<Args>,
@@ -731,7 +731,7 @@ async fn listener_task(
         ),
         abort_reg,
     )
-        .await;
+    .await;
 
     debug!("Closing signaller websocket");
     let _ = signaller_tx.close().await;
