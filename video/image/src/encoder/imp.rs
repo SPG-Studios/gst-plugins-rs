@@ -295,7 +295,7 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Gray16Be => {
-                self.ingest_image::<Luma<u16>>(frame, &video_info, format)
+                self.render_to_image::<Luma<u16>>(frame, &video_info, format)
             }
             #[cfg(target_endian = "little")]
             gst_video::VideoFormat::Rgba64Le => {
@@ -303,7 +303,7 @@ impl VideoEncoderImpl for Encoder {
             }
             #[cfg(target_endian = "big")]
             gst_video::VideoFormat::Rgba64Be => {
-                self.ingest_image::<Rgba<u16>>(frame, &video_info, format)
+                self.render_to_image::<Rgba<u16>>(frame, &video_info, format)
             }
             v => {
                 gst::error!(CAT, imp = self, "Unknown format {v}");
