@@ -207,7 +207,9 @@ impl Handler {
         for listening_peer in listeners {
             self.items.push_back((
                 listening_peer.id.to_string(),
-                p::OutgoingMessage::EndSession(p::EndSessionMessage {
+                p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                    peer_id: session.producer.to_string(),
+                    consumer_peer_id: session.consumer.to_string(),
                     session_id: session_id.to_string(),
                 }),
             ))
@@ -356,11 +358,11 @@ impl Handler {
             .insert(session_id.clone());
         self.items.push_back((
             consumer_id.to_string(),
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: producer_id.to_string(),
                 consumer_peer_id: consumer_id.to_string(),
                 session_id: session_id.clone(),
-            },
+            }),
         ));
         self.items.push_back((
             producer_id.to_string(),
@@ -376,11 +378,11 @@ impl Handler {
         for listening_peer in listeners {
             self.items.push_back((
                 listening_peer.id.to_string(),
-                p::OutgoingMessage::SessionStarted {
+                p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                     peer_id: producer_id.to_string(),
                     consumer_peer_id: consumer_id.to_string(),
                     session_id: session_id.clone(),
-                },
+                }),
             ))
         }
 
@@ -591,11 +593,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -666,11 +668,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -693,11 +695,11 @@ mod tests {
         assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: "producer".to_string(),
                 consumer_peer_id: "consumer".to_string(),
                 session_id: session_id.to_string(),
-            }
+            })
         );
     }
 
@@ -729,11 +731,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -781,8 +783,10 @@ mod tests {
         assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::EndSession(p::EndSessionMessage {
-                session_id: session_id.clone()
+            p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                peer_id: "producer".to_string(),
+                consumer_peer_id: "consumer".to_string(),
+                session_id
             })
         );
 
@@ -827,11 +831,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -916,11 +920,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -933,11 +937,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -967,7 +971,11 @@ mod tests {
         assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+            p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                peer_id: "producer".to_string(),
+                consumer_peer_id: "consumer".to_string(),
+                session_id
+            })
         );
     }
 
@@ -999,11 +1007,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1082,11 +1090,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1099,11 +1107,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1127,7 +1135,11 @@ mod tests {
         assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+            p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                peer_id: "producer".to_string(),
+                consumer_peer_id: "consumer".to_string(),
+                session_id
+            })
         );
     }
 
@@ -1159,11 +1171,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1247,11 +1259,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1264,11 +1276,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1297,7 +1309,11 @@ mod tests {
         assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+            p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                peer_id: "producer".to_string(),
+                consumer_peer_id: "consumer".to_string(),
+                session_id
+            })
         );
     }
 
@@ -1329,11 +1345,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1394,11 +1410,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1485,11 +1501,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1573,11 +1589,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1676,11 +1692,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1703,11 +1719,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1739,7 +1755,11 @@ mod tests {
         assert_eq!(peer_id, "listener");
         assert_eq!(
             sent_message,
-            p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+            p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                peer_id: "producer".to_string(),
+                consumer_peer_id: "consumer".to_string(),
+                session_id
+            })
         );
     }
 
@@ -1793,11 +1813,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1820,11 +1840,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1855,7 +1875,11 @@ mod tests {
             handler.next().await.unwrap(),
             (
                 "listener".into(),
-                p::OutgoingMessage::EndSession(p::EndSessionMessage { session_id })
+                p::OutgoingMessage::SessionEnded(p::PeerSessionMessage {
+                    peer_id: "producer".to_string(),
+                    consumer_peer_id: "consumer".to_string(),
+                    session_id
+                })
             )
         );
 
@@ -1932,11 +1956,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session0_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -1957,11 +1981,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session1_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -2008,11 +2032,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "producer-consumer");
         let session0_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "producer-consumer");
                 session_id.to_string()
@@ -2077,11 +2101,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -2170,11 +2194,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "consumer");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()
@@ -2196,11 +2220,11 @@ mod tests {
         let (peer_id, sent_message) = handler.next().await.unwrap();
         assert_eq!(peer_id, "listener");
         let session_id = match sent_message {
-            p::OutgoingMessage::SessionStarted {
+            p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                 peer_id: ref producer_peer_id,
                 ref consumer_peer_id,
                 ref session_id,
-            } => {
+            }) => {
                 assert_eq!(producer_peer_id, "producer");
                 assert_eq!(consumer_peer_id, "consumer");
                 session_id.to_string()

@@ -60,13 +60,11 @@ pub enum OutgoingMessage {
     },
     /// Let consumer know that the requested session is starting with the specified identifier
     #[serde(rename_all = "camelCase")]
-    SessionStarted {
-        peer_id: String,
-        consumer_peer_id: String,
-        session_id: String,
-    },
+    SessionStarted(PeerSessionMessage),
     /// Signals that the session the peer was in was ended
     EndSession(EndSessionMessage),
+    #[serde(rename_all = "camelCase")]
+    SessionEnded(PeerSessionMessage),
     /// Messages directly forwarded from one peer to another
     Peer(PeerMessage),
     /// Provides the current list of producers
@@ -114,6 +112,14 @@ impl PeerStatus {
     pub fn consuming(&self) -> bool {
         self.roles.iter().any(|t| matches!(t, PeerRole::Consumer))
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSessionMessage {
+    pub peer_id: String,
+    pub consumer_peer_id: String,
+    pub session_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

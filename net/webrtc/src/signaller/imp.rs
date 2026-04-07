@@ -417,11 +417,11 @@ impl Signaller {
                                     .emit_by_name::<()>("producer-removed", &[&peer_id, &meta]);
                             }
                         }
-                        p::OutgoingMessage::SessionStarted {
+                        p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                             peer_id,
                             consumer_peer_id: _,
                             session_id,
-                        } => {
+                        }) => {
                             self.obj()
                                 .emit_by_name::<()>("session-started", &[&session_id, &peer_id]);
                         }
@@ -473,6 +473,7 @@ impl Signaller {
                             self.obj()
                                 .emit_by_name::<bool>("session-ended", &[&session_id]);
                         }
+                        p::OutgoingMessage::SessionEnded(_) => {}
                         p::OutgoingMessage::Peer(p::PeerMessage {
                             session_id,
                             peer_message,
