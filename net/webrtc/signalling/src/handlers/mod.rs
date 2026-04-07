@@ -76,6 +76,7 @@ impl Handler {
                     peer_id.into(),
                     p::OutgoingMessage::Welcome {
                         peer_id: peer_id.to_string(),
+                        version: p::PROTOCOL_VERSION,
                     },
                 ));
 
@@ -444,7 +445,8 @@ mod tests {
             (
                 peer_id.to_string(),
                 p::OutgoingMessage::Welcome {
-                    peer_id: peer_id.to_string()
+                    peer_id: peer_id.to_string(),
+                    version: p::PROTOCOL_VERSION
                 }
             )
         );

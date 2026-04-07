@@ -367,7 +367,16 @@ impl Signaller {
 
                 if let Ok(msg) = serde_json::from_str::<p::OutgoingMessage>(&msg) {
                     match msg {
-                        p::OutgoingMessage::Welcome { peer_id } => {
+                        p::OutgoingMessage::Welcome { peer_id, version } => {
+                            if !p::PROTOCOL_VERSION.is_compatible_with(&version) {
+                                gst::warning!(
+                                    CAT,
+                                    imp = self,
+                                    "Incompatible signalling protocol: local={}, remote={}",
+                                    p::PROTOCOL_VERSION,
+                                    version
+                                )
+                            }
                             self.set_status(meta, &peer_id);
                             if self.producer_peer_id().is_some() {
                                 self.start_session();
