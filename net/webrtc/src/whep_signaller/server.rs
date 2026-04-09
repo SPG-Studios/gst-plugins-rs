@@ -45,6 +45,7 @@ struct Settings {
     server_handle: Option<tokio::task::JoinHandle<()>>,
     sdp_response: HashMap<String, mpsc::Sender<Option<SDPMessage>>>,
     send_counter_offer: bool,
+    cors_headers: Option<gst::Structure>,
 }
 
 impl Default for Settings {
@@ -58,6 +59,7 @@ impl Default for Settings {
             server_handle: None,
             sdp_response: HashMap::new(),
             send_counter_offer: false,
+            cors_headers: None,
         }
     }
 }
@@ -521,6 +523,120 @@ impl WhepServer {
     {
         let prefix = warp::path(ROOT);
 
+        let cors = if let Some(cors_headers) = self.settings.lock().unwrap().cors_headers.as_ref() {
+            let all_headers = [
+                "Access-Control-Allow-Origin",
+                "Access-Control-Allow-Credentials",
+                "Access-Control-Allow-Methods",
+                "Access-Control-Allow-Headers",
+                "Access-Control-Max-Age",
+                "Access-Control-Expose-Headers",
+            ];
+
+            let filtered_headers = cors_headers.iter().filter(|h| {
+                all_headers
+                    .iter()
+                    .find(|a| a.eq_ignore_ascii_case(h.0.as_str()))
+                    .is_some()
+            });
+
+            filtered_headers.fold(warp::cors(), |mut cors, h| {
+                if h.0.eq_ignore_ascii_case("Access-Control-Allow-Origin") {
+                    if let Ok(origins_array) = h.1.get::<gst::Array>() {
+                        let origins = origins_array
+                            .iter()
+                            .filter_map(|o| o.get::<&str>().ok())
+                            .collect::<Vec<&str>>();
+
+                        cors = cors.allow_origins(origins);
+                    } else {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Allow Origins needs to be an array of strings"
+                        );
+                    };
+
+                    cors
+                } else if h.0.eq_ignore_ascii_case("Access-Control-Allow-Credentials") {
+                    if let Ok(allow_creds) = h.1.get::<bool>() {
+                        cors = cors.allow_credentials(allow_creds);
+                    } else {
+                        gst::error!(CAT, imp = self, "Allow credentials needs to boolean");
+                    };
+
+                    cors
+                } else if h.0.eq_ignore_ascii_case("Access-Control-Allow-Methods") {
+                    if let Ok(methods_array) = h.1.get::<gst::Array>() {
+                        let methods = methods_array
+                            .iter()
+                            .filter_map(|m| m.get::<&str>().ok())
+                            .filter_map(|m| http::Method::from_bytes(m.as_bytes()).ok())
+                            .collect::<Vec<http::Method>>();
+
+                        cors = cors.allow_methods(methods);
+                    } else {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Allow Methods needs to be an array of strings"
+                        );
+                    };
+
+                    cors
+                } else if h.0.eq_ignore_ascii_case("Access-Control-Allow-Headers") {
+                    if let Ok(headers_array) = h.1.get::<gst::Array>() {
+                        let headers = headers_array
+                            .iter()
+                            .filter_map(|h| h.get::<&str>().ok())
+                            .collect::<Vec<&str>>();
+
+                        cors = cors.allow_headers(headers);
+                    } else {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Allow Headers needs to be an array of strings"
+                        );
+                    };
+
+                    cors
+                } else if h.0.eq_ignore_ascii_case("Access-Control-Max-Age") {
+                    if let Ok(max_age) = h.1.get::<u32>() {
+                        if max_age > 0 {
+                            cors = cors.max_age(max_age);
+                        }
+                    } else {
+                        gst::error!(CAT, imp = self, "Max age needs to be u32");
+                    };
+
+                    cors
+                } else if h.0.eq_ignore_ascii_case("Access-Control-Expose-Headers") {
+                    if let Ok(exposed_headers_array) = h.1.get::<gst::Array>() {
+                        let expose_headers = exposed_headers_array
+                            .iter()
+                            .filter_map(|e| e.get::<&str>().ok())
+                            .collect::<Vec<&str>>();
+
+                        cors = cors.expose_headers(expose_headers);
+                    } else {
+                        gst::error!(
+                            CAT,
+                            imp = self,
+                            "Expose Headers needs to be an array of strings"
+                        );
+                    };
+
+                    cors
+                } else {
+                    cors
+                }
+            })
+        } else {
+            warp::cors()
+        };
+
+        gst::debug!(CAT, imp = self, "cors : {:?}", cors);
         // POST /endpoint
         let post_filter = warp::post()
             .and(warp::path(ENDPOINT_PATH))
@@ -602,6 +718,7 @@ impl WhepServer {
             .or(prefix.and(options_filter))
             .or(prefix.and(patch_filter))
             .or(prefix.and(delete_filter))
+            .with(cors)
     }
 }
 
@@ -695,6 +812,14 @@ impl ObjectImpl for WhepServer {
                     .blurb("Reject the offer sent by the WHEP player and propose a counter offer")
                     .default_value(DEFAULT_SEND_COUNTER_OFFER)
                     .build(),
+                glib::ParamSpecBoxed::builder::<gst::Structure>("cors-headers")
+                    .nick("CORS headers")
+                    .blurb("Cross-Origin Resource Sharing headers to be included in response to a CORS request. for e.g.,\
+                    cors-headers=\"cors,Access-Control-Allow-Origin=<http://localhost, https://example.com>,\
+                    Access-Control-Allow-Methods=<GET,POST>,Access-Control-Allow-Credentials=true,\
+                    Access-Control-Expose-Headers=<x-foo,x-bar>,Access-Control-Allow-Headers=<x-header1,x-header2>,\
+                    Access-Control-Max-Age=(guint)300\"")
+                    .build(),
             ]
         });
         PROPERTIES.as_ref()
@@ -730,6 +855,12 @@ impl ObjectImpl for WhepServer {
                 let mut settings = self.settings.lock().unwrap();
                 settings.send_counter_offer = value.get().unwrap();
             }
+            "cors-headers" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.cors_headers = value
+                    .get::<Option<gst::Structure>>()
+                    .expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -747,6 +878,7 @@ impl ObjectImpl for WhepServer {
             "timeout" => settings.timeout.to_value(),
             "manual-sdp-munging" => false.to_value(),
             "send-counter-offer" => settings.send_counter_offer.to_value(),
+            "cors-headers" => settings.cors_headers.to_value(),
             _ => unimplemented!(),
         }
     }
