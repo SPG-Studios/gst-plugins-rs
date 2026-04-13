@@ -45,7 +45,7 @@ fn test_aligned() {
     assert_eq!(video_info.format(), gst_video::VideoFormat::Rgb);
     assert_eq!(video_info.width(), 160);
     assert_eq!(video_info.height(), 120);
-    assert_eq!(video_info.field_rate(), gst::Fraction::new(0, 1));
+    assert_eq!(video_info.fps(), gst::Fraction::new(0, 1));
 
     let image_one = image::RgbImage::from_raw(160, 120, framebuffer).unwrap();
 
@@ -83,7 +83,7 @@ fn test_misaligned() {
     assert_eq!(input_frame.format(), gst_video::VideoFormat::Rgb);
     assert_eq!(input_frame.width(), 163);
     assert_eq!(input_frame.height(), 121);
-    assert_eq!(video_info.field_rate(), gst::Fraction::new(0, 1));
+    assert_eq!(video_info.fps(), gst::Fraction::new(0, 1));
 
     let layout = image::flat::SampleLayout {
         channels: input_frame.n_components().try_into().unwrap(),
