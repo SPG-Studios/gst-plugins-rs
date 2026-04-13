@@ -5,6 +5,7 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gst_tag::prelude::*;
 use gst_video::VideoColorimetry;
 
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
@@ -188,29 +189,35 @@ impl Decoder {
 
         if let Some(v) = exif {
             let buf = gst::Buffer::from_mut_slice(v);
-            let v_rust = unsafe {
-                let v = gst_tag::ffi::gst_tag_list_from_exif_buffer(
-                    buf.as_mut_ptr(),
-                    #[cfg(target_endian = "little")]
-                    gst::glib::ffi::G_LITTLE_ENDIAN,
-                    #[cfg(target_endian = "big")]
-                    gst::glib::ffi::G_BIG_ENDIAN,
-                    0,
-                );
-
-                gst::TagList::from_glib_full(v)
+            match gst::TagList::from_exif_buffer(
+                &buf,
+                #[cfg(target_endian = "little")]
+                gst_tag::ExifEndian::LittleEndian,
+                #[cfg(target_endian = "big")]
+                gst_tag::ExifEndian::BigEndian,
+                0,
+            ) {
+                Ok(v) => {
+                    tags.merge(&v, gst::TagMergeMode::Append);
+                    gst::debug!(CAT, imp = self, "Exif metadata found and applied");
+                }
+                Err(v) => {
+                    gst::warning!(CAT, imp = self, "Failed reading Exif metadata: {v}");
+                }
             };
-            tags.merge(&v_rust, gst::TagMergeMode::Append);
         };
 
         if let Some(v) = xmp {
             let buf = gst::Buffer::from_mut_slice(v);
-            let v_rust = unsafe {
-                let v = gst_tag::ffi::gst_tag_list_from_xmp_buffer(buf.as_mut_ptr());
-
-                gst::TagList::from_glib_full(v)
-            };
-            tags.merge(&v_rust, gst::TagMergeMode::Append);
+            match gst::TagList::from_xmp_buffer(&buf) {
+                Ok(v) => {
+                    tags.merge(&v, gst::TagMergeMode::Append);
+                    gst::debug!(CAT, imp = self, "XMP metadata found and applied");
+                }
+                Err(v) => {
+                    gst::warning!(CAT, imp = self, "Failed reading XMP metadata: {v}");
+                }
+            }
         };
 
         // These go into a separate structure
@@ -228,6 +235,7 @@ impl Decoder {
         };
 
         if let Some(v) = icc {
+            gst::warning!(CAT, imp = self, "ICC profile found: yes");
             let buf = gst::Buffer::from_mut_slice(v);
             let mut info = gst::Structure::new_empty("application/vnd.iccprofile");
             // FIXME: image-rs's png reader does not expose the profile name

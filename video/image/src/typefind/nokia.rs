@@ -2,12 +2,11 @@ use gst::glib;
 use image::ImageDecoder;
 
 use crate::typefind::cat::CAT;
-use crate::typefind::seeker::W;
 
 fn type_find(typefind: &mut gst::TypeFind) {
     use gst::{Caps, TypeFindProbability};
 
-    let cursor = std::io::BufReader::new(W::from(&mut *typefind));
+    let cursor = std::io::BufReader::new(typefind.as_reader());
     if let Ok(decoder) = image_extras::otb::OtbDecoder::new(cursor) {
         let d = decoder.dimensions();
         gst::log!(CAT, "extracted Nokia OTA width and height: {}x{}", d.0, d.1);

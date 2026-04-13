@@ -1,7 +1,6 @@
 use gst::glib;
 
 mod cat;
-mod seeker;
 
 #[cfg(any(feature = "png", feature = "ico"))]
 mod apng;

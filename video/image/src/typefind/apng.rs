@@ -1,13 +1,12 @@
 use gst::glib;
 
 use crate::typefind::cat::CAT;
-use crate::typefind::seeker::W;
 
 #[inline(never)]
 fn type_find(typefind: &mut gst::TypeFind) {
     use gst::{Caps, TypeFindProbability};
 
-    let cursor = std::io::BufReader::new(W::from(&mut *typefind));
+    let cursor = std::io::BufReader::new(typefind.as_reader());
     let mut options = png::DecodeOptions::default();
     options.set_ignore_checksums(true);
     options.set_ignore_iccp_chunk(true);

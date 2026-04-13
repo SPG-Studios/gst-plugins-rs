@@ -2,13 +2,12 @@ use gst::glib;
 use image::ImageDecoder;
 
 use crate::typefind::cat::CAT;
-use crate::typefind::seeker::W;
 
 #[inline(never)]
 fn type_find(typefind: &mut gst::TypeFind) {
     use gst::{Caps, TypeFindProbability};
 
-    let cursor = std::io::BufReader::new(W::from(&mut *typefind));
+    let cursor = std::io::BufReader::new(typefind.as_reader());
     if let Ok(decoder) = image::codecs::dds::DdsDecoder::new(cursor) {
         let d = decoder.dimensions();
         gst::log!(
