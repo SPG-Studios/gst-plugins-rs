@@ -289,25 +289,26 @@ fn spawn_consumer(
                     .add_probe(gst::PadProbeType::BUFFER, {
                         let timeoverlay = timeoverlay.downgrade();
                         move |_pad, info| {
-                        if let Some(gst::PadProbeData::Buffer(ref buffer)) = info.data {
-                            if let Some(meta) = buffer.meta::<gst::ReferenceTimestampMeta>() {
-                                if !ref_ts_caps_set.fetch_or(true, Ordering::SeqCst) {
-                                    if let Some(timeoverlay) = timeoverlay.upgrade() {
-                                        let reference = meta.reference();
-                                        timeoverlay.set_property("reference-timestamp-caps", reference.to_owned());
+                            if let Some(gst::PadProbeData::Buffer(ref buffer)) = info.data {
+                                if let Some(meta) = buffer.meta::<gst::ReferenceTimestampMeta>() {
+                                    if !ref_ts_caps_set.fetch_or(true, Ordering::SeqCst) {
+                                        if let Some(timeoverlay) = timeoverlay.upgrade() {
+                                            let reference = meta.reference();
+                                            timeoverlay.set_property("reference-timestamp-caps", reference.to_owned());
 
-                                        info!(%reference, timestamp = %meta.timestamp(), "Have sender clock time");
+                                            info!(%reference, timestamp = %meta.timestamp(), "Have sender clock time");
+                                        }
+                                    } else {
+                                        trace!(timestamp = %meta.timestamp(), "Have sender clock time");
                                     }
                                 } else {
-                                    trace!(timestamp = %meta.timestamp(), "Have sender clock time");
+                                    trace!("Have no sender clock time");
                                 }
-                            } else {
-                                trace!("Have no sender clock time");
                             }
-                        }
 
-                        gst::PadProbeReturn::Ok
-                    }})
+                            gst::PadProbeReturn::Ok
+                        }
+                    })
                     .expect("Failed to add timeoverlay pad probe");
 
                 let videoconvert = gst::ElementFactory::make("videoconvert")
@@ -569,8 +570,8 @@ async fn connect_as_listener(
             .unwrap_or_else(|| Err(anyhow!("Signaller ended session")))
             .context("Expecting Welcome")?
         {
-            FromSignaller::Welcome { peer_id } => {
-                info!(%peer_id, "Got Welcomed by signaller");
+            FromSignaller::Welcome { peer_id, version } => {
+                info!(%peer_id, "Got Welcomed by signaller, protocol version: {version}");
             }
             other => bail!("Expected Welcome, got {other:?}"),
         }

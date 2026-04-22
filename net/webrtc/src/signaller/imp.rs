@@ -367,7 +367,16 @@ impl Signaller {
 
                 if let Ok(msg) = serde_json::from_str::<p::OutgoingMessage>(&msg) {
                     match msg {
-                        p::OutgoingMessage::Welcome { peer_id } => {
+                        p::OutgoingMessage::Welcome { peer_id, version } => {
+                            if !p::PROTOCOL_VERSION.is_compatible_with(&version) {
+                                gst::warning!(
+                                    CAT,
+                                    imp = self,
+                                    "Incompatible signalling protocol: local={}, remote={}",
+                                    p::PROTOCOL_VERSION,
+                                    version
+                                )
+                            }
                             self.set_status(meta, &peer_id);
                             if self.producer_peer_id().is_some() {
                                 self.start_session();
@@ -408,10 +417,11 @@ impl Signaller {
                                     .emit_by_name::<()>("producer-removed", &[&peer_id, &meta]);
                             }
                         }
-                        p::OutgoingMessage::SessionStarted {
+                        p::OutgoingMessage::SessionStarted(p::PeerSessionMessage {
                             peer_id,
+                            consumer_peer_id: _,
                             session_id,
-                        } => {
+                        }) => {
                             self.obj()
                                 .emit_by_name::<()>("session-started", &[&session_id, &peer_id]);
                         }
@@ -463,6 +473,7 @@ impl Signaller {
                             self.obj()
                                 .emit_by_name::<bool>("session-ended", &[&session_id]);
                         }
+                        p::OutgoingMessage::SessionEnded(_) => {}
                         p::OutgoingMessage::Peer(p::PeerMessage {
                             session_id,
                             peer_message,

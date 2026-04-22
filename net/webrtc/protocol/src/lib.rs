@@ -2,6 +2,32 @@
 
 /// The default protocol used by the signalling server
 use serde::{Deserialize, Serialize};
+use std::fmt::Formatter;
+
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 0 };
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Copy, Clone)]
+pub struct ProtocolVersion {
+    major: u32,
+    minor: u32,
+}
+
+impl Default for ProtocolVersion {
+    fn default() -> Self {
+        PROTOCOL_VERSION
+    }
+}
+
+impl std::fmt::Display for ProtocolVersion {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "v{}.{}", self.major, self.minor)
+    }
+}
+
+impl ProtocolVersion {
+    pub fn is_compatible_with(&self, other: &Self) -> bool {
+        self.major == other.major
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +44,11 @@ pub struct Peer {
 pub enum OutgoingMessage {
     /// Welcoming message, sets the Peer ID linked to a new connection
     #[serde(rename_all = "camelCase")]
-    Welcome { peer_id: String },
+    Welcome {
+        peer_id: String,
+        #[serde(default)]
+        version: ProtocolVersion,
+    },
     /// Notifies listeners that a peer status has changed
     PeerStatusChanged(PeerStatus),
     /// Instructs a peer to generate an offer or an answer and inform about the session ID
@@ -30,9 +60,11 @@ pub enum OutgoingMessage {
     },
     /// Let consumer know that the requested session is starting with the specified identifier
     #[serde(rename_all = "camelCase")]
-    SessionStarted { peer_id: String, session_id: String },
+    SessionStarted(PeerSessionMessage),
     /// Signals that the session the peer was in was ended
     EndSession(EndSessionMessage),
+    #[serde(rename_all = "camelCase")]
+    SessionEnded(PeerSessionMessage),
     /// Messages directly forwarded from one peer to another
     Peer(PeerMessage),
     /// Provides the current list of producers
@@ -80,6 +112,14 @@ impl PeerStatus {
     pub fn consuming(&self) -> bool {
         self.roles.iter().any(|t| matches!(t, PeerRole::Consumer))
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSessionMessage {
+    pub peer_id: String,
+    pub consumer_peer_id: String,
+    pub session_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -162,4 +202,23 @@ pub enum IncomingMessage {
     List,
     /// Retrieve the current list of consumers
     ListConsumers,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_compatible_with_same_major() {
+        let v1 = ProtocolVersion { major: 1, minor: 0 };
+        let v2 = ProtocolVersion { major: 1, minor: 3 };
+        assert!(v1.is_compatible_with(&v2));
+    }
+
+    #[test]
+    fn protocol_incompatible_with_different_major() {
+        let v1 = ProtocolVersion { major: 1, minor: 0 };
+        let v2 = ProtocolVersion { major: 2, minor: 0 };
+        assert!(!v1.is_compatible_with(&v2));
+    }
 }
