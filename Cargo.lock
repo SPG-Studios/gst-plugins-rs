@@ -5666,6 +5666,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
+ "gstreamer-check",
  "gstreamer-net",
  "gstreamer-pbutils",
  "gstreamer-rtp",
