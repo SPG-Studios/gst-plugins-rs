@@ -8,16 +8,12 @@
 
 use crate::dashsink2::manifest::{Manifest, ManifestType, MediaRepresentation};
 use gio::{File as GioFile, FileCreateFlags, OutputStream, prelude::*};
-use gst::event::CustomDownstream;
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Mutex;
 
 const DEFAULT_TARGET_DURATION: u32 = 10000;
 const DEFAULT_LATENCY: gst::ClockTime =
@@ -26,7 +22,8 @@ const DEFAULT_DYNAMIC: bool = false;
 const DEFAULT_SYNC: bool = true;
 const DEFAULT_FILENAME: &str = "manifest.mpd";
 const TEMPLATE_INIT_FILENAME: &str = "init.cmfi";
-const TEMPLATE_SEGMENT_FILENAME: &str = "segment_%d.cmfv";
+const TEMPLATE_VIDEO_SEGMENT_FILENAME: &str = "segment_%d.cmfv";
+const TEMPLATE_AUDIO_SEGMENT_FILENAME: &str = "segment_%d.cmfa";
 const DEFAULT_MIN_BUFFER_TIME: u32 = 10000;
 
 const SIGNAL_GET_MANIFEST_STREAM: &str = "get-manifest-stream";
@@ -58,9 +55,6 @@ struct DashSink2Stream {
     bandwidth: Option<u64>,
     cmafmux: gst::Element,
     appsink: gst_app::AppSink,
-    is_video: bool,
-    probe_installed: bool,
-    counter: AtomicU64,
 }
 
 #[derive(Default)]
@@ -101,6 +95,7 @@ impl Default for DashSink2Stream {
                 gst::ClockTime::from_mseconds(DEFAULT_TARGET_DURATION as u64),
             )
             .property("latency", DEFAULT_LATENCY)
+            .property_from_str("fragment-boundary-mode", "closest")
             .build()
             .expect("Could not create cmafmux");
 
@@ -114,9 +109,6 @@ impl Default for DashSink2Stream {
             bandwidth: None,
             cmafmux,
             appsink,
-            is_video: false,
-            probe_installed: false,
-            counter: AtomicU64::new(0),
         }
     }
 }
@@ -278,6 +270,7 @@ impl ObjectImpl for DashSink2 {
                         let s = DashSink2::new_file_stream(&location).ok();
                         Some(s.to_value())
                     })
+                    .accumulator(|_hint, _acc, value| std::ops::ControlFlow::Break(value.clone()))
                     .build(),
                 glib::subclass::Signal::builder(SIGNAL_GET_SEGMENT_STREAM)
                     .param_types([GType::STRING])
@@ -287,6 +280,7 @@ impl ObjectImpl for DashSink2 {
                         let s = DashSink2::new_file_stream(&location).ok();
                         Some(s.to_value())
                     })
+                    .accumulator(|_hint, _acc, value| std::ops::ControlFlow::Break(value.clone()))
                     .build(),
                 glib::subclass::Signal::builder(SIGNAL_GET_MANIFEST_STREAM)
                     .param_types([GType::STRING])
@@ -296,6 +290,7 @@ impl ObjectImpl for DashSink2 {
                         let s = DashSink2::new_file_stream(&location).ok();
                         Some(s.to_value())
                     })
+                    .accumulator(|_hint, _acc, value| std::ops::ControlFlow::Break(value.clone()))
                     .build(),
             ]
         });
@@ -443,7 +438,6 @@ impl ElementImpl for DashSink2 {
                 gst::ClockTime::from_mseconds(settings.target_duration as u64),
             );
             stream.cmafmux.set_property("latency", settings.latency);
-            stream.cmafmux.set_property("send-force-keyunit", false);
             stream.appsink.set_property("sync", settings.sync);
 
             settings.target_duration
@@ -455,9 +449,15 @@ impl ElementImpl for DashSink2 {
             .ok()?;
         stream.cmafmux.link(&stream.appsink).ok()?;
 
+        let is_video = templ.name().starts_with("video_");
+        let seg_filename = if is_video {
+            TEMPLATE_VIDEO_SEGMENT_FILENAME
+        } else {
+            TEMPLATE_AUDIO_SEGMENT_FILENAME
+        };
         let (init_loc, seg_template) = (
             self.build_segment_path(None, &pad_name, TEMPLATE_INIT_FILENAME, None),
-            self.build_segment_path(None, &pad_name, TEMPLATE_SEGMENT_FILENAME, None),
+            self.build_segment_path(None, &pad_name, seg_filename, None),
         );
 
         let pad_name_clone = pad_name.clone();
@@ -516,90 +516,6 @@ impl ElementImpl for DashSink2 {
 }
 
 impl DashSink2 {
-    fn handle_probe(
-        &self,
-        pad_name: &str,
-        target_duration: u32,
-        pad: &gst::GhostPad,
-        info: &gst::PadProbeInfo,
-    ) -> gst::PadProbeReturn {
-        let streams = self.streams.lock().unwrap();
-        let s = match streams.get(pad_name) {
-            Some(s) => s,
-            None => {
-                gst::warning!(CAT, imp = self, "Probe on unknown pad {}", pad_name);
-                return gst::PadProbeReturn::Ok;
-            }
-        };
-        let cmafmux = s.cmafmux.clone();
-
-        if let Some(gst::PadProbeData::Buffer(ref buffer)) = info.data {
-            let mut counter = s.counter.load(Ordering::Relaxed);
-
-            let target_dur_ns = (target_duration as u64) * 1_000_000;
-
-            if let Some(pts) = buffer.pts() {
-                let Some(seg_event) = pad.sticky_event::<gst::event::Segment>(0) else {
-                    gst::warning!(CAT, imp = self, "No segment event available yet");
-                    return gst::PadProbeReturn::Ok;
-                };
-
-                let segment = seg_event.segment();
-                let gfv = segment.to_running_time(pts);
-                let running_time_ns = match gfv {
-                    gst::GenericFormattedValue::Time(Some(t)) => t.nseconds(),
-                    _ => {
-                        gst::warning!(CAT, imp = self, "Running time not TIME or missing");
-                        return gst::PadProbeReturn::Ok;
-                    }
-                };
-
-                let r = running_time_ns / target_dur_ns;
-
-                if r >= counter {
-                    gst::debug!(
-                        CAT,
-                        imp = self,
-                        "Probe fired: running_time={}, target_dur={}, ratio={}, next_idx={}",
-                        running_time_ns,
-                        target_dur_ns,
-                        r,
-                        counter,
-                    );
-
-                    counter += 1;
-                    s.counter.store(counter, Ordering::Relaxed);
-                    drop(streams);
-
-                    let next_running_time_ns =
-                        gst::ClockTime::from_nseconds(counter * target_dur_ns);
-                    let keyunit_event = gst_video::UpstreamForceKeyUnitEvent::builder()
-                        .running_time(Some(next_running_time_ns))
-                        .build();
-
-                    let ok = pad.push_event(keyunit_event);
-                    if !ok {
-                        gst::error!(
-                            CAT,
-                            imp = self,
-                            "Failed to send force-key-unit event upstream"
-                        );
-                    } else {
-                        gst::debug!(CAT, imp = self, "Sent force-key-unit event upstream");
-                    }
-
-                    let split_event =
-                        CustomDownstream::builder(gst::Structure::new_empty("FMP4MuxSplitNow"))
-                            .build();
-
-                    cmafmux.send_event(split_event);
-                }
-            }
-        }
-
-        gst::PadProbeReturn::Ok
-    }
-
     fn build_full_path(&self, root: Option<&String>, rep_id: &str, filename: &str) -> String {
         if let Some(root_path) = root {
             format!("{}/{}_{}", root_path, rep_id, filename)
@@ -664,35 +580,7 @@ impl DashSink2 {
             if let Some(s) = caps.structure(0) {
                 let media_type = s.name();
                 let is_video = media_type.starts_with("video/");
-                let mut streams = self.streams.lock().unwrap();
-                if let Some(s) = streams.get_mut(pad_name) {
-                    s.is_video = is_video;
-                    if is_video {
-                        s.cmafmux.set_property("manual-split", true);
-                        if !s.probe_installed {
-                            s.probe_installed = true;
 
-                            let pad = pad.clone();
-                            let element_weak = self.obj().downgrade();
-                            let pad_name_for_probe = pad_name.to_string();
-
-                            pad.add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
-                                let Some(obj) = element_weak.upgrade() else {
-                                    return gst::PadProbeReturn::Remove;
-                                };
-                                let imp = obj.imp();
-                                imp.handle_probe(&pad_name_for_probe, target_duration, pad, info)
-                            });
-
-                            gst::info!(
-                                CAT,
-                                imp = self,
-                                "Installed video probe on pad {}",
-                                pad_name
-                            );
-                        }
-                    }
-                }
                 let codec: String = gst_pbutils::codec_utils_caps_get_mime_codec(caps)
                     .unwrap()
                     .to_string();
@@ -766,10 +654,15 @@ impl DashSink2 {
         let stream = streams.get_mut(pad_name).expect("Invalid pad name");
 
         // Generate path
+        let seg_filename = if pad_name.starts_with("video_") {
+            TEMPLATE_VIDEO_SEGMENT_FILENAME
+        } else {
+            TEMPLATE_AUDIO_SEGMENT_FILENAME
+        };
         let filename = self.build_segment_path(
             mpd_root_path.as_ref(),
             pad_name,
-            TEMPLATE_SEGMENT_FILENAME,
+            seg_filename,
             Some(stream.segment_idx),
         );
 
@@ -898,6 +791,14 @@ impl DashSink2 {
             }
         }
 
+        // Get actual segment duration from the segment header (first remaining buffer).
+        // cmafmux sets accurate PTS and duration on the segment header buffer.
+        let actual_duration_ms = buffer_list
+            .get(0)
+            .and_then(|b| b.duration())
+            .map(|d| d.mseconds())
+            .unwrap_or_else(|| self.settings.lock().unwrap().target_duration as u64);
+
         // Get output stream + filename
         let (stream, _filename) = self.on_new_segment(pad_name).map_err(|err| {
             gst::error!(
@@ -929,37 +830,43 @@ impl DashSink2 {
             gst::error!(CAT, imp = self, "Couldn't flush fragment stream");
             gst::FlowError::Error
         })?;
-        let (index, bandwidth) = {
-            let target_duration = {
-                let settings = self.settings.lock().unwrap();
-                settings.target_duration as u64
-            };
 
+        let (index, bandwidth) = {
             let mut streams = self.streams.lock().unwrap();
             let dash_stream = streams
                 .get_mut(pad_name)
                 .expect("pad name not found in streams");
 
-            // Calculate bandwidth of the current segment: total_size (bytes) * 8 (bits) / segment duration (secs)
-            let current_bandwidth = total_size as u64 * 8 / (target_duration / 1000);
-            // Update the bandwidth of the overall stream
+            // Bandwidth: total_size (bytes) * 8 (bits) / actual duration (seconds)
+            let duration_secs = actual_duration_ms as f64 / 1000.0;
+            let current_bandwidth = if duration_secs > 0.0 {
+                (total_size as f64 * 8.0 / duration_secs) as u64
+            } else {
+                0
+            };
+
+            // Running average across all segments
             let previous_bandwidth = dash_stream.bandwidth.unwrap_or(0);
             let previous_segments = dash_stream.segment_idx.saturating_sub(1) as u64;
-
-            let overall_bandwidth = (previous_bandwidth * previous_segments + current_bandwidth)
-                / dash_stream.segment_idx as u64;
+            let overall_bandwidth = if dash_stream.segment_idx > 0 {
+                (previous_bandwidth * previous_segments + current_bandwidth)
+                    / dash_stream.segment_idx as u64
+            } else {
+                current_bandwidth
+            };
             dash_stream.bandwidth = Some(overall_bandwidth);
 
             gst::info!(
                 CAT,
                 imp = self,
-                "Segment ´{} total size: {} bytes, computed bandwidth: {} bps",
+                "Segment {} total size: {} bytes, duration: {}ms, bandwidth: {} bps",
                 dash_stream.segment_idx,
                 total_size,
-                dash_stream.bandwidth.unwrap()
+                actual_duration_ms,
+                overall_bandwidth,
             );
 
-            (dash_stream.segment_idx, dash_stream.bandwidth.unwrap())
+            (dash_stream.segment_idx, overall_bandwidth)
         };
 
         self.add_segment(pad_name.to_string(), index, bandwidth)

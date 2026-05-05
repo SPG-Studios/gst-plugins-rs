@@ -13,7 +13,7 @@
  */
 use gst::glib;
 
-mod dashsink2;
+pub mod dashsink2;
 
 pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     dashsink2::register(plugin)?;
