@@ -54,6 +54,7 @@ const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.15;
 const DEFAULT_MAX_HANDS: u32 = 2;
 const DEFAULT_NMS_IOU_THRESHOLD: f32 = 0.2;
 const HAND_CLASS_LABEL: &str = "hand";
+const HAND_OD_SEMANTIC_TAG: &str = "hand-od";
 const PALM_DETECTION_OUT_ID: &str = "palm-detection-out";
 const PALM_MIN_RR_SIZE_NORM: f32 = 0.06;
 const PALM_MAX_RR_SIZE_NORM: f32 = 1.40;
@@ -568,16 +569,35 @@ impl BaseTransformImpl for HandDetectionTensorDec {
                 continue;
             };
 
-            if let Err(err) = rmeta.add_oriented_od_mtd(
-                class,
-                x,
-                y,
-                width,
-                height,
-                rotation_for_od,
-                hand.confidence,
-            ) {
-                gst::warning!(CAT, "Failed to add oriented OD metadata: {}", err);
+            let od_id = {
+                let od = match rmeta.add_oriented_od_mtd(
+                    class,
+                    x,
+                    y,
+                    width,
+                    height,
+                    rotation_for_od,
+                    hand.confidence,
+                ) {
+                    Ok(od) => od,
+                    Err(err) => {
+                        gst::warning!(CAT, "Failed to add oriented OD metadata: {}", err);
+                        continue;
+                    }
+                };
+
+                od.id()
+            };
+            let Some(mut od_mtd) = rmeta.mtd_mut::<gst_analytics::AnalyticsODMtd>(od_id) else {
+                gst::warning!(
+                    CAT,
+                    "Failed to retrieve oriented OD metadata for semantic tag"
+                );
+                continue;
+            };
+
+            if let Err(err) = od_mtd.set_semantic_tag(HAND_OD_SEMANTIC_TAG) {
+                gst::warning!(CAT, "Failed to set hand OD semantic tag: {}", err);
             }
         }
 
