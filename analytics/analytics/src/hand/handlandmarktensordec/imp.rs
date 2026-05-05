@@ -8,17 +8,16 @@
 
 //! # handlandmarktensordec
 //!
-//! A GStreamer element that attaches hand keypoint tensors to video buffers for downstream processing.
+//! A GStreamer element that attaches hand keypoint metadata (semantic-tag=hand-21-kp) to video buffers.
 //!
-//! This element extracts hand landmark keypoints from hand landmark tensors (produced by ONNX
-//! hand landmark inference models) and attaches them as tensor metadata to the buffer. This allows
+//! This element extracts hand landmark keypoints from hand landmark tensors (produced by an
+//! inference element) and attaches them as tensor metadata to the buffer. This allows
 //! downstream elements to perform gesture recognition, hand pose analysis, or other ML tasks that
 //! require access to the raw keypoint coordinates.
 //!
 //! The element is designed to work with hand landmark models that output tensors with:
-//! - `hand_landmarks`: 2D keypoints for each hand (21 points × 2 coordinates per point)
-//! - `hand_score`: Confidence score per hand (optional)
-//! - `hand_rotation`: Hand rotation angle per hand (optional; computed from landmarks if not provided)
+//! - `hand_landmarks`: Keypoints for each hand (commonly 21 points with x/y/(optional z)); this decoder currently uses x/y and ignores z/depth.
+//! - `hand_score`: Confidence score per hand. When this tensor is present it is used; otherwise the decoder falls back to 1.0 confidence.
 //!
 //! ## Properties
 //! - `confidence-threshold` (f32, 0.0-1.0, default: 0.5): Minimum confidence to consider a hand
@@ -26,24 +25,24 @@
 //!
 //! ## Example Pipelines
 //!
-//! Gesture recognition pipeline:
+//! Basic hand landmark decoding pipeline:
 //! ```text
 //! gst-launch-1.0 \
 //!   v4l2src \
-//!   ! videoconvert ! videoscale \
+//!   ! videoconvertscale add-borders=true \
 //!   ! onnxinference model-file=hand_landmark_model.onnx \
 //!   ! handlandmarktensordec confidence-threshold=0.5 max-hands=2 \
-//!   ! your_gesture_recognition_element \
-//!   ! autovideosink
+//!   ! fakesink
 //! ```
 //!
 //! Combined detection and landmark analysis:
 //! ```text
 //! gst-launch-1.0 \
 //!   v4l2src \
-//!   ! videoconvert ! videoscale \
-//!   ! onnxinference model-file=hand_landmark_model.onnx \
+//!   ! videoconvertscale add-borders=true \
+//!   ! onnxinference model-file=palm_detection_full_inf_post_192x192.onnx \
 //!   ! handdetectiontensordec confidence-threshold=0.7 \
+//!   ! onnxinference model-file=hand_landmark_model.onnx \
 //!   ! handlandmarktensordec confidence-threshold=0.5 \
 //!   ! objectdetectionoverlay \
 //!   ! videoconvert ! autovideosink
@@ -67,10 +66,15 @@ const DEFAULT_MAX_HANDS: u32 = 2;
 const DEFAULT_NMS_IOU_THRESHOLD: f32 = 0.2;
 const DEFAULT_ATTACH_BOUNDING_BOX: bool = true;
 const HAND_CLASS_LABEL: &str = "hand";
+const HAND_KEYPOINT_GROUP_SEMANTIC_TAG: &str = "hand-21-kp";
 const HAND_LANDMARKS_TENSOR_ID: &str = "hand_landmarks";
 const HAND_SCORE_TENSOR_ID: &str = "hand_score";
 const HAND_KEYPOINT_COUNT: usize = 21;
 const HAND_BBOX_PADDING: f32 = 0.15;
+const HAND_KEYPOINT_SKELETON_PAIRS: [i32; 42] = [
+    0, 1, 1, 2, 2, 3, 3, 4, 0, 5, 5, 6, 6, 7, 7, 8, 5, 9, 9, 10, 10, 11, 11, 12, 9, 13, 13, 14, 14,
+    15, 15, 16, 13, 17, 17, 18, 18, 19, 19, 20, 0, 17,
+];
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -200,13 +204,13 @@ fn compute_rotation_from_landmarks(landmarks: &[f32], stride: usize) -> Option<f
 fn compute_bbox_from_landmarks(
     landmarks: &[f32],
     stride: usize,
-    video_size: Option<(i32, i32)>,
+    video_size: (i32, i32),
 ) -> Option<(f32, f32, f32, f32)> {
     if stride < 2 || landmarks.len() < HAND_KEYPOINT_COUNT * stride {
         return None;
     }
 
-    let (frame_width, frame_height) = video_size.unwrap_or((0, 0));
+    let (frame_width, frame_height) = video_size;
     let mut xs = Vec::with_capacity(HAND_KEYPOINT_COUNT);
     let mut ys = Vec::with_capacity(HAND_KEYPOINT_COUNT);
 
@@ -258,7 +262,7 @@ fn extract_hands(
     max_hands: usize,
     confidence_threshold: f32,
     nms_iou_threshold: f32,
-    video_size: Option<(i32, i32)>,
+    video_size: (i32, i32),
 ) -> Result<Vec<HandData>, gst::FlowError> {
     let landmarks_id = glib::Quark::from_str(HAND_LANDMARKS_TENSOR_ID);
     let Some((landmark_data, landmark_dims)) = extract_f32_tensor(buffer, landmarks_id) else {
@@ -336,13 +340,16 @@ fn extract_keypoint_confidence(hand: &HandData, keypoint_idx: usize) -> Option<f
 fn attach_keypoint_metadata(
     rmeta: &mut gst::MetaRefMut<'_, gst_analytics::AnalyticsRelationMeta, gst::meta::Standalone>,
     hand: &HandData,
-    video_size: Option<(i32, i32)>,
-) -> Result<(), String> {
+    video_size: (i32, i32),
+) -> Result<Option<u32>, String> {
     if hand.stride < 2 || hand.landmarks.len() < HAND_KEYPOINT_COUNT * hand.stride {
         return Err("Invalid landmarks data".to_string());
     }
 
-    let (frame_width, frame_height) = video_size.unwrap_or((0, 0));
+    let (frame_width, frame_height) = video_size;
+    let mut positions = Vec::with_capacity(HAND_KEYPOINT_COUNT * 2);
+    let mut confidences = Vec::with_capacity(HAND_KEYPOINT_COUNT);
+    let mut visibilities = Vec::with_capacity(HAND_KEYPOINT_COUNT);
 
     for (keypoint_idx, point) in hand
         .landmarks
@@ -369,25 +376,34 @@ fn attach_keypoint_metadata(
                 gst_analytics::AnalyticsKeypointVisibility::OCCLUDED
             }
         } else {
-            gst_analytics::AnalyticsKeypointVisibility::VISIBLE
+            gst_analytics::AnalyticsKeypointVisibility::UNKNOWN
         };
 
         // Keep keypoint confidence when available; otherwise fall back to hand-level confidence.
         let confidence = keypoint_confidence.unwrap_or(hand.confidence);
 
-        rmeta
-            .add_keypoint_mtd(
-                gst_analytics::AnalyticsKeypointDimensions::_2d,
-                px,
-                py,
-                0,
-                visibility,
-                confidence,
-            )
-            .map_err(|e| format!("Failed to add keypoint {}: {}", keypoint_idx, e))?;
+        positions.push(px);
+        positions.push(py);
+        confidences.push(confidence);
+        visibilities.push(visibility.bits() as u8);
     }
 
-    Ok(())
+    if positions.is_empty() {
+        return Ok(None);
+    }
+
+    let keypoint_group = rmeta
+        .add_keypoints_group(
+            HAND_KEYPOINT_GROUP_SEMANTIC_TAG,
+            gst_analytics::AnalyticsKeypointDimensions::_2d,
+            &positions,
+            Some(&confidences),
+            Some(&visibilities),
+            &HAND_KEYPOINT_SKELETON_PAIRS,
+        )
+        .map_err(|e| format!("Failed to add keypoint group metadata: {}", e))?;
+
+    Ok(Some(keypoint_group.id()))
 }
 
 fn hand_bbox_to_oriented_od_params(
@@ -605,6 +621,14 @@ impl BaseTransformImpl for HandLandmarkTensorDec {
             .as_ref()
             .map(|info| (info.width() as i32, info.height() as i32));
 
+        let Some(video_size) = video_size else {
+            gst::warning!(
+                CAT,
+                "Missing frame resolution in caps; cannot decode hand landmarks"
+            );
+            return Err(gst::FlowError::Error);
+        };
+
         let hands = extract_hands(
             buf,
             max_hands,
@@ -623,16 +647,18 @@ impl BaseTransformImpl for HandLandmarkTensorDec {
         let class = glib::Quark::from_str(HAND_CLASS_LABEL);
 
         for hand in &hands {
+            let mut hand_od_id = None;
+
             // Attach bounding box as oriented object detection metadata if enabled
             if attach_bounding_box {
                 let Some((x, y, width, height, rotation_for_od)) =
-                    hand_bbox_to_oriented_od_params(hand, video_size)
+                    hand_bbox_to_oriented_od_params(hand, Some(video_size))
                 else {
                     gst::debug!(CAT, "Skipping invalid/out-of-frame hand bbox");
                     continue;
                 };
 
-                if let Err(err) = rmeta.add_oriented_od_mtd(
+                match rmeta.add_oriented_od_mtd(
                     class,
                     x,
                     y,
@@ -641,13 +667,34 @@ impl BaseTransformImpl for HandLandmarkTensorDec {
                     rotation_for_od,
                     hand.confidence,
                 ) {
-                    gst::warning!(CAT, "Failed to add oriented OD metadata: {}", err);
+                    Ok(od) => {
+                        hand_od_id = Some(od.id());
+                    }
+                    Err(err) => {
+                        gst::warning!(CAT, "Failed to add oriented OD metadata: {}", err);
+                    }
                 }
             }
 
             // Attach individual keypoint metadata with visibility flags
-            if let Err(err) = attach_keypoint_metadata(&mut rmeta, hand, video_size) {
-                gst::debug!(CAT, "Failed to attach keypoint metadata: {}", err);
+            let keypoint_group_id = match attach_keypoint_metadata(&mut rmeta, hand, video_size) {
+                Ok(id) => id,
+                Err(err) => {
+                    gst::debug!(CAT, "Failed to attach keypoint metadata: {}", err);
+                    None
+                }
+            };
+
+            if let (Some(od_id), Some(kp_group_id)) = (hand_od_id, keypoint_group_id) {
+                if let Err(err) =
+                    rmeta.set_relation(gst_analytics::RelTypes::RELATE_TO, od_id, kp_group_id)
+                {
+                    gst::debug!(
+                        CAT,
+                        "Failed to set relation between hand OD and keypoint group: {}",
+                        err
+                    );
+                }
             }
         }
 
