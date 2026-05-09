@@ -14,7 +14,7 @@ gst.workspace = true
 gst-base.workspace = true
 gst-audio.workspace = true
 async-tungstenite = { version = "0.34", features = ["tokio-runtime", "tokio-rustls-native-certs"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["std", "ring"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws-lc-rs"], optional = true }
 futures = "0.3"
 tokio = { version = "1", features = ["net", "time", "rt", "rt-multi-thread", "io-util"] }
 url = "2"

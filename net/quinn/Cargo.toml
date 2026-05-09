@@ -16,10 +16,10 @@ gst.workspace = true
 gst-base = { workspace = true, features = ["v1_22"] }
 tokio = { version = "1.36.0", default-features = false, features = ["time", "rt-multi-thread", "macros"] }
 futures = "0.3.30"
-quinn = { version = "0.11.6", default-features = false, features = ["runtime-tokio", "log", "bloom", "ring"] }
-quinn-proto = { version = "0.11.9", default-features = false, features = ["log", "ring"] }
-web-transport-quinn = { version = "0.11", default-features = false, features = ["ring"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+quinn = { version = "0.11.6", default-features = false, features = ["runtime-tokio", "log", "bloom", "rustls-aws-lc-rs"] }
+quinn-proto = { version = "0.11.9", default-features = false, features = ["log", "rustls-aws-lc-rs"] }
+web-transport-quinn = { version = "0.11", default-features = false, features = ["aws-lc-rs"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws-lc-rs"] }
 rustls-pki-types = "1"
 rcgen = "0.14"
 bytes = "1.5.0"

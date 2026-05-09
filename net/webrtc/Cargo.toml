@@ -38,7 +38,7 @@ gst-plugin-webrtc-signalling.workspace = true
 human_bytes = "0.4"
 rand = "0.10"
 url = "2"
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws-lc-rs"] }
 rustls-pki-types = "1"
 
 aws-config = { version = "1.0", default-features = false, features = ["credentials-process", "rt-tokio"], optional = true }
@@ -56,7 +56,7 @@ http = { version = "1.0" }
 data-encoding = {version = "2.3.3", optional = true }
 url-escape = { version = "0.1.1", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "system-proxy", "rustls-tls", "rustls-tls-native-roots"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws-lc-rs"] }
 parse_link_header = {version = "0.4", features = ["url"]}
 
 livekit-protocol = { version = "0.7", optional = true }
