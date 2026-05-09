@@ -322,8 +322,8 @@ impl FromBitStream for ProgramAccessTable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProgramMappingTable {
     pub pcr_pid: u16,
-    pub elementary_pids: SmallVec<[u16; 16]>,
-    // Add other fields as needed
+    /// (PID, stream_type) pairs for each elementary stream
+    pub elementary_streams: SmallVec<[(u16, u8); 16]>,
 }
 
 impl FromBitStream for ProgramMappingTable {
@@ -353,9 +353,9 @@ impl FromBitStream for ProgramMappingTable {
             }
         }
 
-        let mut elementary_pids = SmallVec::new();
+        let mut elementary_streams = SmallVec::new();
         loop {
-            let Some(_stream_type) = try_read(r, |r| r.read_to::<u8>()).context("stream_type")?
+            let Some(stream_type) = try_read(r, |r| r.read_to::<u8>()).context("stream_type")?
             else {
                 break;
             };
@@ -389,12 +389,12 @@ impl FromBitStream for ProgramMappingTable {
                 break;
             };
 
-            elementary_pids.push(elementary_pid);
+            elementary_streams.push((elementary_pid, stream_type));
         }
 
         Ok(ProgramMappingTable {
             pcr_pid,
-            elementary_pids,
+            elementary_streams,
         })
     }
 }

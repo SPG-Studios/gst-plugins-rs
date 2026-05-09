@@ -488,8 +488,18 @@ impl State {
                         {
                             gst::trace!(CAT, imp = imp, "Selecting PCR PID {}", pmt.pcr_pid);
                             self.streams.clear();
-                            for pid in &pmt.elementary_pids {
-                                self.streams.insert(*pid, Stream::default());
+                            for (pid, stream_type) in &pmt.elementary_streams {
+                                // SCTE-35 (0x86) uses section syntax, not PES
+                                if *stream_type == 0x86 {
+                                    gst::debug!(
+                                        CAT,
+                                        imp = imp,
+                                        "Skipping SCTE-35 PID {} (section syntax, not PES)",
+                                        pid,
+                                    );
+                                } else {
+                                    self.streams.insert(*pid, Stream::default());
+                                }
                             }
                             self.pmt = Some(pmt);
                             self.last_seen_pcr = None;
