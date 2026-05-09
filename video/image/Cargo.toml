@@ -1,0 +1,81 @@
+[package]
+name = "gst-plugin-image"
+edition.workspace = true
+version.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+authors = ["Amyspark <amy@centricular.com>"]
+license = "MPL-2.0"
+description = "GStreamer plugin based on image-rs"
+
+[dependencies]
+gst.workspace = true
+gst-base.workspace = true
+gst-tag.workspace = true
+gst-video.workspace = true
+byte-slice-cast = "1.2"
+image = { version = "0.25.10", default-features = false }
+image_extras = { package = "image-extras", version = "0.1", default-features = false}
+png = "0.18.0"
+
+[dev-dependencies]
+gst-check.workspace = true
+image-compare = "0.5.0"
+
+[lib]
+name = "gstimagers"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+gst-plugin-version-helper.workspace = true
+
+[features]
+default = ["gst-video/v1_26", "still_formats", "still_formats_extras", "animated_formats"]
+static = []
+capi = []
+doc = []
+# AVIF and EXR make up ~60% of a fully featured plugin's code size, disable
+# them
+still_formats = ["bmp", "dds", "ff", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff"]
+still_formats_extras = ["ora", "otb", "pcx", "sgi", "wbmp", "xbm", "xpm"]
+# See anim/imp.rs -- add AVIF when upstream supports them
+animated_formats = ["gif", "png", "webp"]
+# image/avif enables encoding with rav1e, avif-native decoding with dav1d
+# rayon is multithreading and nasm rav1e's optimized assembly
+avif = ["image/avif", "image/avif-native", "image/rayon", "image/nasm"]
+bmp = ["image/bmp"]
+dds = ["image/dds"]
+exr = ["image/exr", "image/rayon"]
+ff = ["image/ff"]
+gif = ["image/gif"]
+hdr = ["image/hdr"]
+ico = ["image/ico"]
+jpeg = ["image/jpeg"]
+ora = ["image_extras/ora"]
+otb = ["image_extras/otb"]
+pcx = ["image_extras/pcx"]
+png = ["image/png"]
+pnm = ["image/pnm"]
+qoi = ["image/qoi"]
+sgi = ["image_extras/sgi"]
+tga = ["image/tga"]
+tiff = ["image/tiff"]
+wbmp = ["image_extras/wbmp"]
+webp = ["image/webp"]
+xbm = ["image_extras/xbm"]
+xpm = ["image_extras/xpm"]
+
+[package.metadata.capi]
+min_version = "0.9.21"
+
+[package.metadata.capi.header]
+enabled = false
+
+[package.metadata.capi.library]
+install_subdir = "gstreamer-1.0"
+versioning = false
+import_library = false
+
+[package.metadata.capi.pkg_config]
+requires_private = "gstreamer-1.0, gstreamer-base-1.0, gstreamer-tag-1.0, gstreamer-video-1.0"
