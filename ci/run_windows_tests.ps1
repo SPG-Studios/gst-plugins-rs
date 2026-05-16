@@ -104,6 +104,32 @@ function Move-Junit {
     }
 }
 
+function Run-Tests-Gtk4 {
+    param (
+        $Features
+    )
+
+    Write-Host "GTK4 Features: $Features"
+
+    cargo build --color=always --package gst-plugin-gtk4 --all-targets $Features
+
+    if (!$?) {
+        Write-Host "Build failed"
+        Exit 1
+    }
+
+    $env:G_DEBUG="fatal_warnings"
+    cargo test --no-fail-fast --color=always --package gst-plugin-gtk4 --all-targets $Features
+
+    if (!$?) {
+        Write-Host "Tests failed"
+        Exit 1
+    }
+}
+
 foreach($feature in $features_matrix) {
     Run-Tests -Features $feature
 }
+
+Run-Tests-Gtk4 -Features @()
+Run-Tests-Gtk4 -Features @("--features", "winegl")
