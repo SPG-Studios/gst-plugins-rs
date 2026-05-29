@@ -16,6 +16,7 @@ use gst::glib;
 
 mod keypointsoverlay;
 mod objectdetectionoverlay;
+mod render;
 mod segmentationoverlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
