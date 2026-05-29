@@ -63,6 +63,9 @@ plugins = {
     'library': 'libgstrsanalytics',
     'features': ['gst-rtp/v1_24', 'gst-base/v1_24', 'gst-video/v1_24'],
   },
+  'overlays': {
+    'library': 'libgstoverlays',
+  },
   'audiofx': {
     'library': 'libgstrsaudiofx',
   },
