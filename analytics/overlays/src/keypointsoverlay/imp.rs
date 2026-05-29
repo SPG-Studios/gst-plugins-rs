@@ -14,6 +14,8 @@ use gst_base::prelude::BaseTransformExt;
 use gst_base::subclass::prelude::*;
 use gst_video::subclass::prelude::*;
 
+use crate::render::{AnalyticsFrame, DrawCommand, RenderContext};
+
 use std::sync::{LazyLock, Mutex};
 
 const DEFAULT_RENDER_ENABLED: bool = false;
@@ -56,6 +58,7 @@ impl Default for Settings {
 
 #[derive(Default)]
 pub struct KeypointsOverlay {
+    render_context: Mutex<RenderContext>,
     settings: Mutex<Settings>,
 }
 
@@ -307,8 +310,11 @@ impl BaseTransformImpl for KeypointsOverlay {
 impl VideoFilterImpl for KeypointsOverlay {
     fn transform_frame_ip(
         &self,
-        _frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
+        frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        let mut render_context = self.render_context.lock().unwrap();
+        render_context.render(frame, &AnalyticsFrame::default(), &[DrawCommand::NoOp])?;
+
         Ok(gst::FlowSuccess::Ok)
     }
 }
