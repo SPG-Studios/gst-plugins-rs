@@ -1,0 +1,60 @@
+[package]
+name = "gst-plugin-symphonia"
+version.workspace = true
+authors = ["François Laignel <fengalin@free.fr>"]
+repository.workspace = true
+license = "MPL-2.0"
+description = "Symphonia audio decoders Plugin"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+atomic_refcell = "0.1"
+bytemuck = "1.25"
+gst.workspace = true
+gst-audio.workspace = true
+smallvec = "1"
+symphonia = { version = "0.6.0", default-features = false }
+symphonia-common = "0.6.0"
+thiserror = "1.0"
+
+[dev-dependencies]
+gst-check.workspace = true
+
+[lib]
+name = "gstsymphonia"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[build-dependencies]
+gst-plugin-version-helper.workspace = true
+
+[features]
+default = ["simd", "flac", "mp3"]
+
+allow-planar = ["audio-meta"]
+audio-meta = ["gst-audio/v1_16"]
+
+# use rustfft with simd support
+simd = ["symphonia/opt-simd"]
+
+flac = ["symphonia/flac"]
+mp3 = ["symphonia/mp3"]
+
+static = []
+capi = []
+doc = ["gst/v1_18"]
+
+[package.metadata.capi]
+min_version = "0.9.21"
+
+[package.metadata.capi.header]
+enabled = false
+
+[package.metadata.capi.library]
+install_subdir = "gstreamer-1.0"
+versioning = false
+import_library = false
+
+[package.metadata.capi.pkg_config]
+requires_private = "gstreamer-1.0, gstreamer-audio-1.0, gobject-2.0, glib-2.0, gmodule-2.0"
