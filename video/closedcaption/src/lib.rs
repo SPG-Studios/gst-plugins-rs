@@ -50,6 +50,12 @@ mod tttojson;
 mod ttutils;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     #[cfg(feature = "doc")]
     {
         cea608utils::Cea608Mode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());

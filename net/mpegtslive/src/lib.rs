@@ -18,6 +18,12 @@ use gst::glib;
 mod mpegtslive;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     mpegtslive::register(plugin)?;
     Ok(())
 }

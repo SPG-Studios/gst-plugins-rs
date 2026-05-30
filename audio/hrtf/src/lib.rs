@@ -50,6 +50,12 @@ pub fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     #[cfg(feature = "doc")]
     CoordinateSystem::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
 
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     hrtf::register(plugin)?;
     sofa::register(plugin)
 }

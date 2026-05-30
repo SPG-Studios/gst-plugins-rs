@@ -63,6 +63,12 @@ fn typefind_register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 }
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     encrypter::register(plugin)?;
     decrypter::register(plugin)?;
     typefind_register(plugin)?;
