@@ -17,8 +17,8 @@ members = [
     "audio/lewton",
     "audio/speechmatics",
     "audio/spotify",
+    "audio/symphonia",
     "audio/whisper",
-
     "generic/file",
     "generic/compress",
     "generic/originalbuffer",
@@ -95,6 +95,7 @@ default-members = [
     "audio/claxon",
     "audio/demucs",
     "audio/lewton",
+    "audio/symphonia",
 
     "generic/compress",
     "generic/originalbuffer",
