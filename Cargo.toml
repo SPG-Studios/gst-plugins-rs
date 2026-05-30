@@ -15,6 +15,7 @@ members = [
     "audio/demucs",
     "audio/elevenlabs",
     "audio/lewton",
+    "audio/nimbus",
     "audio/speechmatics",
     "audio/spotify",
     "audio/whisper",
