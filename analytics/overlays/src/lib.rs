@@ -15,6 +15,7 @@
 use gst::glib;
 
 mod keypointsoverlay;
+mod lifecycle;
 mod objectdetectionoverlay;
 mod render;
 mod segmentationoverlay;
@@ -43,6 +44,7 @@ mod tests {
     use super::*;
     use gst::prelude::*;
     use gst_base::prelude::BaseTransformExt;
+    use gst_video::VideoCapsBuilder;
     use std::sync::Once;
 
     fn ensure_gstreamer_initialized() {
@@ -186,8 +188,10 @@ mod tests {
         let sink = e.pad_template("sink").expect("missing sink pad template");
         let src = e.pad_template("src").expect("missing src pad template");
 
-        assert_eq!(sink.caps().to_string(), "video/x-raw");
-        assert_eq!(src.caps().to_string(), "video/x-raw");
+        let expected_caps = VideoCapsBuilder::new().build().to_string();
+
+        assert_eq!(sink.caps().to_string(), expected_caps);
+        assert_eq!(src.caps().to_string(), expected_caps);
     }
 
     #[test]

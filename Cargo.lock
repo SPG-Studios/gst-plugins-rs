@@ -5467,8 +5467,12 @@ dependencies = [
  "glib",
  "gst-plugin-version-helper",
  "gstreamer",
+ "gstreamer-analytics",
+ "gstreamer-app",
  "gstreamer-base",
+ "gstreamer-check",
  "gstreamer-video",
+ "skia-safe",
 ]
 
 [[package]]
