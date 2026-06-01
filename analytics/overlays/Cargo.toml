@@ -17,10 +17,16 @@ path = "src/lib.rs"
 gst.workspace = true
 gst-base.workspace = true
 gst-video.workspace = true
+gst-analytics = { workspace = true, features = ["v1_26"] }
 glib.workspace = true
+skia = { package = "skia-safe", version = "0.97" }
 
 [build-dependencies]
 gst-plugin-version-helper.workspace = true
+
+[dev-dependencies]
+gst-app.workspace = true
+gst-check.workspace = true
 
 [features]
 static = []

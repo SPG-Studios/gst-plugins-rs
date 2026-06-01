@@ -9,7 +9,8 @@
 #![allow(dead_code)]
 
 use gst::BufferRef;
-use gst_video::VideoFrameRef;
+use gst_video::prelude::VideoFrameExt;
+use gst_video::{VideoFormat, VideoFrameRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum RenderBackendKind {
@@ -33,6 +34,7 @@ pub(crate) enum DrawCommand {
         y: f32,
         width: f32,
         height: f32,
+        rotation: f32,
         argb: u32,
         filled: bool,
     },
@@ -67,6 +69,170 @@ trait RenderBackend {
     ) -> Result<(), gst::FlowError>;
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PackedPixelLayout {
+    alpha: Option<usize>,
+    red: usize,
+    green: usize,
+    blue: usize,
+}
+
+struct PackedSurface<'a> {
+    data: &'a mut [u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+    layout: PackedPixelLayout,
+}
+
+const LABEL_FONT_SIZE: f32 = 10.5;
+const LABEL_STROKE_WIDTH: f32 = 0.6;
+const BOX_STROKE_WIDTH: f32 = 2.0;
+const LABEL_EXTRA_VERTICAL_GAP: f32 = 1.5;
+const ROTATION_EPSILON: f32 = 0.001;
+
+fn label_outline_offset(font_size: f32) -> f32 {
+    (font_size / 15.0).max(1.0)
+}
+
+fn packed_pixel_layout(format: VideoFormat) -> Option<PackedPixelLayout> {
+    match format {
+        VideoFormat::Bgra | VideoFormat::Bgrx => Some(PackedPixelLayout {
+            alpha: matches!(format, VideoFormat::Bgra).then_some(3),
+            red: 2,
+            green: 1,
+            blue: 0,
+        }),
+        VideoFormat::Rgba | VideoFormat::Rgbx => Some(PackedPixelLayout {
+            alpha: matches!(format, VideoFormat::Rgba).then_some(3),
+            red: 0,
+            green: 1,
+            blue: 2,
+        }),
+        VideoFormat::Argb | VideoFormat::Xrgb => Some(PackedPixelLayout {
+            alpha: matches!(format, VideoFormat::Argb).then_some(0),
+            red: 1,
+            green: 2,
+            blue: 3,
+        }),
+        VideoFormat::Abgr | VideoFormat::Xbgr => Some(PackedPixelLayout {
+            alpha: matches!(format, VideoFormat::Abgr).then_some(0),
+            red: 3,
+            green: 2,
+            blue: 1,
+        }),
+        _ => None,
+    }
+}
+
+fn gst_to_skia(video_format: VideoFormat) -> Option<skia::ColorType> {
+    match video_format {
+        VideoFormat::Rgba => Some(skia::ColorType::RGBA8888),
+        VideoFormat::Rgbx => Some(skia::ColorType::RGB888x),
+        VideoFormat::Bgra | VideoFormat::Bgrx => Some(skia::ColorType::BGRA8888),
+        _ => None,
+    }
+}
+
+fn argb_to_skia_color(argb: u32) -> skia::Color {
+    let alpha = ((argb >> 24) & 0xFF) as u8;
+    let red = ((argb >> 16) & 0xFF) as u8;
+    let green = ((argb >> 8) & 0xFF) as u8;
+    let blue = (argb & 0xFF) as u8;
+    skia::Color::from_argb(alpha, red, green, blue)
+}
+
+fn write_packed_pixel(pixel: &mut [u8], layout: PackedPixelLayout, argb: u32) {
+    let alpha = ((argb >> 24) & 0xFF) as u8;
+    let red = ((argb >> 16) & 0xFF) as u8;
+    let green = ((argb >> 8) & 0xFF) as u8;
+    let blue = (argb & 0xFF) as u8;
+
+    if let Some(alpha_index) = layout.alpha {
+        pixel[alpha_index] = alpha;
+    }
+
+    pixel[layout.red] = red;
+    pixel[layout.green] = green;
+    pixel[layout.blue] = blue;
+}
+
+fn draw_packed_rectangle(
+    surface: &mut PackedSurface<'_>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    argb: u32,
+    filled: bool,
+) {
+    let left = x.floor().max(0.0) as usize;
+    let top = y.floor().max(0.0) as usize;
+    let right = (x + width).ceil().max(0.0) as usize;
+    let bottom = (y + height).ceil().max(0.0) as usize;
+
+    let clamped_left = left.min(surface.width);
+    let clamped_top = top.min(surface.height);
+    let clamped_right = right.min(surface.width);
+    let clamped_bottom = bottom.min(surface.height);
+
+    if clamped_left >= clamped_right || clamped_top >= clamped_bottom {
+        return;
+    }
+
+    for row in clamped_top..clamped_bottom {
+        let row_start = row * surface.stride;
+
+        for col in clamped_left..clamped_right {
+            if !filled
+                && row != clamped_top
+                && row + 1 != clamped_bottom
+                && col != clamped_left
+                && col + 1 != clamped_right
+            {
+                continue;
+            }
+
+            let pixel_offset = row_start + col * 4;
+            let pixel = &mut surface.data[pixel_offset..pixel_offset + 4];
+            write_packed_pixel(pixel, surface.layout, argb);
+        }
+    }
+}
+
+fn set_surface_pixel(surface: &mut PackedSurface<'_>, x: i32, y: i32, argb: u32) {
+    if x < 0 || y < 0 {
+        return;
+    }
+
+    let x = x as usize;
+    let y = y as usize;
+
+    if x >= surface.width || y >= surface.height {
+        return;
+    }
+
+    let pixel_offset = y * surface.stride + x * 4;
+    let pixel = &mut surface.data[pixel_offset..pixel_offset + 4];
+    write_packed_pixel(pixel, surface.layout, argb);
+}
+
+fn draw_packed_text(surface: &mut PackedSurface<'_>, x: f32, y: f32, text: &str, argb: u32) {
+    // Fallback renderer for formats unsupported by Skia path.
+    let mut pen_x = x.floor() as i32;
+    let pen_y = y.floor() as i32;
+    for _ in text.chars().take(64) {
+        for row in 0..10 {
+            for col in 0..6 {
+                if row == 0 || row == 9 || col == 0 || col == 5 {
+                    set_surface_pixel(surface, pen_x + col, pen_y + row, argb);
+                }
+            }
+        }
+        pen_x += 8;
+    }
+}
+
 #[derive(Debug, Default)]
 struct SkiaBackend;
 
@@ -77,11 +243,153 @@ impl RenderBackend for SkiaBackend {
         analytics: &AnalyticsFrame,
         commands: &[DrawCommand],
     ) -> Result<(), gst::FlowError> {
-        // Placeholder backend. This keeps the render abstraction in place while
-        // we migrate overlay drawing logic behind DrawCommand.
-        let _ = frame;
         let _ = analytics;
-        let _ = commands;
+
+        if let Some(color_type) = gst_to_skia(frame.format()) {
+            let width = frame.width() as i32;
+            let height = frame.height() as i32;
+            let img_info = skia::ImageInfo::new(
+                skia::ISize { width, height },
+                color_type,
+                skia::AlphaType::Unpremul,
+                None,
+            );
+
+            let stride = frame.plane_stride()[0].unsigned_abs() as usize;
+            let data = frame.plane_data_mut(0).map_err(|_| gst::FlowError::Error)?;
+            let mut surface = skia::surface::surfaces::wrap_pixels(&img_info, data, stride, None)
+                .ok_or(gst::FlowError::Error)?;
+
+            let canvas = surface.canvas();
+            let font_mgr = skia::FontMgr::default();
+            let typeface = ["Arial", "Liberation Sans", "DejaVu Sans", "Sans"]
+                .iter()
+                .find_map(|family| font_mgr.match_family_style(*family, skia::FontStyle::normal()))
+                .or_else(|| font_mgr.legacy_make_typeface(None, skia::FontStyle::normal()));
+
+            let mut font = if let Some(typeface) = typeface {
+                skia::Font::from_typeface(typeface, LABEL_FONT_SIZE)
+            } else {
+                let mut default_font = skia::Font::default();
+                default_font.set_size(LABEL_FONT_SIZE);
+                default_font
+            };
+            font.set_subpixel(true);
+            font.set_edging(skia::font::Edging::AntiAlias);
+            font.set_linear_metrics(true);
+            font.set_hinting(skia::FontHinting::Normal);
+
+            let outline_ofs = label_outline_offset(LABEL_FONT_SIZE);
+
+            for command in commands {
+                match command {
+                    DrawCommand::Rectangle {
+                        x,
+                        y,
+                        width,
+                        height,
+                        rotation,
+                        argb,
+                        filled,
+                    } => {
+                        let mut paint = skia::Paint::default();
+                        paint.set_anti_alias(true);
+                        paint.set_color(argb_to_skia_color(*argb));
+                        if *filled {
+                            paint.set_style(skia::paint::Style::Fill);
+                        } else {
+                            paint.set_style(skia::paint::Style::Stroke);
+                            paint.set_stroke_width(BOX_STROKE_WIDTH);
+                        }
+
+                        if rotation.abs() < ROTATION_EPSILON {
+                            let rect = skia::Rect::from_xywh(*x, *y, *width, *height);
+                            canvas.draw_rect(rect, &paint);
+                        } else {
+                            let xc = *x + *width / 2.0;
+                            let yc = *y + *height / 2.0;
+                            let cos_r = rotation.cos();
+                            let sin_r = rotation.sin();
+
+                            let corners = [
+                                (-*width / 2.0, -*height / 2.0),
+                                (*width / 2.0, -*height / 2.0),
+                                (*width / 2.0, *height / 2.0),
+                                (-*width / 2.0, *height / 2.0),
+                            ];
+
+                            let mut path_builder = skia::PathBuilder::new();
+                            for (index, (dx, dy)) in corners.iter().copied().enumerate() {
+                                let rx = dx * cos_r - dy * sin_r + xc;
+                                let ry = dx * sin_r + dy * cos_r + yc;
+
+                                if index == 0 {
+                                    path_builder.move_to((rx, ry));
+                                } else {
+                                    path_builder.line_to((rx, ry));
+                                }
+                            }
+                            path_builder.close();
+                            let path = path_builder.detach();
+                            canvas.draw_path(&path, &paint);
+                        }
+                    }
+                    DrawCommand::Text { x, y, text, argb } => {
+                        let mut paint = skia::Paint::default();
+                        paint.set_anti_alias(true);
+                        paint.set_color(argb_to_skia_color(*argb));
+                        paint.set_style(skia::paint::Style::Stroke);
+                        paint.set_stroke_width(LABEL_STROKE_WIDTH);
+
+                        // Place text so its bottom sits just above the provided anchor y.
+                        let (_, bounds) = font.measure_str(text, Some(&paint));
+                        let draw_x = *x + outline_ofs;
+                        let baseline_y =
+                            *y - outline_ofs - LABEL_EXTRA_VERTICAL_GAP - bounds.bottom();
+
+                        canvas.draw_str(text, (draw_x, baseline_y), &font, &paint);
+                    }
+                    DrawCommand::NoOp | DrawCommand::Circle { .. } | DrawCommand::Line { .. } => {}
+                }
+            }
+
+            return Ok(());
+        }
+
+        let Some(layout) = packed_pixel_layout(frame.format()) else {
+            return Ok(());
+        };
+
+        let width = frame.width() as usize;
+        let height = frame.height() as usize;
+        let stride = frame.plane_stride()[0].unsigned_abs() as usize;
+        let data = frame.plane_data_mut(0).map_err(|_| gst::FlowError::Error)?;
+        let mut surface = PackedSurface {
+            data,
+            stride,
+            width,
+            height,
+            layout,
+        };
+
+        for command in commands {
+            match command {
+                DrawCommand::Rectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                    argb,
+                    filled,
+                    ..
+                } => draw_packed_rectangle(&mut surface, *x, *y, *width, *height, *argb, *filled),
+                DrawCommand::Text { x, y, text, argb } => {
+                    draw_packed_text(&mut surface, *x, *y, text, *argb)
+                }
+                DrawCommand::NoOp | DrawCommand::Circle { .. } | DrawCommand::Line { .. } => {}
+            }
+        }
+
         Ok(())
     }
 }
@@ -120,6 +428,11 @@ impl RenderContext {
 mod tests {
     use super::*;
 
+    fn pixel_at(data: &[u8], stride: usize, x: usize, y: usize) -> [u8; 4] {
+        let offset = y * stride + x * 4;
+        data[offset..offset + 4].try_into().unwrap()
+    }
+
     #[test]
     fn render_context_defaults_to_skia_backend() {
         let context = RenderContext::default();
@@ -145,6 +458,7 @@ mod tests {
                 y: 2.0,
                 width: 10.0,
                 height: 20.0,
+                rotation: 0.0,
                 argb: 0xFFFF_FFFF,
                 filled: false,
             },
@@ -171,5 +485,76 @@ mod tests {
         ];
 
         assert_eq!(commands.len(), 5);
+    }
+
+    #[test]
+    fn packed_rectangle_draws_outline_on_bgra_buffer() {
+        let mut pixels = vec![0_u8; 4 * 4 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 16,
+            width: 4,
+            height: 4,
+            layout: packed_pixel_layout(VideoFormat::Bgra).unwrap(),
+        };
+
+        draw_packed_rectangle(&mut surface, 1.0, 1.0, 2.0, 2.0, 0xFF11_2233, false);
+
+        assert_eq!(pixel_at(&pixels, 16, 0, 0), [0, 0, 0, 0]);
+        assert_eq!(pixel_at(&pixels, 16, 1, 1), [0x33, 0x22, 0x11, 0xFF]);
+        assert_eq!(pixel_at(&pixels, 16, 2, 1), [0x33, 0x22, 0x11, 0xFF]);
+        assert_eq!(pixel_at(&pixels, 16, 1, 2), [0x33, 0x22, 0x11, 0xFF]);
+        assert_eq!(pixel_at(&pixels, 16, 2, 2), [0x33, 0x22, 0x11, 0xFF]);
+        assert_eq!(pixel_at(&pixels, 16, 3, 3), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn packed_filled_rectangle_clips_to_frame_bounds() {
+        let mut pixels = vec![0_u8; 3 * 3 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 12,
+            width: 3,
+            height: 3,
+            layout: packed_pixel_layout(VideoFormat::Rgba).unwrap(),
+        };
+
+        draw_packed_rectangle(&mut surface, -1.0, -1.0, 3.0, 3.0, 0x8044_5566, true);
+
+        assert_eq!(pixel_at(&pixels, 12, 0, 0), [0x44, 0x55, 0x66, 0x80]);
+        assert_eq!(pixel_at(&pixels, 12, 1, 1), [0x44, 0x55, 0x66, 0x80]);
+        assert_eq!(pixel_at(&pixels, 12, 2, 2), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn packed_text_draws_pixels_on_bgra_buffer() {
+        let mut pixels = vec![0_u8; 32 * 16 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 32 * 4,
+            width: 32,
+            height: 16,
+            layout: packed_pixel_layout(VideoFormat::Bgra).unwrap(),
+        };
+
+        draw_packed_text(&mut surface, 2.0, 2.0, "0.8", 0xFFAA_BBCC);
+
+        assert!(pixels.chunks_exact(4).any(|px| px != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn packed_text_clips_without_panicking() {
+        let mut pixels = vec![0_u8; 8 * 8 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 8 * 4,
+            width: 8,
+            height: 8,
+            layout: packed_pixel_layout(VideoFormat::Rgba).unwrap(),
+        };
+
+        draw_packed_text(&mut surface, -4.0, -3.0, "99", 0xFF11_2233);
+
+        assert!(pixels.chunks_exact(4).any(|px| px != [0, 0, 0, 0]));
     }
 }
