@@ -58,6 +58,12 @@ pub(crate) enum DrawCommand {
         text: String,
         argb: u32,
     },
+    TextCentered {
+        x: f32,
+        y: f32,
+        text: String,
+        argb: u32,
+    },
 }
 
 trait RenderBackend {
@@ -87,6 +93,7 @@ struct PackedSurface<'a> {
 
 const LABEL_FONT_SIZE: f32 = 10.5;
 const LABEL_STROKE_WIDTH: f32 = 0.6;
+const KEYPOINT_LABEL_STROKE_WIDTH: f32 = 1.0;
 const BOX_STROKE_WIDTH: f32 = 2.0;
 const LABEL_EXTRA_VERTICAL_GAP: f32 = 1.5;
 const ROTATION_EPSILON: f32 = 0.001;
@@ -200,6 +207,54 @@ fn draw_packed_rectangle(
     }
 }
 
+fn draw_packed_circle(surface: &mut PackedSurface<'_>, cx: f32, cy: f32, radius: f32, argb: u32) {
+    let radius = radius.max(0.5);
+    let left = (cx - radius).floor().max(0.0) as i32;
+    let top = (cy - radius).floor().max(0.0) as i32;
+    let right = (cx + radius)
+        .ceil()
+        .min(surface.width.saturating_sub(1) as f32)
+        .max(0.0) as i32;
+    let bottom = (cy + radius)
+        .ceil()
+        .min(surface.height.saturating_sub(1) as f32)
+        .max(0.0) as i32;
+
+    if left > right || top > bottom {
+        return;
+    }
+
+    for y in top..=bottom {
+        for x in left..=right {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            if dx * dx + dy * dy <= radius * radius {
+                set_surface_pixel(surface, x, y, argb);
+            }
+        }
+    }
+}
+
+fn draw_packed_line(
+    surface: &mut PackedSurface<'_>,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    argb: u32,
+    width: f32,
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
+    let radius = (width.max(1.0) / 2.0).max(0.5);
+
+    for step in 0..=steps {
+        let t = step as f32 / steps as f32;
+        draw_packed_circle(surface, x0 + dx * t, y0 + dy * t, radius, argb);
+    }
+}
+
 fn set_surface_pixel(surface: &mut PackedSurface<'_>, x: i32, y: i32, argb: u32) {
     if x < 0 || y < 0 {
         return;
@@ -231,6 +286,17 @@ fn draw_packed_text(surface: &mut PackedSurface<'_>, x: f32, y: f32, text: &str,
         }
         pen_x += 8;
     }
+}
+
+fn draw_packed_text_centered(
+    surface: &mut PackedSurface<'_>,
+    x: f32,
+    y: f32,
+    text: &str,
+    argb: u32,
+) {
+    // The fallback glyph is 10px tall, so shift by 5px to center around y.
+    draw_packed_text(surface, x, y - 5.0, text, argb);
 }
 
 #[derive(Debug, Default)]
@@ -334,6 +400,37 @@ impl RenderBackend for SkiaBackend {
                             canvas.draw_path(&path, &paint);
                         }
                     }
+                    DrawCommand::Circle {
+                        cx,
+                        cy,
+                        radius,
+                        argb,
+                    } => {
+                        let mut paint = skia::Paint::default();
+                        paint.set_anti_alias(true);
+                        paint.set_color(argb_to_skia_color(*argb));
+                        paint.set_style(skia::paint::Style::Fill);
+                        canvas.draw_circle(skia::Point::new(*cx, *cy), *radius, &paint);
+                    }
+                    DrawCommand::Line {
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        argb,
+                        width,
+                    } => {
+                        let mut paint = skia::Paint::default();
+                        paint.set_anti_alias(true);
+                        paint.set_color(argb_to_skia_color(*argb));
+                        paint.set_style(skia::paint::Style::Stroke);
+                        paint.set_stroke_width(*width);
+                        canvas.draw_line(
+                            skia::Point::new(*x0, *y0),
+                            skia::Point::new(*x1, *y1),
+                            &paint,
+                        );
+                    }
                     DrawCommand::Text { x, y, text, argb } => {
                         let mut paint = skia::Paint::default();
                         paint.set_anti_alias(true);
@@ -349,7 +446,20 @@ impl RenderBackend for SkiaBackend {
 
                         canvas.draw_str(text, (draw_x, baseline_y), &font, &paint);
                     }
-                    DrawCommand::NoOp | DrawCommand::Circle { .. } | DrawCommand::Line { .. } => {}
+                    DrawCommand::TextCentered { x, y, text, argb } => {
+                        let mut paint = skia::Paint::default();
+                        paint.set_anti_alias(true);
+                        paint.set_color(argb_to_skia_color(*argb));
+                        paint.set_style(skia::paint::Style::Stroke);
+                        paint.set_stroke_width(KEYPOINT_LABEL_STROKE_WIDTH);
+
+                        let (_, bounds) = font.measure_str(text, Some(&paint));
+                        let draw_x = *x + outline_ofs;
+                        let baseline_y = *y - (bounds.top() + bounds.bottom()) / 2.0;
+
+                        canvas.draw_str(text, (draw_x, baseline_y), &font, &paint);
+                    }
+                    DrawCommand::NoOp => {}
                 }
             }
 
@@ -383,10 +493,27 @@ impl RenderBackend for SkiaBackend {
                     filled,
                     ..
                 } => draw_packed_rectangle(&mut surface, *x, *y, *width, *height, *argb, *filled),
+                DrawCommand::Circle {
+                    cx,
+                    cy,
+                    radius,
+                    argb,
+                } => draw_packed_circle(&mut surface, *cx, *cy, *radius, *argb),
+                DrawCommand::Line {
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    argb,
+                    width,
+                } => draw_packed_line(&mut surface, *x0, *y0, *x1, *y1, *argb, *width),
                 DrawCommand::Text { x, y, text, argb } => {
                     draw_packed_text(&mut surface, *x, *y, text, *argb)
                 }
-                DrawCommand::NoOp | DrawCommand::Circle { .. } | DrawCommand::Line { .. } => {}
+                DrawCommand::TextCentered { x, y, text, argb } => {
+                    draw_packed_text_centered(&mut surface, *x, *y, text, *argb)
+                }
+                DrawCommand::NoOp => {}
             }
         }
 
@@ -556,5 +683,53 @@ mod tests {
         draw_packed_text(&mut surface, -4.0, -3.0, "99", 0xFF11_2233);
 
         assert!(pixels.chunks_exact(4).any(|px| px != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn packed_text_centered_draws_pixels_on_bgra_buffer() {
+        let mut pixels = vec![0_u8; 32 * 16 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 32 * 4,
+            width: 32,
+            height: 16,
+            layout: packed_pixel_layout(VideoFormat::Bgra).unwrap(),
+        };
+
+        draw_packed_text_centered(&mut surface, 8.0, 8.0, "0.9", 0xFFAA_BBCC);
+
+        assert!(pixels.chunks_exact(4).any(|px| px != [0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn packed_circle_draws_pixels_on_bgra_buffer() {
+        let mut pixels = vec![0_u8; 16 * 16 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 16 * 4,
+            width: 16,
+            height: 16,
+            layout: packed_pixel_layout(VideoFormat::Bgra).unwrap(),
+        };
+
+        draw_packed_circle(&mut surface, 8.0, 8.0, 3.0, 0xFF11_2233);
+
+        assert_ne!(pixel_at(&pixels, 16 * 4, 8, 8), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn packed_line_draws_pixels_on_bgra_buffer() {
+        let mut pixels = vec![0_u8; 32 * 16 * 4];
+        let mut surface = PackedSurface {
+            data: &mut pixels,
+            stride: 32 * 4,
+            width: 32,
+            height: 16,
+            layout: packed_pixel_layout(VideoFormat::Bgra).unwrap(),
+        };
+
+        draw_packed_line(&mut surface, 2.0, 2.0, 20.0, 2.0, 0xFFAA_BBCC, 2.0);
+
+        assert_ne!(pixel_at(&pixels, 32 * 4, 10, 2), [0, 0, 0, 0]);
     }
 }
