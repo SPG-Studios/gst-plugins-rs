@@ -9,6 +9,10 @@
 use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
+use gst_analytics::{
+    AnalyticsGroupMtd, AnalyticsKeypointMtd, AnalyticsMetaRefExt, AnalyticsRelationMeta, RelTypes,
+};
+use gst_video::prelude::VideoFrameExt;
 
 use gst_base::prelude::BaseTransformExt;
 use gst_base::subclass::prelude::*;
@@ -54,6 +58,204 @@ impl Default for Settings {
             semantic_tag: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KeypointSample {
+    id: u32,
+    x: i32,
+    y: i32,
+    confidence: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FrameBounds {
+    width: i32,
+    height: i32,
+}
+
+fn keypoint_in_frame(bounds: FrameBounds, x: i32, y: i32) -> bool {
+    x >= 0 && y >= 0 && x < bounds.width && y < bounds.height
+}
+
+fn clamp_to_frame(bounds: FrameBounds, x: i32, y: i32) -> (i32, i32) {
+    let max_x = bounds.width.saturating_sub(1);
+    let max_y = bounds.height.saturating_sub(1);
+
+    (x.clamp(0, max_x), y.clamp(0, max_y))
+}
+
+fn keypoint_position(
+    mtd: &gst_analytics::AnalyticsMtdRef<'_, AnalyticsKeypointMtd>,
+) -> Option<(i32, i32)> {
+    let pos = mtd.position().ok()?;
+    Some((pos.x, pos.y))
+}
+
+fn keypoint_confidence(mtd: &gst_analytics::AnalyticsMtdRef<'_, AnalyticsKeypointMtd>) -> f32 {
+    mtd.confidence().unwrap_or(1.0)
+}
+
+fn confidence_label(confidence: f32) -> String {
+    format!("{confidence:.2}")
+}
+
+fn push_keypoint_commands(
+    commands: &mut Vec<DrawCommand>,
+    samples: &[KeypointSample],
+    settings: &Settings,
+    draw_skeletons: bool,
+    draw_group_label_once: bool,
+    meta: &gst::MetaRef<'_, AnalyticsRelationMeta>,
+    bounds: FrameBounds,
+) {
+    let mut first_in_frame: Option<KeypointSample> = None;
+
+    for sample in samples {
+        if !keypoint_in_frame(bounds, sample.x, sample.y) {
+            continue;
+        }
+
+        if first_in_frame.is_none() {
+            first_in_frame = Some(*sample);
+        }
+
+        commands.push(DrawCommand::Circle {
+            cx: sample.x as f32,
+            cy: sample.y as f32,
+            radius: settings.keypoint_radius as f32,
+            argb: settings.keypoint_color,
+        });
+
+        if settings.draw_labels && !draw_group_label_once {
+            commands.push(DrawCommand::TextCentered {
+                x: sample.x as f32 + settings.keypoint_radius as f32,
+                y: sample.y as f32,
+                text: confidence_label(sample.confidence),
+                argb: settings.labels_color,
+            });
+        }
+    }
+
+    if settings.draw_labels
+        && draw_group_label_once
+        && let Some(sample) = first_in_frame
+    {
+        commands.push(DrawCommand::TextCentered {
+            x: sample.x as f32 + settings.keypoint_radius as f32,
+            y: sample.y as f32,
+            text: confidence_label(sample.confidence),
+            argb: settings.labels_color,
+        });
+    }
+
+    if !draw_skeletons || !settings.draw_skeleton {
+        return;
+    }
+
+    for sample in samples {
+        for related in
+            meta.iter_direct_related::<AnalyticsKeypointMtd>(sample.id, RelTypes::RELATE_TO)
+        {
+            if sample.id >= related.id() {
+                continue;
+            }
+
+            if let Some((x2, y2)) = keypoint_position(&related) {
+                let (x0, y0) = clamp_to_frame(bounds, sample.x, sample.y);
+                let (x1, y1) = clamp_to_frame(bounds, x2, y2);
+
+                commands.push(DrawCommand::Line {
+                    x0: x0 as f32,
+                    y0: y0 as f32,
+                    x1: x1 as f32,
+                    y1: y1 as f32,
+                    argb: settings.skeleton_color,
+                    width: settings.skeleton_line_width as f32,
+                });
+            }
+        }
+    }
+}
+
+fn analytics_to_draw_commands(
+    buffer: &gst::BufferRef,
+    settings: &Settings,
+    bounds: FrameBounds,
+) -> (AnalyticsFrame<'static>, Vec<DrawCommand>) {
+    let Some(meta) = buffer.meta::<AnalyticsRelationMeta>() else {
+        return (AnalyticsFrame::default(), Vec::new());
+    };
+
+    let mut commands = Vec::new();
+    let mut keypoint_count = 0usize;
+
+    if let Some(semantic_tag) = settings.semantic_tag.as_deref() {
+        for group in meta.iter::<AnalyticsGroupMtd>() {
+            if !group.semantic_tag_has_prefix(semantic_tag) {
+                continue;
+            }
+
+            let mut group_samples = Vec::new();
+            for keypoint in group.iter::<AnalyticsKeypointMtd>() {
+                let Some((x, y)) = keypoint_position(&keypoint) else {
+                    continue;
+                };
+
+                group_samples.push(KeypointSample {
+                    id: keypoint.id(),
+                    x,
+                    y,
+                    confidence: keypoint_confidence(&keypoint),
+                });
+            }
+
+            keypoint_count += group_samples.len();
+            push_keypoint_commands(
+                &mut commands,
+                &group_samples,
+                settings,
+                true,
+                true,
+                &meta,
+                bounds,
+            );
+        }
+    } else {
+        let mut samples = Vec::new();
+        for keypoint in meta.iter::<AnalyticsKeypointMtd>() {
+            let Some((x, y)) = keypoint_position(&keypoint) else {
+                continue;
+            };
+
+            samples.push(KeypointSample {
+                id: keypoint.id(),
+                x,
+                y,
+                confidence: keypoint_confidence(&keypoint),
+            });
+        }
+
+        keypoint_count = samples.len();
+        push_keypoint_commands(
+            &mut commands,
+            &samples,
+            settings,
+            false,
+            false,
+            &meta,
+            bounds,
+        );
+    }
+
+    (
+        AnalyticsFrame {
+            keypoint_count,
+            semantic_tag: None,
+            ..Default::default()
+        },
+        commands,
+    )
 }
 
 #[derive(Default)]
@@ -312,9 +514,236 @@ impl VideoFilterImpl for KeypointsOverlay {
         &self,
         frame: &mut gst_video::VideoFrameRef<&mut gst::BufferRef>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        let settings = self.settings.lock().unwrap().clone();
+        let bounds = FrameBounds {
+            width: frame.width() as i32,
+            height: frame.height() as i32,
+        };
+        let (analytics, commands) = analytics_to_draw_commands(frame.buffer(), &settings, bounds);
+
         let mut render_context = self.render_context.lock().unwrap();
-        render_context.render(frame, &AnalyticsFrame::default(), &[DrawCommand::NoOp])?;
+        render_context.render(frame, &analytics, &commands)?;
 
         Ok(gst::FlowSuccess::Ok)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gst_analytics::{
+        AnalyticsKeypointDimensions, AnalyticsKeypointPosition, AnalyticsKeypointVisibility,
+        AnalyticsRelationMetaGroupExt, AnalyticsRelationMetaKeypointExt,
+    };
+
+    fn init() {
+        use std::sync::Once;
+
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            gst::init().unwrap();
+        });
+    }
+
+    fn count_centered_labels(commands: &[DrawCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::TextCentered { .. }))
+            .count()
+    }
+
+    fn count_circles(commands: &[DrawCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::Circle { .. }))
+            .count()
+    }
+
+    #[test]
+    fn grouped_mode_emits_single_label_per_group() {
+        init();
+
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+
+            let points = vec![
+                AnalyticsKeypointPosition {
+                    x: 16,
+                    y: 16,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+                AnalyticsKeypointPosition {
+                    x: 24,
+                    y: 24,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+                AnalyticsKeypointPosition {
+                    x: 32,
+                    y: 32,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+            ];
+
+            relation
+                .add_keypoints_group_from_positions("pose/hand", &points, None, None, &[])
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: true,
+            semantic_tag: Some("pose/".to_string()),
+            ..Default::default()
+        };
+
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
+        assert_eq!(count_circles(&commands), 3);
+        assert_eq!(count_centered_labels(&commands), 1);
+    }
+
+    #[test]
+    fn ungrouped_mode_emits_label_per_keypoint() {
+        init();
+
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+
+            relation
+                .add_keypoint_mtd(
+                    AnalyticsKeypointDimensions::_2d,
+                    16,
+                    16,
+                    0,
+                    AnalyticsKeypointVisibility::VISIBLE,
+                    0.9,
+                )
+                .unwrap();
+            relation
+                .add_keypoint_mtd(
+                    AnalyticsKeypointDimensions::_2d,
+                    24,
+                    24,
+                    0,
+                    AnalyticsKeypointVisibility::VISIBLE,
+                    0.8,
+                )
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: true,
+            semantic_tag: None,
+            ..Default::default()
+        };
+
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
+        assert_eq!(count_circles(&commands), 2);
+        assert_eq!(count_centered_labels(&commands), 2);
+    }
+
+    #[test]
+    fn semantic_tag_filter_skips_non_matching_group() {
+        init();
+
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+
+            let points = vec![
+                AnalyticsKeypointPosition {
+                    x: 16,
+                    y: 16,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+                AnalyticsKeypointPosition {
+                    x: 24,
+                    y: 24,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+            ];
+
+            relation
+                .add_keypoints_group_from_positions("hand/left", &points, None, None, &[])
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: true,
+            semantic_tag: Some("pose/".to_string()),
+            ..Default::default()
+        };
+
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn grouped_mode_with_all_points_outside_frame_emits_no_labels() {
+        init();
+
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+
+            let points = vec![
+                AnalyticsKeypointPosition {
+                    x: -10,
+                    y: 16,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+                AnalyticsKeypointPosition {
+                    x: -20,
+                    y: 24,
+                    z: 0,
+                    dimension: AnalyticsKeypointDimensions::_2d,
+                },
+            ];
+
+            relation
+                .add_keypoints_group_from_positions("pose/hand", &points, None, None, &[])
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: true,
+            semantic_tag: Some("pose/".to_string()),
+            ..Default::default()
+        };
+
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
+        assert_eq!(count_circles(&commands), 0);
+        assert_eq!(count_centered_labels(&commands), 0);
     }
 }
