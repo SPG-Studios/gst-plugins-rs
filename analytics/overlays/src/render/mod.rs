@@ -97,9 +97,51 @@ const KEYPOINT_LABEL_STROKE_WIDTH: f32 = 1.0;
 const BOX_STROKE_WIDTH: f32 = 2.0;
 const LABEL_EXTRA_VERTICAL_GAP: f32 = 1.5;
 const ROTATION_EPSILON: f32 = 0.001;
+pub(crate) const LABEL_LAYOUT_HEIGHT: i32 = 12;
+pub(crate) const LABEL_LAYOUT_GAP: i32 = 2;
 
 fn label_outline_offset(font_size: f32) -> f32 {
     (font_size / 15.0).max(1.0)
+}
+
+fn make_label_font() -> skia::Font {
+    let font_mgr = skia::FontMgr::default();
+    let typeface = ["Arial", "Liberation Sans", "DejaVu Sans", "Sans"]
+        .iter()
+        .find_map(|family| font_mgr.match_family_style(*family, skia::FontStyle::normal()))
+        .or_else(|| font_mgr.legacy_make_typeface(None, skia::FontStyle::normal()));
+
+    let mut font = if let Some(typeface) = typeface {
+        skia::Font::from_typeface(typeface, LABEL_FONT_SIZE)
+    } else {
+        let mut default_font = skia::Font::default();
+        default_font.set_size(LABEL_FONT_SIZE);
+        default_font
+    };
+    font.set_subpixel(true);
+    font.set_edging(skia::font::Edging::AntiAlias);
+    font.set_linear_metrics(true);
+    font.set_hinting(skia::FontHinting::Normal);
+    font
+}
+
+fn measure_text_width_with_stroke(text: &str, stroke_width: f32) -> i32 {
+    let font = make_label_font();
+    let mut paint = skia::Paint::default();
+    paint.set_style(skia::paint::Style::Stroke);
+    paint.set_stroke_width(stroke_width);
+
+    let (_, bounds) = font.measure_str(text, Some(&paint));
+    let outline = label_outline_offset(LABEL_FONT_SIZE);
+    (bounds.width() + outline * 2.0).ceil().max(1.0) as i32
+}
+
+pub(crate) fn measure_label_text_width(text: &str) -> i32 {
+    measure_text_width_with_stroke(text, LABEL_STROKE_WIDTH)
+}
+
+pub(crate) fn measure_centered_label_text_width(text: &str) -> i32 {
+    measure_text_width_with_stroke(text, KEYPOINT_LABEL_STROKE_WIDTH)
 }
 
 fn packed_pixel_layout(format: VideoFormat) -> Option<PackedPixelLayout> {
@@ -327,23 +369,7 @@ impl RenderBackend for SkiaBackend {
                 .ok_or(gst::FlowError::Error)?;
 
             let canvas = surface.canvas();
-            let font_mgr = skia::FontMgr::default();
-            let typeface = ["Arial", "Liberation Sans", "DejaVu Sans", "Sans"]
-                .iter()
-                .find_map(|family| font_mgr.match_family_style(*family, skia::FontStyle::normal()))
-                .or_else(|| font_mgr.legacy_make_typeface(None, skia::FontStyle::normal()));
-
-            let mut font = if let Some(typeface) = typeface {
-                skia::Font::from_typeface(typeface, LABEL_FONT_SIZE)
-            } else {
-                let mut default_font = skia::Font::default();
-                default_font.set_size(LABEL_FONT_SIZE);
-                default_font
-            };
-            font.set_subpixel(true);
-            font.set_edging(skia::font::Edging::AntiAlias);
-            font.set_linear_metrics(true);
-            font.set_hinting(skia::FontHinting::Normal);
+            let font = make_label_font();
 
             let outline_ofs = label_outline_offset(LABEL_FONT_SIZE);
 
@@ -612,6 +638,12 @@ mod tests {
         ];
 
         assert_eq!(commands.len(), 5);
+    }
+
+    #[test]
+    fn measured_label_text_width_is_positive() {
+        assert!(measure_label_text_width("person (c=0.85)") > 0);
+        assert!(measure_centered_label_text_width("0.90") > 0);
     }
 
     #[test]

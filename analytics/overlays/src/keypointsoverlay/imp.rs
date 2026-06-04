@@ -18,7 +18,11 @@ use gst_base::prelude::BaseTransformExt;
 use gst_base::subclass::prelude::*;
 use gst_video::subclass::prelude::*;
 
-use crate::render::{AnalyticsFrame, DrawCommand, RenderContext};
+use crate::geometry::{OccupiedRegionRegistry, Rect};
+use crate::render::{
+    AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, RenderContext,
+    measure_centered_label_text_width,
+};
 
 use std::sync::{LazyLock, Mutex};
 
@@ -100,19 +104,81 @@ fn confidence_label(confidence: f32) -> String {
     format!("{confidence:.2}")
 }
 
+fn estimate_centered_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
+    let width = measure_centered_label_text_width(text);
+    Rect::from_xywh(
+        anchor_x,
+        anchor_y.saturating_sub(LABEL_LAYOUT_HEIGHT / 2),
+        width,
+        LABEL_LAYOUT_HEIGHT,
+    )
+}
+
+fn reserve_keypoint_label_anchor(
+    registry: &mut OccupiedRegionRegistry,
+    sample: KeypointSample,
+    keypoint_radius_px: i32,
+    text: &str,
+) -> Option<(i32, i32)> {
+    let label_width = measure_centered_label_text_width(text);
+    let half_height = LABEL_LAYOUT_HEIGHT / 2;
+    let right_x = sample
+        .x
+        .saturating_add(keypoint_radius_px)
+        .saturating_add(LABEL_LAYOUT_GAP);
+    let left_x = sample
+        .x
+        .saturating_sub(label_width)
+        .saturating_sub(keypoint_radius_px)
+        .saturating_sub(LABEL_LAYOUT_GAP);
+    let above_y = sample
+        .y
+        .saturating_sub(keypoint_radius_px)
+        .saturating_sub(half_height)
+        .saturating_sub(LABEL_LAYOUT_GAP);
+    let below_y = sample
+        .y
+        .saturating_add(keypoint_radius_px)
+        .saturating_add(half_height)
+        .saturating_add(LABEL_LAYOUT_GAP);
+
+    let candidates = [
+        (right_x, sample.y),
+        (right_x, above_y),
+        (right_x, below_y),
+        (left_x, sample.y),
+        (left_x, above_y),
+        (left_x, below_y),
+    ];
+
+    for (x, y) in candidates {
+        if registry.reserve_label(estimate_centered_label_rect(x, y, text)) {
+            return Some((x, y));
+        }
+    }
+
+    None
+}
+
+struct KeypointCommandContext<'a> {
+    settings: &'a Settings,
+    draw_skeletons: bool,
+    draw_group_label_once: bool,
+    meta: &'a gst::MetaRef<'a, AnalyticsRelationMeta>,
+    bounds: FrameBounds,
+    occupied: &'a mut OccupiedRegionRegistry,
+}
+
 fn push_keypoint_commands(
     commands: &mut Vec<DrawCommand>,
     samples: &[KeypointSample],
-    settings: &Settings,
-    draw_skeletons: bool,
-    draw_group_label_once: bool,
-    meta: &gst::MetaRef<'_, AnalyticsRelationMeta>,
-    bounds: FrameBounds,
+    ctx: &mut KeypointCommandContext<'_>,
 ) {
     let mut first_in_frame: Option<KeypointSample> = None;
+    let keypoint_radius_px = ctx.settings.keypoint_radius.ceil() as i32;
 
     for sample in samples {
-        if !keypoint_in_frame(bounds, sample.x, sample.y) {
+        if !keypoint_in_frame(ctx.bounds, sample.x, sample.y) {
             continue;
         }
 
@@ -120,58 +186,76 @@ fn push_keypoint_commands(
             first_in_frame = Some(*sample);
         }
 
+        ctx.occupied.reserve_highlight(Rect::from_xywh(
+            sample.x.saturating_sub(keypoint_radius_px),
+            sample.y.saturating_sub(keypoint_radius_px),
+            keypoint_radius_px.saturating_mul(2).saturating_add(1),
+            keypoint_radius_px.saturating_mul(2).saturating_add(1),
+        ));
+
         commands.push(DrawCommand::Circle {
             cx: sample.x as f32,
             cy: sample.y as f32,
-            radius: settings.keypoint_radius as f32,
-            argb: settings.keypoint_color,
+            radius: ctx.settings.keypoint_radius as f32,
+            argb: ctx.settings.keypoint_color,
         });
 
-        if settings.draw_labels && !draw_group_label_once {
+        if ctx.settings.draw_labels && !ctx.draw_group_label_once {
+            let label = confidence_label(sample.confidence);
+            if let Some((label_x, label_y)) =
+                reserve_keypoint_label_anchor(ctx.occupied, *sample, keypoint_radius_px, &label)
+            {
+                commands.push(DrawCommand::TextCentered {
+                    x: label_x as f32,
+                    y: label_y as f32,
+                    text: label,
+                    argb: ctx.settings.labels_color,
+                });
+            }
+        }
+    }
+
+    if ctx.settings.draw_labels
+        && ctx.draw_group_label_once
+        && let Some(sample) = first_in_frame
+    {
+        let label = confidence_label(sample.confidence);
+        if let Some((label_x, label_y)) =
+            reserve_keypoint_label_anchor(ctx.occupied, sample, keypoint_radius_px, &label)
+        {
             commands.push(DrawCommand::TextCentered {
-                x: sample.x as f32 + settings.keypoint_radius as f32,
-                y: sample.y as f32,
-                text: confidence_label(sample.confidence),
-                argb: settings.labels_color,
+                x: label_x as f32,
+                y: label_y as f32,
+                text: label,
+                argb: ctx.settings.labels_color,
             });
         }
     }
 
-    if settings.draw_labels
-        && draw_group_label_once
-        && let Some(sample) = first_in_frame
-    {
-        commands.push(DrawCommand::TextCentered {
-            x: sample.x as f32 + settings.keypoint_radius as f32,
-            y: sample.y as f32,
-            text: confidence_label(sample.confidence),
-            argb: settings.labels_color,
-        });
-    }
-
-    if !draw_skeletons || !settings.draw_skeleton {
+    if !ctx.draw_skeletons || !ctx.settings.draw_skeleton {
         return;
     }
 
     for sample in samples {
-        for related in
-            meta.iter_direct_related::<AnalyticsKeypointMtd>(sample.id, RelTypes::RELATE_TO)
+        for related in ctx
+            .meta
+            .iter_direct_related::<AnalyticsKeypointMtd>(sample.id, RelTypes::RELATE_TO)
         {
             if sample.id >= related.id() {
                 continue;
             }
 
             if let Some((x2, y2)) = keypoint_position(&related) {
-                let (x0, y0) = clamp_to_frame(bounds, sample.x, sample.y);
-                let (x1, y1) = clamp_to_frame(bounds, x2, y2);
+                let (x0, y0) = clamp_to_frame(ctx.bounds, sample.x, sample.y);
+                let (x1, y1) = clamp_to_frame(ctx.bounds, x2, y2);
 
                 commands.push(DrawCommand::Line {
                     x0: x0 as f32,
                     y0: y0 as f32,
                     x1: x1 as f32,
                     y1: y1 as f32,
-                    argb: settings.skeleton_color,
-                    width: settings.skeleton_line_width as f32,
+                    argb: ctx.settings.skeleton_color,
+                    width: ctx.settings.skeleton_line_width as f32,
                 });
             }
         }
@@ -189,6 +273,7 @@ fn analytics_to_draw_commands(
 
     let mut commands = Vec::new();
     let mut keypoint_count = 0usize;
+    let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
 
     if let Some(semantic_tag) = settings.semantic_tag.as_deref() {
         for group in meta.iter::<AnalyticsGroupMtd>() {
@@ -211,15 +296,15 @@ fn analytics_to_draw_commands(
             }
 
             keypoint_count += group_samples.len();
-            push_keypoint_commands(
-                &mut commands,
-                &group_samples,
+            let mut ctx = KeypointCommandContext {
                 settings,
-                true,
-                true,
-                &meta,
+                draw_skeletons: true,
+                draw_group_label_once: true,
+                meta: &meta,
                 bounds,
-            );
+                occupied: &mut occupied,
+            };
+            push_keypoint_commands(&mut commands, &group_samples, &mut ctx);
         }
     } else {
         let mut samples = Vec::new();
@@ -237,15 +322,15 @@ fn analytics_to_draw_commands(
         }
 
         keypoint_count = samples.len();
-        push_keypoint_commands(
-            &mut commands,
-            &samples,
+        let mut ctx = KeypointCommandContext {
             settings,
-            false,
-            false,
-            &meta,
+            draw_skeletons: false,
+            draw_group_label_once: false,
+            meta: &meta,
             bounds,
-        );
+            occupied: &mut occupied,
+        };
+        push_keypoint_commands(&mut commands, &samples, &mut ctx);
     }
 
     (
@@ -745,5 +830,24 @@ mod tests {
 
         assert_eq!(count_circles(&commands), 0);
         assert_eq!(count_centered_labels(&commands), 0);
+    }
+
+    #[test]
+    fn keypoint_label_anchor_falls_back_when_preferred_is_occupied() {
+        let mut occupied = OccupiedRegionRegistry::new(128, 128);
+        let sample = KeypointSample {
+            id: 1,
+            x: 30,
+            y: 30,
+            confidence: 0.9,
+        };
+
+        let preferred = estimate_centered_label_rect(35, 30, "0.90");
+        occupied.reserve_highlight(preferred);
+
+        let anchor = reserve_keypoint_label_anchor(&mut occupied, sample, 3, "0.90")
+            .expect("expected fallback label anchor");
+
+        assert_ne!(anchor, (35, 30));
     }
 }

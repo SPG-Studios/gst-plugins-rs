@@ -14,6 +14,7 @@
  */
 use gst::glib;
 
+mod geometry;
 mod keypointsoverlay;
 mod lifecycle;
 mod objectdetectionoverlay;

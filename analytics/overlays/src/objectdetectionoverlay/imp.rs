@@ -19,8 +19,12 @@ use gst_base::prelude::{BaseTransformExt, BaseTransformExtManual};
 use gst_base::subclass::prelude::*;
 use gst_video::subclass::prelude::*;
 
+use crate::geometry::{OccupiedRegionRegistry, Rect};
 use crate::lifecycle::{LifecycleEventKind, OverlayLifecycle, lifecycle_event_kind};
-use crate::render::{AnalyticsFrame, DrawCommand, RenderContext};
+use crate::render::{
+    AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, RenderContext,
+    measure_label_text_width,
+};
 
 use std::sync::{LazyLock, Mutex};
 
@@ -175,9 +179,73 @@ fn generate_track_color_hsv(track_id: u64) -> u32 {
     (0xFF << 24) | (r8 << 16) | (g8 << 8) | b8
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FrameBounds {
+    width: i32,
+    height: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BBox {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
+    let text_width = measure_label_text_width(text);
+    Rect::from_xywh(
+        anchor_x,
+        anchor_y.saturating_sub(LABEL_LAYOUT_HEIGHT),
+        text_width,
+        LABEL_LAYOUT_HEIGHT,
+    )
+}
+
+fn reserve_label_anchor(
+    registry: &mut OccupiedRegionRegistry,
+    bbox: BBox,
+    text: &str,
+    preferred_x: i32,
+    preferred_y: i32,
+) -> Option<(i32, i32)> {
+    let candidates = [
+        (preferred_x, preferred_y),
+        (
+            bbox.x,
+            bbox.y
+                .saturating_sub(LABEL_LAYOUT_GAP)
+                .max(LABEL_LAYOUT_HEIGHT),
+        ),
+        (
+            bbox.x,
+            bbox.y
+                .saturating_add(bbox.h)
+                .saturating_add(LABEL_LAYOUT_HEIGHT)
+                .saturating_add(LABEL_LAYOUT_GAP),
+        ),
+        (
+            bbox.x
+                .saturating_add(bbox.w)
+                .saturating_add(LABEL_LAYOUT_GAP),
+            preferred_y,
+        ),
+    ];
+
+    for (x, y) in candidates {
+        if registry.reserve_label(estimate_label_rect(x, y, text)) {
+            return Some((x, y));
+        }
+    }
+
+    None
+}
+
 fn analytics_to_draw_commands(
     buffer: &gst::BufferRef,
     settings: Settings,
+    bounds: FrameBounds,
 ) -> (AnalyticsFrame<'static>, Vec<DrawCommand>) {
     let Some(meta) = buffer.meta::<AnalyticsRelationMeta>() else {
         return (AnalyticsFrame::default(), Vec::new());
@@ -185,6 +253,7 @@ fn analytics_to_draw_commands(
 
     let mut commands = Vec::new();
     let mut object_count = 0;
+    let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
 
     for od_mtd in meta.iter::<AnalyticsODMtd>() {
         let Ok(location) = od_mtd.location() else {
@@ -211,6 +280,15 @@ fn analytics_to_draw_commands(
 
         object_count += 1;
 
+        let bbox = BBox {
+            x: bbox_x,
+            y: bbox_y,
+            w: bbox_w,
+            h: bbox_h,
+        };
+
+        occupied.reserve_highlight(Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h));
+
         commands.push(DrawCommand::Rectangle {
             x: bbox_x as f32,
             y: bbox_y as f32,
@@ -223,23 +301,36 @@ fn analytics_to_draw_commands(
 
         if settings.draw_labels {
             let label = label_text_with_related(&meta, &od_mtd);
-            commands.push(DrawCommand::Text {
-                x: location.x as f32,
-                y: location.y as f32,
-                text: label,
-                argb: settings.labels_color,
-            });
+            if let Some((label_x, label_y)) =
+                reserve_label_anchor(&mut occupied, bbox, &label, location.x, location.y)
+            {
+                commands.push(DrawCommand::Text {
+                    x: label_x as f32,
+                    y: label_y as f32,
+                    text: label,
+                    argb: settings.labels_color,
+                });
+            }
         }
 
         if settings.draw_tracking_labels
             && let Some(tracking_id) = tracking_id
         {
-            commands.push(DrawCommand::Text {
-                x: location.x as f32,
-                y: (location.y + location.h) as f32,
-                text: tracking_label_text(tracking_id),
-                argb: settings.labels_color,
-            });
+            let tracking_text = tracking_label_text(tracking_id);
+            if let Some((label_x, label_y)) = reserve_label_anchor(
+                &mut occupied,
+                bbox,
+                &tracking_text,
+                location.x,
+                location.y.saturating_add(location.h),
+            ) {
+                commands.push(DrawCommand::Text {
+                    x: label_x as f32,
+                    y: label_y as f32,
+                    text: tracking_text,
+                    argb: settings.labels_color,
+                });
+            }
         }
     }
 
@@ -299,6 +390,14 @@ fn decide_attach_mode(
         Err(())
     } else {
         Ok(attach)
+    }
+}
+
+#[cfg(test)]
+fn test_frame_bounds() -> FrameBounds {
+    FrameBounds {
+        width: 192,
+        height: 192,
     }
 }
 
@@ -750,7 +849,14 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
         let has_meta = buffer.meta::<AnalyticsRelationMeta>().is_some();
 
         let (analytics, commands) = if has_meta {
-            let (analytics, commands) = analytics_to_draw_commands(buffer, settings);
+            let (analytics, commands) = analytics_to_draw_commands(
+                buffer,
+                settings,
+                FrameBounds {
+                    width: frame.width() as i32,
+                    height: frame.height() as i32,
+                },
+            );
             let mut cache = self.overlay_cache.lock().unwrap();
             cache.analytics = analytics.clone();
             cache.commands = commands.clone();
@@ -921,7 +1027,8 @@ mod tests {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
         };
 
-        let (analytics, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (analytics, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         assert_eq!(analytics.object_count, 1);
         assert_eq!(commands.len(), 2);
@@ -986,7 +1093,8 @@ mod tests {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
         };
 
-        let (analytics, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (analytics, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         assert_eq!(analytics.object_count, 1);
         assert_eq!(commands.len(), 3);
@@ -1033,7 +1141,8 @@ mod tests {
             tracking_outline_colors: true,
         };
 
-        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         match &commands[0] {
             DrawCommand::Rectangle { argb, .. } => {
@@ -1067,7 +1176,8 @@ mod tests {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
         };
 
-        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         match &commands[0] {
             DrawCommand::Rectangle { rotation, .. } => {
@@ -1083,7 +1193,7 @@ mod tests {
 
         let buffer = gst::Buffer::new();
         let (analytics, commands) =
-            analytics_to_draw_commands(buffer.as_ref(), Settings::default());
+            analytics_to_draw_commands(buffer.as_ref(), Settings::default(), test_frame_bounds());
 
         assert_eq!(analytics.object_count, 0);
         assert!(commands.is_empty());
@@ -1147,7 +1257,8 @@ mod tests {
             tracking_outline_colors: false,
         };
 
-        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         match &commands[0] {
             DrawCommand::Rectangle { argb, .. } => assert_eq!(*argb, 0xFF12_3456),
@@ -1173,7 +1284,8 @@ mod tests {
             ..Settings::default()
         };
 
-        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         assert_eq!(commands.len(), 1);
         assert!(matches!(commands[0], DrawCommand::Rectangle { .. }));
@@ -1206,7 +1318,8 @@ mod tests {
             ..Settings::default()
         };
 
-        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         assert_eq!(commands.len(), 2);
         match &commands[1] {
@@ -1237,11 +1350,30 @@ mod tests {
             ..Settings::default()
         };
 
-        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), settings);
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
 
         match &commands[0] {
             DrawCommand::Rectangle { filled, .. } => assert!(*filled),
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn reserve_label_anchor_falls_back_when_preferred_spot_is_occupied() {
+        let mut occupied = OccupiedRegionRegistry::new(128, 128);
+        let bbox = BBox {
+            x: 20,
+            y: 20,
+            w: 30,
+            h: 20,
+        };
+
+        occupied.reserve_highlight(Rect::from_xywh(20, 8, 60, 20));
+
+        let anchor = reserve_label_anchor(&mut occupied, bbox, "person (c=0.90)", 20, 20)
+            .expect("expected fallback anchor");
+
+        assert_ne!(anchor, (20, 20));
     }
 }
