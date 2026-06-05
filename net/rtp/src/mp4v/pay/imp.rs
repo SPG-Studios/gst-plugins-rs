@@ -239,7 +239,9 @@ impl crate::basepay::RtpBasePay2Impl for RtpMpeg4VideoPay {
         let mut state = self.state.borrow_mut();
 
         let segment = state.segment.as_ref().unwrap();
-        let buffer_running_time = segment.to_running_time(buffer.pts().unwrap());
+
+        // Base class ensures pts or errors out if no pts on first buffer
+        let buffer_running_time = segment.to_running_time(buffer.pts().expect("pts"));
 
         gst::trace!(
             CAT,
