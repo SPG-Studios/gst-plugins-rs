@@ -120,7 +120,7 @@ impl ElementImpl for RtpMpeg4VideoPay {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
             gst::subclass::ElementMetadata::new(
-                "RTP MPEG-4 Video Elementary Stream Payloader",
+                "RTP MPEG-4 Part 2 Video Elementary Stream Payloader",
                 "Codec/Payloader/Network/RTP",
                 "Payload an MPEG-4 part 2 Elementary Stream into RTP packets (RFC 3016)",
                 "Tim-Philipp Müller <tim centricular com>",
