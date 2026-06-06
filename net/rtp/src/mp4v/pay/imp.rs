@@ -188,7 +188,9 @@ impl crate::basepay::RtpBasePay2Impl for RtpMpeg4VideoPay {
             return false;
         };
 
-        if codec_data.size() < 5 {
+        const VISUAL_OBJECT_SEQUENCE_START_LEN: usize = 5;
+
+        if codec_data.size() < VISUAL_OBJECT_SEQUENCE_START_LEN {
             gst::error!(CAT, imp = self, "codec_data too small");
             return false;
         };
@@ -543,6 +545,7 @@ impl RtpMpeg4VideoPay {
             );
 
             if let PacketType::VisualObjectSequenceStart(id) = header.ptype() {
+                gst::info!(CAT, imp = self, "profile_level_id = {id}");
                 state.profile_level_id = Some(id);
             }
         }
