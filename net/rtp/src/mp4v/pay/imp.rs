@@ -49,8 +49,7 @@ struct Settings {
 struct State {
     config: Vec<u8>,
     profile_level_id: Option<u8>,
-    update_caps: bool, // Output caps need to be sent or updated
-    segment: Option<gst::FormattedSegment<gst::ClockTime>>,
+    update_caps: bool,                   // Output caps need to be sent or updated
     last_config: Option<gst::ClockTime>, // Running time when we last inserted the config in-band
 }
 
@@ -237,9 +236,7 @@ impl crate::basepay::RtpBasePay2Impl for RtpMpeg4VideoPay {
             gst::FlowError::Error
         })?;
 
-        let mut state = self.state.borrow_mut();
-
-        let segment = state.segment.as_ref().unwrap();
+        let segment = self.obj().segment().expect("segment");
 
         // Base class ensures pts or errors out if no pts on first buffer
         let buffer_running_time = segment.to_running_time(buffer.pts().expect("pts"));
@@ -293,6 +290,8 @@ impl crate::basepay::RtpBasePay2Impl for RtpMpeg4VideoPay {
 
             packets.split_at(vop)
         };
+
+        let mut state = self.state.borrow_mut();
 
         if !headers.is_empty() {
             self.handle_headers(&mut state, &map, headers);
@@ -479,27 +478,6 @@ impl crate::basepay::RtpBasePay2Impl for RtpMpeg4VideoPay {
         }
 
         Ok(gst::FlowSuccess::Ok)
-    }
-
-    fn sink_event(&self, event: gst::Event) -> Result<gst::FlowSuccess, gst::FlowError> {
-        #[allow(clippy::single_match)]
-        match event.view() {
-            gst::EventView::Segment(ev) => {
-                // Chain up first so base class can do error checking and such
-                self.parent_sink_event(event.clone())?;
-
-                let mut state = self.state.borrow_mut();
-
-                let segment = ev.segment().clone().downcast::<gst::ClockTime>().unwrap();
-
-                gst::info!(CAT, imp = self, "Segment: {segment:?}");
-
-                state.segment = Some(segment.clone());
-
-                Ok(gst::FlowSuccess::Ok)
-            }
-            _ => self.parent_sink_event(event),
-        }
     }
 
     fn start(&self) -> Result<(), gst::ErrorMessage> {
