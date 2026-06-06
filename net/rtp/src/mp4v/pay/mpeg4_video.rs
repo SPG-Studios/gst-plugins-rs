@@ -133,7 +133,7 @@ pub(crate) enum Mpeg4ParseError {
 }
 
 pub(crate) fn parse_packets_from_slice(frame_data: &[u8]) -> Result<PacketVec, Mpeg4ParseError> {
-    // Skip be any number of leading zeros
+    // Skip any number of leading zeros
     let Some(first_nonzero) = frame_data.iter().position(|&b| b != 0x00) else {
         return Err(Mpeg4ParseError::NoSync); // all zeros
     };
