@@ -31,10 +31,10 @@ use gst::{glib, prelude::*, subclass::prelude::*};
 
 use std::sync::LazyLock;
 
-use crate::basepay::{PacketToBufferRelation, RtpBasePay2Ext, RtpBasePay2ImplExt};
+use crate::basepay::{PacketToBufferRelation, RtpBasePay2Ext};
 
 use crate::mp4v::pay::mpeg4_video;
-use crate::mp4v::pay::mpeg4_video::{Packet, PacketType, PacketVec, VopCodingType};
+use crate::mp4v::pay::mpeg4_video::{Packet, PacketType, VopCodingType};
 
 use smallvec::smallvec;
 
