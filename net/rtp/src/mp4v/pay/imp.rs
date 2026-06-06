@@ -556,10 +556,20 @@ impl RtpMpeg4VideoPay {
 
         let profile_level_id = state.profile_level_id.unwrap_or(1); // 1 = Simple Profile, Level 1
 
+        // Negotiate clock-rate, or default to 90000
+        let downstream_caps = self.obj().src_pad().peer_query_caps(None);
+
+        gst::debug!(CAT, imp = self, "Downstream caps: {downstream_caps}");
+
+        let clock_rate = downstream_caps
+            .structure(0)
+            .and_then(|s| s.get::<i32>("clock-rate").ok())
+            .unwrap_or(90000);
+
         let src_caps = gst::Caps::builder("application/x-rtp")
             .field("media", "video")
             .field("encoding-name", "MP4V-ES")
-            .field("clock-rate", 90000i32)
+            .field("clock-rate", clock_rate)
             .field("config", hex::encode(&state.config))
             .field("profile-level-id", profile_level_id.to_string())
             .build();
