@@ -48,7 +48,6 @@ struct Settings {
 #[derive(Default)]
 struct State {
     config: Vec<u8>,
-    config_packets: PacketVec,
     profile_level_id: Option<u8>,
     update_caps: bool, // Output caps need to be sent or updated
     segment: Option<gst::FormattedSegment<gst::ClockTime>>,
@@ -567,8 +566,6 @@ impl RtpMpeg4VideoPay {
             );
             state.config.clear();
             state.config.extend_from_slice(new_config);
-            state.config_packets.clear();
-            state.config_packets.extend_from_slice(headers);
             state.update_caps = true;
         } else {
             gst::log!(CAT, imp = self, "New config is same as old config");
