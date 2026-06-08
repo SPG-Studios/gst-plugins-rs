@@ -6,12 +6,19 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-//! Shared utility functions for tensor processing across analytics elements
+//! Shared utility functions for tensor processing across analytics elements.
+//!
+//! This module is gated on `v1_28` (see `lib.rs`) because it relies on
+//! `gst_analytics::image_util`, which is only available from that version.
 
 /// Calculate Intersection over Union (IoU) for axis-aligned bounding boxes with f32 coordinates.
 ///
 /// Takes two bounding boxes as tuples (min_x, min_y, max_x, max_y) and returns the IoU value
 /// as an f32 in the range [0.0, 1.0].
+///
+/// Only consumed by the `v1_30`-gated `hand` decoders, so it is unused in a
+/// `v1_28`-only build.
+#[allow(dead_code)]
 pub(crate) fn bbox_iou_f32(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> f32 {
     gst_analytics::image_util::iou_f32(
         gst_analytics::image_util::Rect::<f32> {

@@ -685,16 +685,15 @@ impl BaseTransformImpl for HandLandmarkTensorDec {
                 }
             };
 
-            if let (Some(od_id), Some(kp_group_id)) = (hand_od_id, keypoint_group_id) {
-                if let Err(err) =
+            if let (Some(od_id), Some(kp_group_id)) = (hand_od_id, keypoint_group_id)
+                && let Err(err) =
                     rmeta.set_relation(gst_analytics::RelTypes::RELATE_TO, od_id, kp_group_id)
-                {
-                    gst::debug!(
-                        CAT,
-                        "Failed to set relation between hand OD and keypoint group: {}",
-                        err
-                    );
-                }
+            {
+                gst::debug!(
+                    CAT,
+                    "Failed to set relation between hand OD and keypoint group: {}",
+                    err
+                );
             }
         }
 
