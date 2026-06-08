@@ -52,6 +52,7 @@ members = [
     "net/webrtc/signalling",
     "net/webrtcbin2",
     "net/quinn",
+    "net/webvtt/webvttaggregator",
 
     "text/accumulate",
     "text/ahead",
@@ -123,6 +124,7 @@ default-members = [
     "net/webrtc/signalling",
     "net/ndi",
     "net/quinn",
+    "net/webvtt/webvttaggregator",
 
     "text/accumulate",
     "text/ahead",
