@@ -18,6 +18,9 @@ use gst::glib;
 pub(crate) const ONVIF_METADATA_SCHEMA: &str = "http://www.onvif.org/ver10/schema";
 pub(crate) const ONVIF_METADATA_PREFIX: &str = "tt";
 
+// helpers builds on gst_analytics::image_util, which is gated on v1_28, and is
+// only consumed by the v1_28+ tensor decoders below.
+#[cfg(feature = "v1_28")]
 mod helpers;
 mod onvifmeta2relationmeta;
 mod relationmeta2onvifmeta;
