@@ -19,6 +19,7 @@ use gst_base::prelude::{BaseTransformExt, BaseTransformExtManual};
 use gst_base::subclass::prelude::*;
 use gst_video::subclass::prelude::*;
 
+use crate::color::generate_track_color_argb;
 use crate::geometry::{OccupiedRegionRegistry, Rect};
 use crate::lifecycle::{LifecycleEventKind, OverlayLifecycle, lifecycle_event_kind};
 use crate::render::{
@@ -36,6 +37,9 @@ const DEFAULT_LABELS_COLOR: u32 = 0xFFFF_FFFF;
 const DEFAULT_FILLED_BOX: bool = false;
 const DEFAULT_EXPIRE_OVERLAY: u64 = 1_000_000_000;
 const DEFAULT_TRACKING_OUTLINE_COLORS: bool = true;
+// Color generation constants for track coloring (HSV space)
+const TRACK_COLOR_SATURATION: f32 = 0.85;
+const TRACK_COLOR_VALUE: f32 = 0.95;
 
 #[derive(Debug, Clone, Copy)]
 struct Settings {
@@ -137,48 +141,6 @@ fn related_tracking_id(
         .map(|tracking_mtd| tracking_mtd.info().0)
 }
 
-fn generate_track_color_hsv(track_id: u64) -> u32 {
-    let mut h = 0.0_f32;
-    let mut increment = 0.5_f32;
-    const SATURATION: f32 = 0.85;
-    const VALUE: f32 = 0.95;
-
-    let mut id = track_id + 1;
-    while id > 1 {
-        if id & 1 == 1 {
-            h += increment;
-        }
-        id >>= 1;
-        increment *= 0.5;
-    }
-
-    while h >= 1.0 {
-        h -= 1.0;
-    }
-
-    let hi = (h * 6.0) as i32;
-    let f = h * 6.0 - hi as f32;
-    let p = VALUE * (1.0 - SATURATION);
-    let q = VALUE * (1.0 - f * SATURATION);
-    let t = VALUE * (1.0 - (1.0 - f) * SATURATION);
-
-    let (r, g, b) = match hi.rem_euclid(6) {
-        0 => (VALUE, t, p),
-        1 => (q, VALUE, p),
-        2 => (p, VALUE, t),
-        3 => (p, q, VALUE),
-        4 => (t, p, VALUE),
-        5 => (VALUE, p, q),
-        _ => (0.0, 0.0, 0.0),
-    };
-
-    let r8 = (r * 255.0) as u32;
-    let g8 = (g * 255.0) as u32;
-    let b8 = (b * 255.0) as u32;
-
-    (0xFF << 24) | (r8 << 16) | (g8 << 8) | b8
-}
-
 #[derive(Debug, Clone, Copy)]
 struct FrameBounds {
     width: i32,
@@ -272,7 +234,7 @@ fn analytics_to_draw_commands(
         let tracking_id = related_tracking_id(&meta, &od_mtd);
         let outline_color = if settings.tracking_outline_colors {
             tracking_id
-                .map(|id| generate_track_color_hsv(id & 0x0FFF_FFFF))
+                .map(|id| generate_track_color_argb(id & 0x0FFF_FFFF, TRACK_COLOR_SATURATION, TRACK_COLOR_VALUE))
                 .unwrap_or(settings.object_detection_outline_color)
         } else {
             settings.object_detection_outline_color
@@ -552,6 +514,12 @@ impl ObjectDetectionOverlay {
             let mut frame =
                 gst_video::VideoFrameRef::from_buffer_ref_writable(buffer.make_mut(), &info)
                     .ok()?;
+            // `Buffer::with_size` returns uninitialized memory; clear the overlay
+            // to fully transparent so only the drawn commands are blended onto
+            // the video frame (otherwise the undrawn pixels blend as garbage).
+            if let Ok(data) = frame.plane_data_mut(0) {
+                data.fill(0);
+            }
             self.render_context
                 .lock()
                 .unwrap()
@@ -1146,7 +1114,7 @@ mod tests {
 
         match &commands[0] {
             DrawCommand::Rectangle { argb, .. } => {
-                assert_eq!(*argb, generate_track_color_hsv(17));
+                assert_eq!(*argb, generate_track_color_argb(17, TRACK_COLOR_SATURATION, TRACK_COLOR_VALUE));
                 assert_ne!(*argb, 0xFF00_FF00);
             }
             other => panic!("unexpected command: {other:?}"),

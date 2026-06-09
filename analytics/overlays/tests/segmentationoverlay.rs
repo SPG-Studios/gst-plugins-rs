@@ -299,7 +299,11 @@ fn pipeline_small_mask_vector_renders_overlay() {
     appsrc.end_of_stream().unwrap();
 
     let out = pull_buffer_from_appsink(&appsink);
+    // Verify segmentation mask is rendered. At least some pixels with non-zero
+    // alpha channel should be drawn to indicate the segmented region.
     assert!(count_nonzero_alpha(&out) > 0);
+    // Verify pixel at (0, 0) remains untouched (alpha=0). This ensures rendering
+    // is localized to the segmentation region and doesn't affect the entire frame.
     assert_eq!(pixel_bgra(&out, 0, 0)[3], 0);
 
     wait_for_pipeline_eos(&pipeline);
@@ -324,6 +328,9 @@ fn pipeline_large_mask_vector_scales_over_full_frame() {
     appsrc.end_of_stream().unwrap();
 
     let out = pull_buffer_from_appsink(&appsink);
+    // Verify large mask is scaled and rendered over the full frame bounds.
+    // The element should scale the 8x8 mask to fill the 64x64 region and render
+    // more than 50% of pixels with non-zero alpha (the mask is all 1s).
     assert!(count_nonzero_alpha(&out) > (WIDTH * HEIGHT) / 2);
 
     wait_for_pipeline_eos(&pipeline);
@@ -352,8 +359,13 @@ fn pipeline_overlapping_masks_vector_composites_in_order() {
 
     let first_only = pixel_bgra(&out, 12, 12);
     let overlap = pixel_bgra(&out, 22, 22);
+    // Verify first mask region (only covered by first mask) has non-zero alpha.
     assert!(first_only[3] > 0);
+    // Verify overlapping region (covered by both masks) has non-zero alpha.
+    // This ensures both masks contribute to the final composite.
     assert!(overlap[3] > 0);
+    // Verify pixels have different colors in non-overlapping vs overlapping regions.
+    // This confirms the element composites masks in the correct order (second on top).
     assert_ne!(first_only, overlap);
 
     wait_for_pipeline_eos(&pipeline);
@@ -378,7 +390,11 @@ fn pipeline_selected_types_filters_mask_values() {
 
     let left_person = pixel_bgra(&out, 18, 18);
     let right_car = pixel_bgra(&out, 30, 18);
+    // Verify left region (value 1="person", matches filter) is rendered with non-zero alpha.
+    // This confirms the element correctly renders mask regions that match selected-types.
     assert!(left_person[3] > 0);
+    // Verify right region (value 2="car", does not match filter) has zero alpha.
+    // This confirms the element correctly filters out regions that don't match selected-types.
     assert_eq!(right_car[3], 0);
 
     wait_for_pipeline_eos(&pipeline);
@@ -399,6 +415,9 @@ fn pipeline_selected_types_without_classification_still_renders_mask() {
     appsrc.end_of_stream().unwrap();
 
     let out = pull_buffer_from_appsink(&appsink);
+    // Verify mask is still rendered even without classification metadata.
+    // The element should fall back to rendering all mask regions when selected-types
+    // filtering cannot be applied due to missing classification data.
     assert!(count_nonzero_alpha(&out) > 0);
 
     wait_for_pipeline_eos(&pipeline);
@@ -419,7 +438,11 @@ fn pipeline_mask_is_clipped_to_frame_bounds() {
     appsrc.end_of_stream().unwrap();
 
     let out = pull_buffer_from_appsink(&appsink);
+    // Verify pixel at (0, 0) has zero alpha. The mask starts at (56, 56) so the
+    // top-left corner should not be rendered, confirming clipping to frame bounds.
     assert_eq!(pixel_bgra(&out, 0, 0)[3], 0);
+    // Verify pixel at (63, 63) has non-zero alpha. The mask extends into the
+    // bottom-right corner of the frame, confirming it is rendered up to the frame edge.
     assert!(pixel_bgra(&out, 63, 63)[3] > 0);
 
     wait_for_pipeline_eos(&pipeline);
@@ -446,7 +469,12 @@ fn pipeline_merges_upstream_composition_with_segmentation_overlay() {
     appsrc.end_of_stream().unwrap();
 
     let out = pull_buffer_from_appsink(&appsink);
+    // Verify pixel at (6, 6) has non-zero alpha. This is within the upstream
+    // composition rectangle (4, 4, 8, 8), confirming upstream overlays are preserved.
     assert!(pixel_bgra(&out, 6, 6)[3] > 0);
+    // Verify pixel at (30, 30) has non-zero alpha. This is within the segmentation
+    // mask region (28, 28, 16, 16), confirming segmentation overlay is rendered.
+    // This verifies both upstream and element-generated overlays are merged correctly.
     assert!(pixel_bgra(&out, 30, 30)[3] > 0);
 
     wait_for_pipeline_eos(&pipeline);
@@ -472,6 +500,7 @@ fn pipeline_runtime_property_changes_apply_in_playing_and_preserve_segment_color
 
     let first_person = pixel_bgra(&out_first, 18, 18);
     let first_car = pixel_bgra(&out_first, 30, 18);
+    // Verify both segments render in the first frame (no filtering applied yet).
     assert!(first_person[3] > 0);
     assert!(first_car[3] > 0);
 
@@ -494,8 +523,11 @@ fn pipeline_runtime_property_changes_apply_in_playing_and_preserve_segment_color
     let second_person = pixel_bgra(&out_second, 18, 18);
     let second_car = pixel_bgra(&out_second, 30, 18);
 
-    // Existing segment color assignment should remain stable across hint changes.
+    // Verify person segment keeps same color assignment as first frame.
+    // This ensures color stability when applying property changes at runtime.
     assert_eq!(second_person, first_person);
+    // Verify car segment is now filtered out (alpha=0) after selected-types="person" is set.
+    // This confirms property changes take effect immediately and don't affect previous color assignments.
     assert_eq!(second_car[3], 0);
 
     appsrc.end_of_stream().unwrap();
@@ -560,7 +592,11 @@ fn pipeline_selected_types_with_multiple_n_to_n_classifications_still_filters() 
     let out = pull_buffer_from_appsink(&appsink);
     let left_person = pixel_bgra(&out, 18, 18);
     let right_car = pixel_bgra(&out, 30, 18);
+    // Verify person segment (value 1, matches filter) renders with non-zero alpha.
+    // This works even with multiple N_TO_N classifications linked to the segment.
     assert!(left_person[3] > 0);
+    // Verify car segment (value 2, doesn't match filter) has zero alpha.
+    // This confirms filtering correctly applies even with multiple classification relationships.
     assert_eq!(right_car[3], 0);
 
     wait_for_pipeline_eos(&pipeline);
@@ -584,13 +620,15 @@ fn pipeline_no_metadata_frame_reuses_previous_overlay() {
     appsrc.push_buffer(input_first).unwrap();
     let out_first = pull_buffer_from_appsink(&appsink);
     let first_overlay_px = pixel_bgra(&out_first, 18, 18);
+    // Verify first frame with metadata renders overlay.
     assert!(first_overlay_px[3] > 0);
 
     let input_second = make_plain_buffer(gst::ClockTime::from_seconds(1));
     appsrc.push_buffer(input_second).unwrap();
     let out_second = pull_buffer_from_appsink(&appsink);
 
-    // Current compatibility behavior: stale composition is retained when metadata is missing.
+    // Verify second frame without metadata reuses previous overlay.
+    // This ensures continuity when metadata is momentarily unavailable.
     let second_overlay_px = pixel_bgra(&out_second, 18, 18);
     assert!(second_overlay_px[3] > 0);
 
@@ -613,7 +651,11 @@ fn pipeline_default_caps_blends_and_does_not_attach_overlay_meta() {
     appsrc.end_of_stream().unwrap();
 
     let out = pull_buffer_from_appsink(&appsink);
+    // Verify overlay is blended directly into the video frame (not as composition metadata).
+    // This is the default behavior when downstream doesn't support overlay composition.
     assert!(count_nonzero_alpha(&out) > 0);
+    // Verify no VideoOverlayCompositionMeta is attached. Without overlay-meta feature
+    // in caps, the element should blend overlays directly into pixel data instead.
     assert!(
         out.iter_meta::<gst_video::VideoOverlayCompositionMeta>()
             .next()
@@ -630,6 +672,8 @@ fn eos_event_is_accepted() {
 
     let mut harness = make_harness(None);
 
+    // Verify the element accepts EOS (End of Stream) events gracefully.
+    // This ensures proper stream termination and resource cleanup.
     assert!(harness.push_event(gst::event::Eos::new()));
 }
 
@@ -639,6 +683,7 @@ fn flush_stop_clears_stale_overlay_and_resumes_processing() {
 
     let mut harness = make_harness(None);
 
+    // Push initial buffer with segmentation metadata.
     assert_eq!(
         harness.push(make_segmented_buffer(
             gst::ClockTime::ZERO,
@@ -648,25 +693,31 @@ fn flush_stop_clears_stale_overlay_and_resumes_processing() {
         Ok(gst::FlowSuccess::Ok)
     );
     let first = harness.pull().unwrap();
+    // Verify overlay is drawn for the segmented frame.
     assert!(buffer_has_drawn_pixels(&first));
 
+    // Initiate flush sequence.
     assert!(harness.push_event(gst::event::FlushStart::new()));
+    // Verify element rejects buffer push during flush with Flushing error.
     assert_eq!(
         harness.push(make_plain_buffer(gst::ClockTime::from_mseconds(10))),
         Err(gst::FlowError::Flushing)
     );
 
+    // Complete flush sequence.
     assert!(harness.push_event(gst::event::FlushStop::new(true)));
     push_time_segment_to_harness(&mut harness);
 
-    // After FLUSH_STOP, stale cached composition should have been cleared.
+    // Push plain frame (no metadata) after flush. The stale overlay should have been cleared.
     assert_eq!(
         harness.push(make_plain_buffer(gst::ClockTime::from_mseconds(20))),
         Ok(gst::FlowSuccess::Ok)
     );
     let cleared = harness.pull().unwrap();
+    // Verify no overlay is drawn. FLUSH_STOP should have cleared cached composition state.
     assert!(!buffer_has_drawn_pixels(&cleared));
 
+    // Push new segmented buffer to confirm processing resumes normally.
     assert_eq!(
         harness.push(make_segmented_buffer(
             gst::ClockTime::from_mseconds(30),
@@ -676,5 +727,7 @@ fn flush_stop_clears_stale_overlay_and_resumes_processing() {
         Ok(gst::FlowSuccess::Ok)
     );
     let resumed = harness.pull().unwrap();
+    // Verify overlay is drawn again after resuming from flush.
+    // This confirms element correctly resets state and continues processing.
     assert!(buffer_has_drawn_pixels(&resumed));
 }

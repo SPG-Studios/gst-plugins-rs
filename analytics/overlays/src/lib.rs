@@ -14,6 +14,7 @@
  */
 use gst::glib;
 
+mod color;
 mod geometry;
 mod keypointsoverlay;
 mod lifecycle;
