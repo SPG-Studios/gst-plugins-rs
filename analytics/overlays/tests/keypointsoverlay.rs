@@ -135,6 +135,8 @@ fn renders_individual_keypoint() {
 
     let mut harness = make_harness();
 
+    // Push buffer with metadata containing a single keypoint at (24, 24).
+    // Verify element accepts the buffer successfully.
     assert_eq!(
         harness.push(make_buffer_with_single_keypoint(
             gst::ClockTime::ZERO,
@@ -146,7 +148,9 @@ fn renders_individual_keypoint() {
     );
 
     let buffer = harness.pull().unwrap();
+    // Verify pixel at keypoint location (24, 24) is drawn with non-zero color.
     assert!(pixel_is_nonzero(&buffer, 24, 24));
+    // Verify unrelated pixel at (0, 0) remains zero (no spurious drawing).
     assert!(pixel_is_zero(&buffer, 0, 0));
 }
 
@@ -155,15 +159,18 @@ fn renders_group_skeleton_when_semantic_tag_matches() {
     init();
 
     let mut harness = make_harness();
+    // Enable skeleton rendering (lines connecting keypoints).
     harness
         .element()
         .unwrap()
         .set_property("draw-skeleton", true);
+    // Filter to only render groups with semantic tag starting with "pose/".
     harness
         .element()
         .unwrap()
         .set_property("semantic-tag", Some("pose/".to_string()));
 
+    // Push buffer with keypoint group tagged "pose/body" containing two keypoints at (12, 20) and (52, 20).
     assert_eq!(
         harness.push(make_buffer_with_group_and_relation(
             gst::ClockTime::ZERO,
@@ -174,8 +181,12 @@ fn renders_group_skeleton_when_semantic_tag_matches() {
     );
 
     let buffer = harness.pull().unwrap();
+    // Verify first keypoint is drawn at (12, 20).
     assert!(pixel_is_nonzero(&buffer, 12, 20));
+    // Verify second keypoint is drawn at (52, 20).
     assert!(pixel_is_nonzero(&buffer, 52, 20));
+    // Verify skeleton line between keypoints is drawn at midpoint (32, 20).
+    // This tests that the element connects related keypoints correctly.
     assert!(pixel_is_nonzero(&buffer, 32, 20));
 }
 
@@ -185,6 +196,8 @@ fn skips_keypoints_outside_frame() {
 
     let mut harness = make_harness();
 
+    // Push buffer with keypoint at x=-6 (outside frame bounds to the left).
+    // Verify element accepts the buffer.
     assert_eq!(
         harness.push(make_buffer_with_single_keypoint(
             gst::ClockTime::ZERO,
@@ -196,6 +209,9 @@ fn skips_keypoints_outside_frame() {
     );
 
     let buffer = harness.pull().unwrap();
+    // Verify no pixels are drawn at (0, 0). Out-of-bounds keypoints should not
+    // cause any drawing at frame edges, preventing clipping artifacts.
     assert!(pixel_is_zero(&buffer, 0, 0));
+    // Verify unrelated pixel remains zero (sanity check).
     assert!(pixel_is_zero(&buffer, 24, 24));
 }
