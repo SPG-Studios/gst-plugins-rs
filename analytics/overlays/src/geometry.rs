@@ -24,12 +24,10 @@ impl Rect {
         }
     }
 
-    #[allow(dead_code)]
     pub fn width(self) -> i32 {
         self.right.saturating_sub(self.left)
     }
 
-    #[allow(dead_code)]
     pub fn height(self) -> i32 {
         self.bottom.saturating_sub(self.top)
     }
@@ -54,6 +52,24 @@ impl Rect {
         };
 
         (!rect.is_empty()).then_some(rect)
+    }
+
+    /// Center point of the rectangle, used as a leader-line endpoint.
+    pub fn center(self) -> (i32, i32) {
+        (
+            self.left + (self.right - self.left) / 2,
+            self.top + (self.bottom - self.top) / 2,
+        )
+    }
+
+    /// Point on this rectangle (clamped to its bounds) nearest to `point`. For a
+    /// point outside the rectangle this lands on the nearest edge, which makes a
+    /// tidier leader-line endpoint than the center.
+    pub fn closest_point_to(self, (x, y): (i32, i32)) -> (i32, i32) {
+        (
+            x.max(self.left).min(self.right),
+            y.max(self.top).min(self.bottom),
+        )
     }
 }
 
@@ -129,6 +145,43 @@ impl OccupiedRegionRegistry {
             .any(|region| region.priority <= priority && region.rect.intersects(clipped))
     }
 
+    /// Total area where `rect`, clipped to the frame, overlaps already-reserved
+    /// regions of priority `priority` or higher. Returns `None` when `rect`
+    /// lies entirely outside the frame.
+    pub fn overlap_area(&self, priority: RegionPriority, rect: Rect) -> Option<i64> {
+        let clipped = rect.intersection(self.frame)?;
+
+        let area = self
+            .regions
+            .iter()
+            .filter(|region| region.priority <= priority)
+            .filter_map(|region| region.rect.intersection(clipped))
+            .map(|overlap| i64::from(overlap.width()) * i64::from(overlap.height()))
+            .sum();
+
+        Some(area)
+    }
+
+    pub fn label_overlap_area(&self, rect: Rect) -> Option<i64> {
+        self.overlap_area(RegionPriority::Label, rect)
+    }
+
+    /// Reserve `rect`, clipped to the frame, unconditionally — even when it
+    /// overlaps existing regions. Returns the clipped rect that was inserted,
+    /// or `None` if `rect` lies entirely outside the frame.
+    pub fn force_reserve(&mut self, priority: RegionPriority, rect: Rect) -> Option<Rect> {
+        let clipped = rect.intersection(self.frame)?;
+        self.regions.push(OccupiedRegion {
+            priority,
+            rect: clipped,
+        });
+        Some(clipped)
+    }
+
+    pub fn force_reserve_label(&mut self, rect: Rect) -> Option<Rect> {
+        self.force_reserve(RegionPriority::Label, rect)
+    }
+
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.regions.len()
@@ -194,5 +247,69 @@ mod tests {
 
         assert!(registry.is_empty());
         assert!(registry.reserve_label(Rect::from_xywh(0, 0, 20, 20)));
+    }
+
+    #[test]
+    fn rect_center_is_the_midpoint() {
+        assert_eq!(Rect::from_xywh(10, 20, 40, 20).center(), (30, 30));
+    }
+
+    #[test]
+    fn closest_point_to_lands_on_the_nearest_edge() {
+        let rect = Rect::from_xywh(10, 20, 40, 20); // left 10, top 20, right 50, bottom 40
+
+        // Feature above-left clamps to the top-left corner.
+        assert_eq!(rect.closest_point_to((0, 0)), (10, 20));
+        // Feature directly below clamps onto the bottom edge at the same x.
+        assert_eq!(rect.closest_point_to((30, 100)), (30, 40));
+        // Feature to the right clamps onto the right edge at the same y.
+        assert_eq!(rect.closest_point_to((90, 25)), (50, 25));
+        // Feature inside the rect is returned unchanged.
+        assert_eq!(rect.closest_point_to((30, 30)), (30, 30));
+    }
+
+    #[test]
+    fn overlap_area_sums_intersections_with_relevant_regions() {
+        let mut registry = OccupiedRegionRegistry::new(100, 100);
+        registry.reserve_highlight(Rect::from_xywh(0, 0, 20, 20));
+        registry.reserve_highlight(Rect::from_xywh(30, 0, 20, 20));
+
+        // A label rect overlapping the first highlight by 10x20 and the second
+        // by 10x20 => 200 + 200 = 400.
+        let area = registry
+            .label_overlap_area(Rect::from_xywh(10, 0, 30, 20))
+            .expect("rect intersects the frame");
+        assert_eq!(area, 400);
+
+        // No overlap with any region.
+        assert_eq!(
+            registry.label_overlap_area(Rect::from_xywh(60, 60, 10, 10)),
+            Some(0)
+        );
+
+        // Entirely outside the frame.
+        assert_eq!(
+            registry.label_overlap_area(Rect::from_xywh(200, 200, 10, 10)),
+            None
+        );
+    }
+
+    #[test]
+    fn force_reserve_inserts_even_when_overlapping() {
+        let mut registry = OccupiedRegionRegistry::new(100, 100);
+        registry.reserve_highlight(Rect::from_xywh(0, 0, 50, 50));
+
+        // A normal reserve would refuse this overlapping label.
+        assert!(!registry.reserve_label(Rect::from_xywh(10, 10, 20, 20)));
+        // force_reserve_label inserts it anyway, clipped to the frame.
+        assert_eq!(
+            registry.force_reserve_label(Rect::from_xywh(90, 90, 40, 40)),
+            Some(Rect::from_xywh(90, 90, 10, 10))
+        );
+        // Off-frame rects are still rejected.
+        assert_eq!(
+            registry.force_reserve_label(Rect::from_xywh(200, 200, 10, 10)),
+            None
+        );
     }
 }

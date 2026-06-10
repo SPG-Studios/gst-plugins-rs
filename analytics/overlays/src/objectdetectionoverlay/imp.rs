@@ -22,6 +22,7 @@ use gst_video::subclass::prelude::*;
 use crate::color::generate_track_color_argb;
 use crate::geometry::{OccupiedRegionRegistry, Rect};
 use crate::lifecycle::{LifecycleEventKind, OverlayLifecycle, lifecycle_event_kind};
+use crate::placement::{LabelPlacement, leader_endpoints, place_label, push_leader_line};
 use crate::render::{
     AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, RenderContext,
     measure_label_text_width,
@@ -155,6 +156,10 @@ struct BBox {
     h: i32,
 }
 
+/// Offset of the far (extended) ring of label candidates from the box, added on
+/// top of [`LABEL_LAYOUT_GAP`].
+const LABEL_CANDIDATE_EXT: i32 = 12;
+
 fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
     let text_width = measure_label_text_width(text);
     Rect::from_xywh(
@@ -165,43 +170,70 @@ fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
     )
 }
 
-fn reserve_label_anchor(
+/// Fallback label regions around a detection box, ordered near ring then far
+/// ring (above, below, right, left in each). Object labels are drawn at the
+/// bottom-left of their rectangle, so the baseline anchor `y` maps to the
+/// rectangle bottom.
+fn box_label_candidates(bbox: BBox, label_w: i32) -> Vec<Rect> {
+    let h = LABEL_LAYOUT_HEIGHT;
+    let rect_at =
+        |x: i32, baseline_y: i32| Rect::from_xywh(x, baseline_y.saturating_sub(h), label_w, h);
+
+    let right_x = bbox.x.saturating_add(bbox.w);
+    let left_x = bbox.x.saturating_sub(label_w);
+    // Side labels sit one line below the box top so they don't overhang it.
+    let side_y = bbox.y.saturating_add(h);
+    let box_bottom = bbox.y.saturating_add(bbox.h);
+
+    [
+        LABEL_LAYOUT_GAP,
+        LABEL_LAYOUT_GAP.saturating_add(LABEL_CANDIDATE_EXT),
+    ]
+    .into_iter()
+    .flat_map(|off| {
+        [
+            rect_at(bbox.x, bbox.y.saturating_sub(off).max(h)), // above
+            rect_at(bbox.x, box_bottom.saturating_add(h).saturating_add(off)), // below
+            rect_at(right_x.saturating_add(off), side_y),       // right
+            rect_at(left_x.saturating_sub(off), side_y),        // left
+        ]
+    })
+    .collect()
+}
+
+fn place_od_label(
     registry: &mut OccupiedRegionRegistry,
     bbox: BBox,
     text: &str,
     preferred_x: i32,
     preferred_y: i32,
-) -> Option<(i32, i32)> {
-    let candidates = [
-        (preferred_x, preferred_y),
-        (
-            bbox.x,
-            bbox.y
-                .saturating_sub(LABEL_LAYOUT_GAP)
-                .max(LABEL_LAYOUT_HEIGHT),
-        ),
-        (
-            bbox.x,
-            bbox.y
-                .saturating_add(bbox.h)
-                .saturating_add(LABEL_LAYOUT_HEIGHT)
-                .saturating_add(LABEL_LAYOUT_GAP),
-        ),
-        (
-            bbox.x
-                .saturating_add(bbox.w)
-                .saturating_add(LABEL_LAYOUT_GAP),
-            preferred_y,
-        ),
-    ];
+) -> Option<LabelPlacement> {
+    let default = estimate_label_rect(preferred_x, preferred_y, text);
+    let candidates = box_label_candidates(bbox, measure_label_text_width(text));
 
-    for (x, y) in candidates {
-        if registry.reserve_label(estimate_label_rect(x, y, text)) {
-            return Some((x, y));
-        }
+    place_label(registry, default, &candidates)
+}
+
+/// Draw an object label at its placed position, with a leader line between the
+/// box edge and the label edge when the label was displaced.
+fn push_od_label(
+    commands: &mut Vec<DrawCommand>,
+    placement: LabelPlacement,
+    text: String,
+    box_rect: Rect,
+    argb: u32,
+) {
+    if placement.displaced {
+        let (from, to) = leader_endpoints(box_rect, placement.rect);
+        push_leader_line(commands, from, to, argb);
     }
 
-    None
+    commands.push(DrawCommand::Text {
+        x: placement.rect.left as f32,
+        y: placement.rect.bottom as f32,
+        text,
+        argb,
+    });
 }
 
 fn analytics_to_draw_commands(
@@ -234,7 +266,13 @@ fn analytics_to_draw_commands(
         let tracking_id = related_tracking_id(&meta, &od_mtd);
         let outline_color = if settings.tracking_outline_colors {
             tracking_id
-                .map(|id| generate_track_color_argb(id & 0x0FFF_FFFF, TRACK_COLOR_SATURATION, TRACK_COLOR_VALUE))
+                .map(|id| {
+                    generate_track_color_argb(
+                        id & 0x0FFF_FFFF,
+                        TRACK_COLOR_SATURATION,
+                        TRACK_COLOR_VALUE,
+                    )
+                })
                 .unwrap_or(settings.object_detection_outline_color)
         } else {
             settings.object_detection_outline_color
@@ -261,17 +299,20 @@ fn analytics_to_draw_commands(
             filled: settings.filled_box,
         });
 
+        let box_rect = Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h);
+
         if settings.draw_labels {
             let label = label_text_with_related(&meta, &od_mtd);
-            if let Some((label_x, label_y)) =
-                reserve_label_anchor(&mut occupied, bbox, &label, location.x, location.y)
+            if let Some(placement) =
+                place_od_label(&mut occupied, bbox, &label, location.x, location.y)
             {
-                commands.push(DrawCommand::Text {
-                    x: label_x as f32,
-                    y: label_y as f32,
-                    text: label,
-                    argb: settings.labels_color,
-                });
+                push_od_label(
+                    &mut commands,
+                    placement,
+                    label,
+                    box_rect,
+                    settings.labels_color,
+                );
             }
         }
 
@@ -279,19 +320,28 @@ fn analytics_to_draw_commands(
             && let Some(tracking_id) = tracking_id
         {
             let tracking_text = tracking_label_text(tracking_id);
-            if let Some((label_x, label_y)) = reserve_label_anchor(
+            // The label's default position sits just below the box so it does
+            // not overlap the box highlight; the leader line (when needed) is
+            // drawn between the box edge and the label edge.
+            let default_baseline = location
+                .y
+                .saturating_add(location.h)
+                .saturating_add(LABEL_LAYOUT_HEIGHT)
+                .saturating_add(LABEL_LAYOUT_GAP);
+            if let Some(placement) = place_od_label(
                 &mut occupied,
                 bbox,
                 &tracking_text,
                 location.x,
-                location.y.saturating_add(location.h),
+                default_baseline,
             ) {
-                commands.push(DrawCommand::Text {
-                    x: label_x as f32,
-                    y: label_y as f32,
-                    text: tracking_text,
-                    argb: settings.labels_color,
-                });
+                push_od_label(
+                    &mut commands,
+                    placement,
+                    tracking_text,
+                    box_rect,
+                    settings.labels_color,
+                );
             }
         }
     }
@@ -1114,7 +1164,10 @@ mod tests {
 
         match &commands[0] {
             DrawCommand::Rectangle { argb, .. } => {
-                assert_eq!(*argb, generate_track_color_argb(17, TRACK_COLOR_SATURATION, TRACK_COLOR_VALUE));
+                assert_eq!(
+                    *argb,
+                    generate_track_color_argb(17, TRACK_COLOR_SATURATION, TRACK_COLOR_VALUE)
+                );
                 assert_ne!(*argb, 0xFF00_FF00);
             }
             other => panic!("unexpected command: {other:?}"),
@@ -1327,8 +1380,15 @@ mod tests {
         }
     }
 
+    fn count_lines(commands: &[DrawCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::Line { .. }))
+            .count()
+    }
+
     #[test]
-    fn reserve_label_anchor_falls_back_when_preferred_spot_is_occupied() {
+    fn od_label_falls_back_and_is_displaced_when_preferred_spot_is_occupied() {
         let mut occupied = OccupiedRegionRegistry::new(128, 128);
         let bbox = BBox {
             x: 20,
@@ -1337,11 +1397,122 @@ mod tests {
             h: 20,
         };
 
-        occupied.reserve_highlight(Rect::from_xywh(20, 8, 60, 20));
+        // The preferred label rect sits just above the box top (baseline at y=20).
+        let default = estimate_label_rect(20, 20, "person (c=0.90)");
+        occupied.reserve_highlight(default);
 
-        let anchor = reserve_label_anchor(&mut occupied, bbox, "person (c=0.90)", 20, 20)
-            .expect("expected fallback anchor");
+        let placement = place_od_label(&mut occupied, bbox, "person (c=0.90)", 20, 20)
+            .expect("expected a fallback placement");
 
-        assert_ne!(anchor, (20, 20));
+        assert_ne!(placement.rect, default);
+        assert!(placement.displaced);
+    }
+
+    #[test]
+    fn displaced_od_label_emits_a_leader_line() {
+        let mut commands = Vec::new();
+        let mut occupied = OccupiedRegionRegistry::new(128, 128);
+        let bbox = BBox {
+            x: 20,
+            y: 20,
+            w: 30,
+            h: 20,
+        };
+
+        occupied.reserve_highlight(estimate_label_rect(20, 20, "person (c=0.90)"));
+
+        let placement = place_od_label(&mut occupied, bbox, "person (c=0.90)", 20, 20)
+            .expect("expected a placement");
+        push_od_label(
+            &mut commands,
+            placement,
+            "person (c=0.90)".to_string(),
+            Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h),
+            0xFFFF_FFFF,
+        );
+
+        assert_eq!(count_lines(&commands), 1);
+        assert!(matches!(commands.last(), Some(DrawCommand::Text { .. })));
+    }
+
+    #[test]
+    fn od_label_at_preferred_spot_has_no_leader_line() {
+        let mut commands = Vec::new();
+        let mut occupied = OccupiedRegionRegistry::new(128, 128);
+        let bbox = BBox {
+            x: 20,
+            y: 20,
+            w: 30,
+            h: 20,
+        };
+
+        let placement = place_od_label(&mut occupied, bbox, "person (c=0.90)", 20, 20)
+            .expect("expected a placement");
+        assert!(!placement.displaced);
+        push_od_label(
+            &mut commands,
+            placement,
+            "person (c=0.90)".to_string(),
+            Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h),
+            0xFFFF_FFFF,
+        );
+
+        assert_eq!(count_lines(&commands), 0);
+        assert_eq!(commands.len(), 1);
+    }
+
+    #[test]
+    fn overlapping_objects_are_labelled_deterministically_with_leader_lines() {
+        gst::init().unwrap();
+
+        // Four boxes stacked at nearly the same spot so their default label
+        // positions collide and the candidate / least-overlap path engages.
+        let build_buffer = || {
+            let mut buffer = gst::Buffer::new();
+            {
+                let mut relation = AnalyticsRelationMeta::add(buffer.make_mut());
+                for i in 0..4 {
+                    let off = i * 4;
+                    relation
+                        .add_od_mtd(
+                            glib::Quark::from_str("person"),
+                            20 + off,
+                            40 + off,
+                            40,
+                            30,
+                            0.80,
+                        )
+                        .unwrap();
+                }
+            }
+            buffer
+        };
+
+        let settings = Settings {
+            render_enabled: true,
+            draw_labels: true,
+            draw_tracking_labels: false,
+            ..Settings::default()
+        };
+
+        let (analytics, commands) =
+            analytics_to_draw_commands(build_buffer().as_ref(), settings, test_frame_bounds());
+        let (_, commands_again) =
+            analytics_to_draw_commands(build_buffer().as_ref(), settings, test_frame_bounds());
+
+        // Deterministic: identical input produces identical draw commands.
+        assert_eq!(commands, commands_again);
+
+        // Complete: every object is labelled (none dropped by the placement).
+        let labels = commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .count();
+        assert_eq!(analytics.object_count, 4);
+        assert_eq!(labels, 4);
+
+        // The crowding forces at least one label off its default position, which
+        // must emit a leader line back to its box.
+        assert!(count_lines(&commands) >= 1);
     }
 }
