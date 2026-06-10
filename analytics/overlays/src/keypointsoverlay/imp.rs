@@ -19,6 +19,9 @@ use gst_base::subclass::prelude::*;
 use gst_video::subclass::prelude::*;
 
 use crate::geometry::{OccupiedRegionRegistry, Rect};
+use crate::placement::{
+    LabelPlacement, leader_endpoints, place_label, point_label_candidates, push_leader_line,
+};
 use crate::render::{
     AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, RenderContext,
     measure_centered_label_text_width,
@@ -104,60 +107,56 @@ fn confidence_label(confidence: f32) -> String {
     format!("{confidence:.2}")
 }
 
-fn estimate_centered_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
-    let width = measure_centered_label_text_width(text);
-    Rect::from_xywh(
-        anchor_x,
-        anchor_y.saturating_sub(LABEL_LAYOUT_HEIGHT / 2),
-        width,
-        LABEL_LAYOUT_HEIGHT,
-    )
-}
-
-fn reserve_keypoint_label_anchor(
+/// Place a keypoint's confidence label: preferred just above the keypoint, with
+/// the shared candidate ring as fallbacks.
+fn place_keypoint_label(
     registry: &mut OccupiedRegionRegistry,
     sample: KeypointSample,
-    keypoint_radius_px: i32,
     text: &str,
-) -> Option<(i32, i32)> {
-    let label_width = measure_centered_label_text_width(text);
-    let half_height = LABEL_LAYOUT_HEIGHT / 2;
-    let right_x = sample
-        .x
-        .saturating_add(keypoint_radius_px)
-        .saturating_add(LABEL_LAYOUT_GAP);
-    let left_x = sample
-        .x
-        .saturating_sub(label_width)
-        .saturating_sub(keypoint_radius_px)
-        .saturating_sub(LABEL_LAYOUT_GAP);
-    let above_y = sample
-        .y
-        .saturating_sub(keypoint_radius_px)
-        .saturating_sub(half_height)
-        .saturating_sub(LABEL_LAYOUT_GAP);
-    let below_y = sample
-        .y
-        .saturating_add(keypoint_radius_px)
-        .saturating_add(half_height)
-        .saturating_add(LABEL_LAYOUT_GAP);
+) -> Option<LabelPlacement> {
+    let label_w = measure_centered_label_text_width(text);
+    let label_h = LABEL_LAYOUT_HEIGHT;
 
-    let candidates = [
-        (right_x, sample.y),
-        (right_x, above_y),
-        (right_x, below_y),
-        (left_x, sample.y),
-        (left_x, above_y),
-        (left_x, below_y),
-    ];
+    // Default: centered horizontally, sitting just above the keypoint.
+    let default = Rect::from_xywh(
+        sample.x.saturating_sub(label_w / 2),
+        sample
+            .y
+            .saturating_sub(label_h)
+            .saturating_sub(LABEL_LAYOUT_GAP),
+        label_w,
+        label_h,
+    );
 
-    for (x, y) in candidates {
-        if registry.reserve_label(estimate_centered_label_rect(x, y, text)) {
-            return Some((x, y));
-        }
+    let candidates = point_label_candidates(sample.x, sample.y, label_w, label_h);
+
+    place_label(registry, default, &candidates)
+}
+
+/// Draw a keypoint's label at its placed position, with a leader line back to
+/// the keypoint when the label was displaced.
+fn push_keypoint_label(
+    commands: &mut Vec<DrawCommand>,
+    placement: LabelPlacement,
+    sample: KeypointSample,
+    text: String,
+    argb: u32,
+) {
+    let (cx, cy) = placement.rect.center();
+
+    if placement.displaced {
+        // The keypoint is a point feature, so use a zero-sized rect at it.
+        let keypoint = Rect::from_xywh(sample.x, sample.y, 0, 0);
+        let (from, to) = leader_endpoints(keypoint, placement.rect);
+        push_leader_line(commands, from, to, argb);
     }
 
-    None
+    commands.push(DrawCommand::TextCentered {
+        x: cx as f32,
+        y: cy as f32,
+        text,
+        argb,
+    });
 }
 
 struct KeypointCommandContext<'a> {
@@ -202,15 +201,14 @@ fn push_keypoint_commands(
 
         if ctx.settings.draw_labels && !ctx.draw_group_label_once {
             let label = confidence_label(sample.confidence);
-            if let Some((label_x, label_y)) =
-                reserve_keypoint_label_anchor(ctx.occupied, *sample, keypoint_radius_px, &label)
-            {
-                commands.push(DrawCommand::TextCentered {
-                    x: label_x as f32,
-                    y: label_y as f32,
-                    text: label,
-                    argb: ctx.settings.labels_color,
-                });
+            if let Some(placement) = place_keypoint_label(ctx.occupied, *sample, &label) {
+                push_keypoint_label(
+                    commands,
+                    placement,
+                    *sample,
+                    label,
+                    ctx.settings.labels_color,
+                );
             }
         }
     }
@@ -220,15 +218,14 @@ fn push_keypoint_commands(
         && let Some(sample) = first_in_frame
     {
         let label = confidence_label(sample.confidence);
-        if let Some((label_x, label_y)) =
-            reserve_keypoint_label_anchor(ctx.occupied, sample, keypoint_radius_px, &label)
-        {
-            commands.push(DrawCommand::TextCentered {
-                x: label_x as f32,
-                y: label_y as f32,
-                text: label,
-                argb: ctx.settings.labels_color,
-            });
+        if let Some(placement) = place_keypoint_label(ctx.occupied, sample, &label) {
+            push_keypoint_label(
+                commands,
+                placement,
+                sample,
+                label,
+                ctx.settings.labels_color,
+            );
         }
     }
 
@@ -645,6 +642,13 @@ mod tests {
             .count()
     }
 
+    fn count_lines(commands: &[DrawCommand]) -> usize {
+        commands
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::Line { .. }))
+            .count()
+    }
+
     #[test]
     fn grouped_mode_emits_single_label_per_group() {
         init();
@@ -833,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn keypoint_label_anchor_falls_back_when_preferred_is_occupied() {
+    fn keypoint_label_falls_back_and_is_displaced_when_default_is_occupied() {
         let mut occupied = OccupiedRegionRegistry::new(128, 128);
         let sample = KeypointSample {
             id: 1,
@@ -842,12 +846,80 @@ mod tests {
             confidence: 0.9,
         };
 
-        let preferred = estimate_centered_label_rect(35, 30, "0.90");
-        occupied.reserve_highlight(preferred);
+        // Occupy the default position (centered just above the keypoint).
+        let label_w = measure_centered_label_text_width("0.90");
+        let default = Rect::from_xywh(
+            sample.x - label_w / 2,
+            sample.y - LABEL_LAYOUT_HEIGHT - LABEL_LAYOUT_GAP,
+            label_w,
+            LABEL_LAYOUT_HEIGHT,
+        );
+        occupied.reserve_highlight(default);
 
-        let anchor = reserve_keypoint_label_anchor(&mut occupied, sample, 3, "0.90")
-            .expect("expected fallback label anchor");
+        let placement =
+            place_keypoint_label(&mut occupied, sample, "0.90").expect("expected a placement");
 
-        assert_ne!(anchor, (35, 30));
+        assert_ne!(placement.rect, default);
+        assert!(placement.displaced);
+    }
+
+    #[test]
+    fn displaced_keypoint_label_emits_a_leader_line() {
+        let mut commands = Vec::new();
+        let mut occupied = OccupiedRegionRegistry::new(128, 128);
+        let sample = KeypointSample {
+            id: 1,
+            x: 30,
+            y: 30,
+            confidence: 0.9,
+        };
+
+        // Block the default position so the label must be displaced.
+        let label_w = measure_centered_label_text_width("0.90");
+        occupied.reserve_highlight(Rect::from_xywh(
+            sample.x - label_w / 2,
+            sample.y - LABEL_LAYOUT_HEIGHT - LABEL_LAYOUT_GAP,
+            label_w,
+            LABEL_LAYOUT_HEIGHT,
+        ));
+
+        let placement =
+            place_keypoint_label(&mut occupied, sample, "0.90").expect("expected a placement");
+        push_keypoint_label(
+            &mut commands,
+            placement,
+            sample,
+            "0.90".to_string(),
+            0xFFFF_FFFF,
+        );
+
+        assert_eq!(count_centered_labels(&commands), 1);
+        assert_eq!(count_lines(&commands), 1);
+    }
+
+    #[test]
+    fn keypoint_label_at_default_position_has_no_leader_line() {
+        let mut commands = Vec::new();
+        let mut occupied = OccupiedRegionRegistry::new(128, 128);
+        let sample = KeypointSample {
+            id: 1,
+            x: 30,
+            y: 30,
+            confidence: 0.9,
+        };
+
+        let placement =
+            place_keypoint_label(&mut occupied, sample, "0.90").expect("expected a placement");
+        assert!(!placement.displaced);
+        push_keypoint_label(
+            &mut commands,
+            placement,
+            sample,
+            "0.90".to_string(),
+            0xFFFF_FFFF,
+        );
+
+        assert_eq!(count_centered_labels(&commands), 1);
+        assert_eq!(count_lines(&commands), 0);
     }
 }

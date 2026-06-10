@@ -19,6 +19,7 @@ mod geometry;
 mod keypointsoverlay;
 mod lifecycle;
 mod objectdetectionoverlay;
+mod placement;
 mod render;
 mod segmentationoverlay;
 

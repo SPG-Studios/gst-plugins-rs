@@ -99,6 +99,8 @@ const LABEL_EXTRA_VERTICAL_GAP: f32 = 1.5;
 const ROTATION_EPSILON: f32 = 0.001;
 pub(crate) const LABEL_LAYOUT_HEIGHT: i32 = 12;
 pub(crate) const LABEL_LAYOUT_GAP: i32 = 2;
+/// Width of the leader line drawn from a feature to a displaced label.
+pub(crate) const LEADER_LINE_WIDTH: f32 = 1.0;
 
 fn label_outline_offset(font_size: f32) -> f32 {
     (font_size / 15.0).max(1.0)
