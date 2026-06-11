@@ -29,6 +29,9 @@ use crate::render::{
 
 use std::sync::{LazyLock, Mutex};
 
+/// Owner tag this element uses when claiming/reading shared regions.
+const OVERLAY_OWNER: &str = "keypointsoverlay";
+
 const DEFAULT_RENDER_ENABLED: bool = false;
 const DEFAULT_KEYPOINT_COLOR: u32 = 0xFFFF_0000;
 const DEFAULT_KEYPOINT_RADIUS: f64 = 3.0;
@@ -271,6 +274,9 @@ fn analytics_to_draw_commands(
     let mut commands = Vec::new();
     let mut keypoint_count = 0usize;
     let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
+
+    // Avoid regions other elements upstream have already claimed.
+    crate::coordination::seed_registry_from_claims(&mut occupied, buffer, OVERLAY_OWNER);
 
     if let Some(semantic_tag) = settings.semantic_tag.as_deref() {
         for group in meta.iter::<AnalyticsGroupMtd>() {
@@ -605,6 +611,14 @@ impl VideoFilterImpl for KeypointsOverlay {
 
         let mut render_context = self.render_context.lock().unwrap();
         render_context.render(frame, &analytics, &commands)?;
+        drop(render_context);
+
+        // Publish what we drew so downstream overlays avoid occluding it.
+        if !commands.is_empty() {
+            // SAFETY: the frame is writable and uniquely borrowed here.
+            let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
+            crate::coordination::claim_commands(buffer, &commands, OVERLAY_OWNER);
+        }
 
         Ok(gst::FlowSuccess::Ok)
     }

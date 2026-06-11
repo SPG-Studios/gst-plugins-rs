@@ -30,6 +30,9 @@ use crate::render::{
 
 use std::sync::{LazyLock, Mutex};
 
+/// Owner tag this element uses when claiming/reading shared regions.
+const OVERLAY_OWNER: &str = "odoverlay";
+
 const DEFAULT_RENDER_ENABLED: bool = false;
 const DEFAULT_OBJECT_DETECTION_OUTLINE_COLOR: u32 = 0xFFFF_FFFF;
 const DEFAULT_DRAW_LABELS: bool = true;
@@ -248,6 +251,9 @@ fn analytics_to_draw_commands(
     let mut commands = Vec::new();
     let mut object_count = 0;
     let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
+
+    // Avoid regions other elements upstream have already claimed.
+    crate::coordination::seed_registry_from_claims(&mut occupied, buffer, OVERLAY_OWNER);
 
     for od_mtd in meta.iter::<AnalyticsODMtd>() {
         let Ok(location) = od_mtd.location() else {
@@ -914,6 +920,13 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
                 .map_err(|_| gst::FlowError::Error)?;
         }
 
+        // Publish what we drew so downstream overlays avoid occluding it.
+        if !commands.is_empty() {
+            // SAFETY: the frame is writable and uniquely borrowed here.
+            let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
+            crate::coordination::claim_commands(buffer, &commands, OVERLAY_OWNER);
+        }
+
         Ok(gst::FlowSuccess::Ok)
     }
 }
@@ -1513,6 +1526,59 @@ mod tests {
 
         // The crowding forces at least one label off its default position, which
         // must emit a leader line back to its box.
+        assert!(count_lines(&commands) >= 1);
+    }
+
+    #[test]
+    fn label_avoids_a_region_claimed_by_another_element() {
+        gst::init().unwrap();
+        crate::coordination::register();
+
+        let settings = Settings {
+            render_enabled: true,
+            draw_labels: true,
+            draw_tracking_labels: false,
+            ..Settings::default()
+        };
+
+        // A single object whose label sits, by default, just above its box.
+        let label = "person (c=0.85)";
+        let build_buffer = || {
+            let mut buffer = gst::Buffer::new();
+            {
+                let mut relation = AnalyticsRelationMeta::add(buffer.make_mut());
+                relation
+                    .add_od_mtd(glib::Quark::from_str("person"), 20, 40, 40, 30, 0.85)
+                    .unwrap();
+            }
+            buffer
+        };
+
+        // Baseline: no claims, so the label takes its default spot (no leader).
+        let (_, baseline) =
+            analytics_to_draw_commands(build_buffer().as_ref(), settings, test_frame_bounds());
+        assert_eq!(count_lines(&baseline), 0);
+
+        // Another element claims exactly the default label position.
+        let mut buffer = build_buffer();
+        crate::coordination::add_claimed_regions(
+            buffer.make_mut(),
+            &[crate::coordination::ClaimedRegion::occlude(
+                estimate_label_rect(20, 40, label),
+                "hair-spikes",
+            )],
+        );
+
+        let (_, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
+
+        // The label is still drawn, but displaced off the claimed area, so a
+        // leader line now connects it back to the box.
+        let labels = commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .count();
+        assert_eq!(labels, 1);
         assert!(count_lines(&commands) >= 1);
     }
 }
