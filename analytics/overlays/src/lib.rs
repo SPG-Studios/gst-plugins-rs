@@ -15,6 +15,7 @@
 use gst::glib;
 
 mod color;
+mod coordination;
 mod geometry;
 mod keypointsoverlay;
 mod lifecycle;
@@ -24,6 +25,10 @@ mod render;
 mod segmentationoverlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    // Register the cross-element claimed-region meta so overlay elements can
+    // coordinate placement (see the `coordination` module).
+    coordination::register();
+
     objectdetectionoverlay::register(plugin)?;
     segmentationoverlay::register(plugin)?;
     keypointsoverlay::register(plugin)?;

@@ -12,6 +12,8 @@ use gst::BufferRef;
 use gst_video::prelude::VideoFrameExt;
 use gst_video::{VideoFormat, VideoFrameRef};
 
+use crate::geometry::Rect;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum RenderBackendKind {
     #[default]
@@ -144,6 +146,57 @@ pub(crate) fn measure_label_text_width(text: &str) -> i32 {
 
 pub(crate) fn measure_centered_label_text_width(text: &str) -> i32 {
     measure_text_width_with_stroke(text, KEYPOINT_LABEL_STROKE_WIDTH)
+}
+
+/// Bounding box of a command's visible, "solid" content, used to publish claimed
+/// regions for cross-element coordination. Thin strokes (skeleton and leader
+/// lines) and no-ops return `None`. Box rotation is ignored — the axis-aligned
+/// extent is claimed.
+pub(crate) fn content_bounds(command: &DrawCommand) -> Option<Rect> {
+    match command {
+        DrawCommand::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => Some(Rect::from_xywh(
+            x.floor() as i32,
+            y.floor() as i32,
+            width.ceil() as i32,
+            height.ceil() as i32,
+        )),
+        DrawCommand::Circle { cx, cy, radius, .. } => {
+            let r = radius.ceil() as i32;
+            Some(Rect::from_xywh(
+                (*cx as i32).saturating_sub(r),
+                (*cy as i32).saturating_sub(r),
+                r.saturating_mul(2).saturating_add(1),
+                r.saturating_mul(2).saturating_add(1),
+            ))
+        }
+        // Left-aligned label, anchored at its bottom-left (see `push_od_label`).
+        DrawCommand::Text { x, y, text, .. } => {
+            let w = measure_label_text_width(text);
+            Some(Rect::from_xywh(
+                *x as i32,
+                (*y as i32) - LABEL_LAYOUT_HEIGHT,
+                w,
+                LABEL_LAYOUT_HEIGHT,
+            ))
+        }
+        // Centered label, anchored at its center (see `push_keypoint_label`).
+        DrawCommand::TextCentered { x, y, text, .. } => {
+            let w = measure_centered_label_text_width(text);
+            Some(Rect::from_xywh(
+                (*x as i32) - w / 2,
+                (*y as i32) - LABEL_LAYOUT_HEIGHT / 2,
+                w,
+                LABEL_LAYOUT_HEIGHT,
+            ))
+        }
+        DrawCommand::Line { .. } | DrawCommand::NoOp => None,
+    }
 }
 
 fn packed_pixel_layout(format: VideoFormat) -> Option<PackedPixelLayout> {
@@ -592,6 +645,60 @@ mod tests {
     fn render_context_defaults_to_skia_backend() {
         let context = RenderContext::default();
         assert_eq!(context.backend_kind(), RenderBackendKind::Skia);
+    }
+
+    #[test]
+    fn content_bounds_covers_solid_commands_and_skips_strokes() {
+        // Rectangle: axis-aligned extent.
+        assert_eq!(
+            content_bounds(&DrawCommand::Rectangle {
+                x: 10.0,
+                y: 20.0,
+                width: 40.0,
+                height: 30.0,
+                rotation: 0.0,
+                argb: 0,
+                filled: false,
+            }),
+            Some(Rect::from_xywh(10, 20, 40, 30))
+        );
+
+        // Circle: bounding box around the centre.
+        assert_eq!(
+            content_bounds(&DrawCommand::Circle {
+                cx: 50.0,
+                cy: 60.0,
+                radius: 3.0,
+                argb: 0,
+            }),
+            Some(Rect::from_xywh(47, 57, 7, 7))
+        );
+
+        // Left-aligned label: anchored bottom-left, so the rect sits above y.
+        let text = DrawCommand::Text {
+            x: 12.0,
+            y: 24.0,
+            text: "hi".to_string(),
+            argb: 0,
+        };
+        let bounds = content_bounds(&text).expect("text has bounds");
+        assert_eq!((bounds.left, bounds.bottom), (12, 24));
+        assert_eq!(bounds.height(), LABEL_LAYOUT_HEIGHT);
+        assert!(bounds.width() > 0);
+
+        // Thin strokes and no-ops are not claimed.
+        assert_eq!(
+            content_bounds(&DrawCommand::Line {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 9.0,
+                y1: 9.0,
+                argb: 0,
+                width: 1.0,
+            }),
+            None
+        );
+        assert_eq!(content_bounds(&DrawCommand::NoOp), None);
     }
 
     #[test]
