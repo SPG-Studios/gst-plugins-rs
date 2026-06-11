@@ -101,6 +101,7 @@ struct HlsSink3Settings {
 
     splitmuxsink: gst::Element,
     giostreamsink: gst::Element,
+    muxer: gst::Element,
     video_sink: bool,
     audio_sink: bool,
 }
@@ -149,6 +150,7 @@ impl Default for HlsSink3Settings {
 
             splitmuxsink,
             giostreamsink,
+            muxer,
             video_sink: false,
             audio_sink: false,
         }
@@ -205,6 +207,10 @@ impl ObjectImpl for HlsSink3 {
                     .blurb("Send keyframe requests to ensure correct fragmentation. If this is disabled then the input must have keyframes in regular intervals.")
                     .default_value(DEFAULT_SEND_KEYFRAME_REQUESTS)
                     .build(),
+                glib::ParamSpecObject::builder::<gst::Element>("muxer")
+                    .nick("Override the muxer")
+                    .blurb("Specifying this property will override the default muxer (`mpegtsmux`)")
+                    .build(),
             ]
         });
 
@@ -253,6 +259,15 @@ impl ObjectImpl for HlsSink3 {
                     .splitmuxsink
                     .set_property("send-keyframe-requests", settings.send_keyframe_requests);
             }
+            "muxer" => {
+                if let Some(new_muxer) = value
+                    .get::<Option<gst::Element>>()
+                    .expect("type checked upstream")
+                {
+                    settings.muxer = new_muxer;
+                    settings.splitmuxsink.set_property("muxer", &settings.muxer);
+                }
+            }
             _ => unimplemented!(),
         };
     }
@@ -268,6 +283,7 @@ impl ObjectImpl for HlsSink3 {
             }
             "i-frames-only" => settings.i_frames_only.to_value(),
             "send-keyframe-requests" => settings.send_keyframe_requests.to_value(),
+            "muxer" => settings.muxer.to_value(),
             _ => unimplemented!(),
         }
     }
