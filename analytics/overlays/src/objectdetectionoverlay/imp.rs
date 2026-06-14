@@ -79,6 +79,7 @@ pub struct ObjectDetectionOverlay {
     overlay_cache: Mutex<OverlayCache>,
     stream_state: Mutex<StreamState>,
     attach_composition: Mutex<bool>,
+    draw_hooks: Mutex<crate::hooks::DrawHooks>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -421,12 +422,37 @@ fn test_frame_bounds() -> FrameBounds {
 
 #[glib::object_subclass]
 impl ObjectSubclass for ObjectDetectionOverlay {
-    const NAME: &'static str = "GstObjectDetectionOverlay";
+    // Distinct from the C element's "GstObjectDetectionOverlay" so both plugins
+    // can be loaded in the same process (the factory name stays "odoverlay").
+    const NAME: &'static str = "GstRsObjectDetectionOverlay";
     type Type = super::ObjectDetectionOverlay;
     type ParentType = gst_video::VideoFilter;
 }
 
 impl ObjectDetectionOverlay {
+    pub(crate) fn set_pre_draw_hook(&self, hook: Box<dyn crate::hooks::DrawHook>) {
+        self.draw_hooks.lock().unwrap().set_pre(hook);
+    }
+
+    pub(crate) fn set_post_draw_hook(&self, hook: Box<dyn crate::hooks::DrawHook>) {
+        self.draw_hooks.lock().unwrap().set_post(hook);
+    }
+
+    pub(crate) fn clear_draw_hooks(&self) {
+        self.draw_hooks.lock().unwrap().clear();
+    }
+
+    /// Wrap built-in commands with any host pre/post draw hooks.
+    fn compose_with_hooks(
+        &self,
+        builtins: &[DrawCommand],
+        width: i32,
+        height: i32,
+    ) -> Vec<DrawCommand> {
+        let ctx = crate::hooks::DrawHookContext { width, height };
+        self.draw_hooks.lock().unwrap().compose(builtins, &ctx)
+    }
+
     fn reset_stream_state(&self) {
         *self.stream_state.lock().unwrap() = StreamState::default();
     }
@@ -902,19 +928,31 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
             }
         };
 
+        // Wrap the built-ins with any host-supplied pre/post draw hooks. The
+        // built-in `commands` are kept separate so coordination claims only
+        // cover this element's own content, not host drawing.
+        let render_commands =
+            self.compose_with_hooks(&commands, frame.width() as i32, frame.height() as i32);
+
         let attach = *self.attach_composition.lock().unwrap();
 
         if attach {
-            if let Some(composition) =
-                self.build_overlay_composition(frame.width(), frame.height(), &analytics, &commands)
-            {
+            if let Some(composition) = self.build_overlay_composition(
+                frame.width(),
+                frame.height(),
+                &analytics,
+                &render_commands,
+            ) {
                 // SAFETY: The frame is writable and uniquely borrowed here.
                 let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
                 gst_video::VideoOverlayCompositionMeta::add(buffer, &composition);
             }
-        } else if let Some(composition) =
-            self.build_overlay_composition(frame.width(), frame.height(), &analytics, &commands)
-        {
+        } else if let Some(composition) = self.build_overlay_composition(
+            frame.width(),
+            frame.height(),
+            &analytics,
+            &render_commands,
+        ) {
             composition
                 .blend(frame)
                 .map_err(|_| gst::FlowError::Error)?;
@@ -1580,5 +1618,44 @@ mod tests {
             .count();
         assert_eq!(labels, 1);
         assert!(count_lines(&commands) >= 1);
+    }
+
+    #[test]
+    fn host_post_draw_hook_is_appended_to_built_in_commands() {
+        gst::init().unwrap();
+
+        // The host registers the sample hook through the public ext trait.
+        use crate::hooks::OverlayDrawHooksExt;
+        let element =
+            glib::Object::builder::<crate::objectdetectionoverlay::ObjectDetectionOverlay>()
+                .build();
+        element.set_post_draw_hook(crate::hooks::BorderHook {
+            argb: 0xFF00_FF00,
+            inset: 0.0,
+        });
+
+        let builtins = vec![DrawCommand::Rectangle {
+            x: 1.0,
+            y: 1.0,
+            width: 2.0,
+            height: 2.0,
+            rotation: 0.0,
+            argb: 0,
+            filled: false,
+        }];
+        let composed = element.imp().compose_with_hooks(&builtins, 100, 80);
+
+        // Built-in first, then the host's full-frame border on top.
+        assert_eq!(composed.len(), 2);
+        assert_eq!(composed[0], builtins[0]);
+        assert!(matches!(
+            composed[1],
+            DrawCommand::Rectangle {
+                width,
+                height,
+                filled: false,
+                ..
+            } if width == 100.0 && height == 80.0
+        ));
     }
 }

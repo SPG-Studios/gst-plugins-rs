@@ -17,12 +17,16 @@ use gst::glib;
 mod color;
 mod coordination;
 mod geometry;
+pub mod hooks;
 mod keypointsoverlay;
 mod lifecycle;
 mod objectdetectionoverlay;
 mod placement;
 mod render;
 mod segmentationoverlay;
+
+/// The drawing vocabulary hosts use to emit custom content from a [`hooks::DrawHook`].
+pub use render::DrawCommand;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the cross-element claimed-region meta so overlay elements can
