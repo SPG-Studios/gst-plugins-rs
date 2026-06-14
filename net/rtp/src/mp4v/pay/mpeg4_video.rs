@@ -8,6 +8,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+use anyhow::anyhow;
+
 use smallvec::SmallVec;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,25 +124,15 @@ impl Packet {
 
 pub(crate) type PacketVec = SmallVec<[Packet; 8]>;
 
-// Errors that can be produced when parsing
-#[derive(thiserror::Error, Debug, PartialEq, Eq)]
-pub(crate) enum Mpeg4ParseError {
-    #[error("No packet start codes found")]
-    NoSync,
-
-    #[error("Too many packets")]
-    TooManyPackets,
-}
-
-pub(crate) fn parse_packets_from_slice(frame_data: &[u8]) -> Result<PacketVec, Mpeg4ParseError> {
+pub(crate) fn parse_packets_from_slice(frame_data: &[u8]) -> anyhow::Result<PacketVec> {
     // Skip any number of leading zeros
     let Some(first_nonzero) = frame_data.iter().position(|&b| b != 0x00) else {
-        return Err(Mpeg4ParseError::NoSync); // all zeros
+        return Err(anyhow!("No packet start codes found")); // all zeros
     };
 
     // Make sure we have at least two zeroes in front, i.e. 00 00 01
     if first_nonzero < 2 || frame_data[first_nonzero] != 0x01 {
-        return Err(Mpeg4ParseError::NoSync);
+        return Err(anyhow!("No packet start codes found"));
     }
 
     let initial_offset = first_nonzero - 2;
@@ -176,7 +168,7 @@ pub(crate) fn parse_packets_from_slice(frame_data: &[u8]) -> Result<PacketVec, M
 
         // Sanity check
         if packets.len() > 256 {
-            return Err(Mpeg4ParseError::TooManyPackets);
+            return Err(anyhow!("Too many packets"));
         }
     }
 
