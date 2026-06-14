@@ -26,7 +26,8 @@ gst-plugin-version-helper.workspace = true
 
 [dev-dependencies]
 gst-app.workspace = true
-gst-check.workspace = true
+# v1_16 for Harness::add_propose_allocation_meta (composition-attach test).
+gst-check = { workspace = true, features = ["v1_16"] }
 
 [features]
 static = []

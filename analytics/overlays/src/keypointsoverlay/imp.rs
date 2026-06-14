@@ -350,6 +350,32 @@ fn analytics_to_draw_commands(
 pub struct KeypointsOverlay {
     render_context: Mutex<RenderContext>,
     settings: Mutex<Settings>,
+    draw_hooks: Mutex<crate::hooks::DrawHooks>,
+}
+
+impl KeypointsOverlay {
+    pub(crate) fn set_pre_draw_hook(&self, hook: Box<dyn crate::hooks::DrawHook>) {
+        self.draw_hooks.lock().unwrap().set_pre(hook);
+    }
+
+    pub(crate) fn set_post_draw_hook(&self, hook: Box<dyn crate::hooks::DrawHook>) {
+        self.draw_hooks.lock().unwrap().set_post(hook);
+    }
+
+    pub(crate) fn clear_draw_hooks(&self) {
+        self.draw_hooks.lock().unwrap().clear();
+    }
+
+    /// Wrap built-in commands with any host pre/post draw hooks.
+    fn compose_with_hooks(
+        &self,
+        builtins: &[DrawCommand],
+        width: i32,
+        height: i32,
+    ) -> Vec<DrawCommand> {
+        let ctx = crate::hooks::DrawHookContext { width, height };
+        self.draw_hooks.lock().unwrap().compose(builtins, &ctx)
+    }
 }
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -362,7 +388,9 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 #[glib::object_subclass]
 impl ObjectSubclass for KeypointsOverlay {
-    const NAME: &'static str = "GstKeypointsOverlay";
+    // "GstRs" prefix keeps it distinct from the C "GstKeypointOverlay" element
+    // (the factory name stays "keypointsoverlay").
+    const NAME: &'static str = "GstRsKeypointsOverlay";
     type Type = super::KeypointsOverlay;
     type ParentType = gst_video::VideoFilter;
 }
@@ -609,11 +637,15 @@ impl VideoFilterImpl for KeypointsOverlay {
         };
         let (analytics, commands) = analytics_to_draw_commands(frame.buffer(), &settings, bounds);
 
+        // Wrap the built-ins with any host-supplied pre/post draw hooks.
+        let render_commands = self.compose_with_hooks(&commands, bounds.width, bounds.height);
+
         let mut render_context = self.render_context.lock().unwrap();
-        render_context.render(frame, &analytics, &commands)?;
+        render_context.render(frame, &analytics, &render_commands)?;
         drop(render_context);
 
-        // Publish what we drew so downstream overlays avoid occluding it.
+        // Publish what we drew (built-ins only, not host hooks) so downstream
+        // overlays avoid occluding it.
         if !commands.is_empty() {
             // SAFETY: the frame is writable and uniquely borrowed here.
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };

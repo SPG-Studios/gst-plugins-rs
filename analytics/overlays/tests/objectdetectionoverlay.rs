@@ -96,13 +96,6 @@ fn pixel_is_zero(buffer: &gst::Buffer, x: usize, y: usize) -> bool {
     !pixel_is_nonzero(buffer, x, y)
 }
 
-fn pixel_bgra(buffer: &gst::Buffer, x: usize, y: usize) -> [u8; 4] {
-    let map = buffer.map_readable().unwrap();
-    let offset = y * STRIDE + x * 4;
-    let data = &map.as_slice()[offset..offset + 4];
-    [data[0], data[1], data[2], data[3]]
-}
-
 fn make_pipeline() -> (gst::Pipeline, gst_app::AppSrc, gst_app::AppSink) {
     let pipeline = gst::Pipeline::new();
     let caps = gst::Caps::builder("video/x-raw")
@@ -417,11 +410,10 @@ fn drawing_stroke_width_is_visible() {
 
     // Verify stroke is drawn at the box boundary.
     assert!(pixel_is_nonzero(&out, 15, 15));
-    // Verify stroke extends inward (stroke has thickness > 1 pixel).
+    // Stroke extends 1px inward from the edge path (x=15), confirming the 2px
+    // thickness; (16, 15)/(15, 16) sit on the stroke band, the box interior does not.
     assert!(pixel_is_nonzero(&out, 16, 15));
     assert!(pixel_is_nonzero(&out, 15, 16));
-    // Verify pixels slightly inside the stroke boundary also have color (confirming thickness).
-    assert!(pixel_is_nonzero(&out, 17, 17));
 }
 
 #[test]
@@ -453,8 +445,9 @@ fn overlapping_boxes_draw_both() {
     assert!(pixel_is_nonzero(&out, 10, 10));
     // Verify second box is drawn (bottom-right region).
     assert!(pixel_is_nonzero(&out, 40, 40));
-    // Verify overlap region has pixels from both boxes.
-    assert!(pixel_is_nonzero(&out, 25, 25));
+    // Box1's bottom-right corner stroke (30, 30) falls inside box2, i.e. within
+    // the overlap region (boxes are unfilled, so only edges are drawn).
+    assert!(pixel_is_nonzero(&out, 30, 30));
 }
 
 #[test]
@@ -527,92 +520,41 @@ fn composition_meta_negotiation_downstream_supports() {
 }
 
 #[test]
-fn composition_meta_upstream_feature_is_reused() {
+fn composition_meta_attached_when_downstream_supports_it() {
     init();
 
-    // Create a pipeline where upstream provides composition metadata.
-    // This tests that when upstream caps include the composition feature,
-    // the element correctly identifies it and reuses existing composition.
-    let pipeline = gst::Pipeline::new();
-    let appsrc = gst_app::AppSrc::builder()
-        .name("src")
-        .format(gst::Format::Time)
-        .build();
+    // The element attaches a VideoOverlayCompositionMeta (instead of blending)
+    // when downstream advertises support for it. Drive that with a harness whose
+    // sink proposes the meta in the allocation query and accepts the composition
+    // caps feature (sink caps left unset = ANY, so the element's
+    // `peer_query_caps` with the feature succeeds).
+    let mut harness = gst_check::Harness::new("odoverlay");
+    harness.add_propose_allocation_meta(gst_video::VideoOverlayCompositionMeta::meta_api(), None);
+    harness.set_src_caps_str("video/x-raw,format=BGRA,width=64,height=64,framerate=1/1");
+    harness
+        .element()
+        .unwrap()
+        .set_property("render-enabled", true);
 
-    // Upstream caps include composition feature to simulate upstream
-    // that can provide composition metadata
-    let caps = gst::Caps::builder("video/x-raw")
-        .field("format", "BGRA")
-        .field("width", WIDTH as i32)
-        .field("height", HEIGHT as i32)
-        .field("framerate", gst::Fraction::new(1, 1))
-        .features(gst::CapsFeatures::new([
-            gst::CAPS_FEATURE_MEMORY_SYSTEM_MEMORY,
-            gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION,
-        ]))
-        .build();
+    push_time_segment_to_harness(&mut harness);
 
-    appsrc.set_property("caps", &caps);
-
-    let overlay = gst::ElementFactory::make("odoverlay")
-        .property("render-enabled", true)
-        .build()
-        .unwrap();
-
-    let appsink = gst_app::AppSink::builder()
-        .name("sink")
-        .caps(
-            &gst::Caps::builder("video/x-raw")
-                .field("format", "BGRA")
-                .field("width", WIDTH as i32)
-                .field("height", HEIGHT as i32)
-                .field("framerate", gst::Fraction::new(1, 1))
-                .build(),
-        )
-        .sync(false)
-        .build();
-
-    pipeline
-        .add_many([appsrc.upcast_ref(), &overlay, appsink.upcast_ref()])
-        .unwrap();
-    gst::Element::link_many([appsrc.upcast_ref(), &overlay, appsink.upcast_ref()]).unwrap();
-
-    pipeline.set_state(gst::State::Playing).unwrap();
-
-    // Push a buffer with analytics metadata. The element should recognize
-    // that upstream provides composition feature and attach composition
-    // metadata instead of blending.
-    appsrc
-        .push_buffer(make_buffer(gst::ClockTime::ZERO, true))
-        .unwrap();
-    appsrc.end_of_stream().unwrap();
-
-    let first = appsink.pull_sample().unwrap().buffer().unwrap().copy();
-    // Verify overlay was applied successfully.
-    assert!(
-        buffer_has_drawn_pixels(&first),
-        "Overlay should be drawn when upstream provides composition feature"
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::ZERO, true)),
+        Ok(gst::FlowSuccess::Ok),
     );
+    let out = harness.pull().unwrap();
 
-    // Optionally, verify the buffer has VideoOverlayCompositionMeta attached
-    // if composition attachment was used. This confirms proper negotiation.
-    let has_composition_meta = first
-        .iter_meta()
-        .find_map(|meta| meta.downcast_ref::<gst_video::VideoOverlayCompositionMeta>())
-        .is_some();
+    // Attach mode: the composition meta is present and the frame pixels are left
+    // untouched (compositing is deferred to the downstream that requested it).
     assert!(
-        has_composition_meta,
-        "Buffer should have VideoOverlayCompositionMeta when upstream supports composition"
+        out.meta::<gst_video::VideoOverlayCompositionMeta>()
+            .is_some(),
+        "Buffer should carry VideoOverlayCompositionMeta when downstream supports it"
     );
-
-    let bus = pipeline.bus().unwrap();
-    for message in bus.iter_timed(gst::ClockTime::from_seconds(1)) {
-        if let gst::MessageView::Eos(..) = message.view() {
-            break;
-        }
-    }
-
-    pipeline.set_state(gst::State::Null).unwrap();
+    assert!(
+        !buffer_has_drawn_pixels(&out),
+        "Pixels should not be blended in attach mode"
+    );
 }
 
 #[test]
@@ -653,8 +595,7 @@ fn composition_fallback_to_blend_when_downstream_lacks_support() {
 
     // Verify the buffer does NOT have composition metadata, since we're in blend mode.
     let has_composition_meta = out
-        .iter_meta()
-        .find_map(|meta| meta.downcast_ref::<gst_video::VideoOverlayCompositionMeta>())
+        .meta::<gst_video::VideoOverlayCompositionMeta>()
         .is_some();
     assert!(
         !has_composition_meta,
@@ -764,9 +705,11 @@ fn bbox_partially_outside_frame_is_clipped() {
     assert_eq!(harness.push(buffer), Ok(gst::FlowSuccess::Ok));
     let out = harness.pull().unwrap();
 
-    // Verify pixels are drawn at the visible portion of the bbox (50-63).
+    // The visible edges are the box's left (x=50) and top (y=50) — the far
+    // edges are off-frame. Check the corner and a point along the top edge near
+    // the clip boundary.
     assert!(pixel_is_nonzero(&out, 50, 50));
-    assert!(pixel_is_nonzero(&out, 63, 63));
+    assert!(pixel_is_nonzero(&out, 63, 50));
 
     // Verify pixels beyond the frame boundary were not drawn/written.
     // The implementation should clip to frame bounds, not go out of bounds.
@@ -797,9 +740,10 @@ fn bbox_partially_outside_left_and_top_is_clipped() {
     assert_eq!(harness.push(buffer), Ok(gst::FlowSuccess::Ok));
     let out = harness.pull().unwrap();
 
-    // Verify pixels are drawn at the visible portion near (0, 0).
-    assert!(pixel_is_nonzero(&out, 0, 0));
-    assert!(pixel_is_nonzero(&out, 15, 15));
+    // The box's visible edges are its right (x=20) and bottom (y=20); the left
+    // and top edges are off-frame. Check a point on each visible edge.
+    assert!(pixel_is_nonzero(&out, 20, 10));
+    assert!(pixel_is_nonzero(&out, 10, 20));
 
     // Verify interior stays zero (unfilled box, only edges drawn).
     assert!(pixel_is_zero(&out, 5, 5));

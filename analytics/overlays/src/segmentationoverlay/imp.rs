@@ -477,7 +477,9 @@ impl OverlayLifecycle for SegmentationOverlay {
 
 #[glib::object_subclass]
 impl ObjectSubclass for SegmentationOverlay {
-    const NAME: &'static str = "GstSegmentationOverlay";
+    // Distinct from the C element's "GstSegmentationOverlay" so both plugins can
+    // be loaded in the same process (the factory name stays "segoverlay").
+    const NAME: &'static str = "GstRsSegmentationOverlay";
     type Type = super::SegmentationOverlay;
     type ParentType = gst_video::VideoFilter;
 }
