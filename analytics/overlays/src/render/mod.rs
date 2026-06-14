@@ -29,7 +29,7 @@ pub(crate) struct AnalyticsFrame<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum DrawCommand {
+pub enum DrawCommand {
     NoOp,
     Rectangle {
         x: f32,
@@ -96,6 +96,8 @@ struct PackedSurface<'a> {
 const LABEL_FONT_SIZE: f32 = 10.5;
 const LABEL_STROKE_WIDTH: f32 = 0.6;
 const KEYPOINT_LABEL_STROKE_WIDTH: f32 = 1.0;
+/// Width of the dark contrast outline drawn behind filled label glyphs.
+const LABEL_OUTLINE_WIDTH: f32 = 2.0;
 const BOX_STROKE_WIDTH: f32 = 2.0;
 const LABEL_EXTRA_VERTICAL_GAP: f32 = 1.5;
 const ROTATION_EPSILON: f32 = 0.001;
@@ -146,6 +148,32 @@ pub(crate) fn measure_label_text_width(text: &str) -> i32 {
 
 pub(crate) fn measure_centered_label_text_width(text: &str) -> i32 {
     measure_text_width_with_stroke(text, KEYPOINT_LABEL_STROKE_WIDTH)
+}
+
+/// Draw a label as solid (filled) glyphs with a dark outline behind them for
+/// contrast on any background. Filling the glyphs (rather than stroking their
+/// contours) keeps the text legible instead of bold/blobby at small sizes.
+fn draw_outlined_label(
+    canvas: &skia::Canvas,
+    font: &skia::Font,
+    text: &str,
+    origin: impl Into<skia::Point>,
+    argb: u32,
+) {
+    let origin = origin.into();
+
+    let mut outline = skia::Paint::default();
+    outline.set_anti_alias(true);
+    outline.set_style(skia::paint::Style::Stroke);
+    outline.set_stroke_width(LABEL_OUTLINE_WIDTH);
+    outline.set_color(skia::Color::BLACK);
+    canvas.draw_str(text, origin, font, &outline);
+
+    let mut fill = skia::Paint::default();
+    fill.set_anti_alias(true);
+    fill.set_style(skia::paint::Style::Fill);
+    fill.set_color(argb_to_skia_color(argb));
+    canvas.draw_str(text, origin, font, &fill);
 }
 
 /// Bounding box of a command's visible, "solid" content, used to publish claimed
@@ -513,32 +541,30 @@ impl RenderBackend for SkiaBackend {
                         );
                     }
                     DrawCommand::Text { x, y, text, argb } => {
-                        let mut paint = skia::Paint::default();
-                        paint.set_anti_alias(true);
-                        paint.set_color(argb_to_skia_color(*argb));
-                        paint.set_style(skia::paint::Style::Stroke);
-                        paint.set_stroke_width(LABEL_STROKE_WIDTH);
+                        // Measure with a stroke paint to keep the layout identical
+                        // to before; the glyphs themselves are drawn filled.
+                        let mut measure_paint = skia::Paint::default();
+                        measure_paint.set_style(skia::paint::Style::Stroke);
+                        measure_paint.set_stroke_width(LABEL_STROKE_WIDTH);
 
                         // Place text so its bottom sits just above the provided anchor y.
-                        let (_, bounds) = font.measure_str(text, Some(&paint));
+                        let (_, bounds) = font.measure_str(text, Some(&measure_paint));
                         let draw_x = *x + outline_ofs;
                         let baseline_y =
                             *y - outline_ofs - LABEL_EXTRA_VERTICAL_GAP - bounds.bottom();
 
-                        canvas.draw_str(text, (draw_x, baseline_y), &font, &paint);
+                        draw_outlined_label(canvas, &font, text, (draw_x, baseline_y), *argb);
                     }
                     DrawCommand::TextCentered { x, y, text, argb } => {
-                        let mut paint = skia::Paint::default();
-                        paint.set_anti_alias(true);
-                        paint.set_color(argb_to_skia_color(*argb));
-                        paint.set_style(skia::paint::Style::Stroke);
-                        paint.set_stroke_width(KEYPOINT_LABEL_STROKE_WIDTH);
+                        let mut measure_paint = skia::Paint::default();
+                        measure_paint.set_style(skia::paint::Style::Stroke);
+                        measure_paint.set_stroke_width(KEYPOINT_LABEL_STROKE_WIDTH);
 
-                        let (_, bounds) = font.measure_str(text, Some(&paint));
+                        let (_, bounds) = font.measure_str(text, Some(&measure_paint));
                         let draw_x = *x + outline_ofs;
                         let baseline_y = *y - (bounds.top() + bounds.bottom()) / 2.0;
 
-                        canvas.draw_str(text, (draw_x, baseline_y), &font, &paint);
+                        draw_outlined_label(canvas, &font, text, (draw_x, baseline_y), *argb);
                     }
                     DrawCommand::NoOp => {}
                 }
