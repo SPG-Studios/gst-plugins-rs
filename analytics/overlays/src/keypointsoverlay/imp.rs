@@ -179,6 +179,17 @@ fn push_keypoint_commands(
     samples: &[KeypointSample],
     ctx: &mut KeypointCommandContext<'_>,
 ) {
+    push_keypoints(commands, samples, ctx);
+    push_relation_skeleton(commands, samples, ctx);
+}
+
+/// Draw the keypoint markers and their confidence label(s). Shared by every
+/// renderer; only the skeleton differs between them.
+fn push_keypoints(
+    commands: &mut Vec<DrawCommand>,
+    samples: &[KeypointSample],
+    ctx: &mut KeypointCommandContext<'_>,
+) {
     let mut first_in_frame: Option<KeypointSample> = None;
     let keypoint_radius_px = ctx.settings.keypoint_radius.ceil() as i32;
 
@@ -234,7 +245,14 @@ fn push_keypoint_commands(
             );
         }
     }
+}
 
+/// Generic skeleton: connect keypoints linked by `RELATE_TO` relations.
+fn push_relation_skeleton(
+    commands: &mut Vec<DrawCommand>,
+    samples: &[KeypointSample],
+    ctx: &mut KeypointCommandContext<'_>,
+) {
     if !ctx.draw_skeletons || !ctx.settings.draw_skeleton {
         return;
     }
@@ -262,6 +280,124 @@ fn push_keypoint_commands(
                 });
             }
         }
+    }
+}
+
+/// Semantic tag of the 21-point hand keypoint model.
+const HAND_KP_21_TAG: &str = "hand-kp-21";
+
+/// Bone connections for the 21-point hand model, as index pairs into the
+/// group's ordered keypoints (MediaPipe-style topology: wrist + 4 joints per
+/// finger).
+const HAND_KP_21_BONES: [(usize, usize); 21] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4), // thumb
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8), // index
+    (5, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12), // middle
+    (9, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16), // ring
+    (13, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20), // pinky
+    (0, 17),  // palm base
+];
+
+/// Renders one semantically-tagged keypoint group into draw commands.
+///
+/// [`renderer_for_tag`] routes known semantic tags to a specialized renderer and
+/// everything else to [`GenericRelationRenderer`].
+trait GroupRenderer: Sync {
+    /// Identifier for debugging / dispatch tests.
+    fn name(&self) -> &'static str;
+
+    fn render(
+        &self,
+        commands: &mut Vec<DrawCommand>,
+        samples: &[KeypointSample],
+        ctx: &mut KeypointCommandContext<'_>,
+    );
+}
+
+/// Fallback renderer: keypoints + labels, with the skeleton derived from
+/// relation metadata. Handles any group.
+struct GenericRelationRenderer;
+
+impl GroupRenderer for GenericRelationRenderer {
+    fn name(&self) -> &'static str {
+        "generic-relation"
+    }
+
+    fn render(
+        &self,
+        commands: &mut Vec<DrawCommand>,
+        samples: &[KeypointSample],
+        ctx: &mut KeypointCommandContext<'_>,
+    ) {
+        push_keypoints(commands, samples, ctx);
+        push_relation_skeleton(commands, samples, ctx);
+    }
+}
+
+/// Specialized renderer for the 21-point hand model: draws the hand skeleton
+/// from the fixed [`HAND_KP_21_BONES`] topology, so no relation metadata is
+/// required.
+struct HandKp21Renderer;
+
+impl GroupRenderer for HandKp21Renderer {
+    fn name(&self) -> &'static str {
+        HAND_KP_21_TAG
+    }
+
+    fn render(
+        &self,
+        commands: &mut Vec<DrawCommand>,
+        samples: &[KeypointSample],
+        ctx: &mut KeypointCommandContext<'_>,
+    ) {
+        push_keypoints(commands, samples, ctx);
+
+        if !ctx.draw_skeletons || !ctx.settings.draw_skeleton {
+            return;
+        }
+
+        for (a, b) in HAND_KP_21_BONES {
+            let (Some(from), Some(to)) = (samples.get(a), samples.get(b)) else {
+                continue;
+            };
+            let (x0, y0) = clamp_to_frame(ctx.bounds, from.x, from.y);
+            let (x1, y1) = clamp_to_frame(ctx.bounds, to.x, to.y);
+            commands.push(DrawCommand::Line {
+                x0: x0 as f32,
+                y0: y0 as f32,
+                x1: x1 as f32,
+                y1: y1 as f32,
+                argb: ctx.settings.skeleton_color,
+                width: ctx.settings.skeleton_line_width as f32,
+            });
+        }
+    }
+}
+
+/// Route a group's semantic tag to its renderer: known tags get a specialized
+/// renderer, everything else falls back to the generic relation renderer.
+fn renderer_for_tag(semantic_tag: Option<&str>) -> &'static dyn GroupRenderer {
+    static GENERIC: GenericRelationRenderer = GenericRelationRenderer;
+    static HAND_KP_21: HandKp21Renderer = HandKp21Renderer;
+
+    match semantic_tag {
+        Some(HAND_KP_21_TAG) => &HAND_KP_21,
+        _ => &GENERIC,
     }
 }
 
@@ -310,7 +446,18 @@ fn analytics_to_draw_commands(
                 bounds,
                 occupied: &mut occupied,
             };
-            push_keypoint_commands(&mut commands, &group_samples, &mut ctx);
+
+            // Route the group to a specialized renderer by its semantic tag,
+            // falling back to the generic relation renderer.
+            let group_tag = group.semantic_tag().ok();
+            let renderer = renderer_for_tag(group_tag.as_deref());
+            gst::trace!(
+                CAT,
+                "routing keypoint group (tag {:?}) to {} renderer",
+                group_tag.as_deref(),
+                renderer.name()
+            );
+            renderer.render(&mut commands, &group_samples, &mut ctx);
         }
     } else {
         let mut samples = Vec::new();
@@ -1000,6 +1147,98 @@ mod tests {
         );
 
         assert_eq!(count_centered_labels(&commands), 1);
+        assert_eq!(count_lines(&commands), 0);
+    }
+
+    fn hand_points(count: i32) -> Vec<AnalyticsKeypointPosition> {
+        (0..count)
+            .map(|i| AnalyticsKeypointPosition {
+                x: 5 + i,
+                y: 5 + i,
+                z: 0,
+                dimension: AnalyticsKeypointDimensions::_2d,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dispatch_routes_known_tag_to_specialized_renderer() {
+        assert_eq!(
+            renderer_for_tag(Some(HAND_KP_21_TAG)).name(),
+            HAND_KP_21_TAG
+        );
+        // Unknown tags and untagged groups fall back to the generic renderer.
+        assert_eq!(
+            renderer_for_tag(Some("pose/body")).name(),
+            "generic-relation"
+        );
+        assert_eq!(renderer_for_tag(None).name(), "generic-relation");
+    }
+
+    #[test]
+    fn hand_kp_21_renderer_draws_skeleton_from_topology_without_relations() {
+        init();
+
+        // 21 hand keypoints with NO relations between them.
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+            relation
+                .add_keypoints_group_from_positions(
+                    HAND_KP_21_TAG,
+                    &hand_points(21),
+                    None,
+                    None,
+                    &[],
+                )
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: false,
+            draw_skeleton: true,
+            semantic_tag: Some(HAND_KP_21_TAG.to_string()),
+            ..Default::default()
+        };
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
+        // The specialized renderer draws the skeleton from the fixed topology,
+        // so all 21 bones become lines even though there are no relations.
+        assert_eq!(count_lines(&commands), HAND_KP_21_BONES.len());
+    }
+
+    #[test]
+    fn generic_renderer_draws_no_skeleton_without_relations() {
+        init();
+
+        // Same keypoints, but an unspecialized tag -> generic renderer, which
+        // derives the skeleton from relation metadata (there are none here).
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+            relation
+                .add_keypoints_group_from_positions("pose/hand", &hand_points(21), None, None, &[])
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: false,
+            draw_skeleton: true,
+            semantic_tag: Some("pose/".to_string()),
+            ..Default::default()
+        };
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
         assert_eq!(count_lines(&commands), 0);
     }
 }
