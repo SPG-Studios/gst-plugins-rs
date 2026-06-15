@@ -40,6 +40,7 @@ const DEFAULT_LABELS_COLOR: u32 = 0xFFFF_FFFF;
 const DEFAULT_DRAW_SKELETON: bool = false;
 const DEFAULT_SKELETON_COLOR: u32 = 0xFF00_FF00;
 const DEFAULT_SKELETON_LINE_WIDTH: f64 = 2.0;
+const DEFAULT_SUPPRESS_BUILTIN_RENDERING: bool = false;
 
 #[derive(Debug, Clone)]
 struct Settings {
@@ -52,6 +53,7 @@ struct Settings {
     skeleton_color: u32,
     skeleton_line_width: f64,
     semantic_tag: Option<String>,
+    suppress_builtin_rendering: bool,
 }
 
 impl Default for Settings {
@@ -66,6 +68,7 @@ impl Default for Settings {
             skeleton_color: DEFAULT_SKELETON_COLOR,
             skeleton_line_width: DEFAULT_SKELETON_LINE_WIDTH,
             semantic_tag: None,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         }
     }
 }
@@ -366,7 +369,9 @@ impl KeypointsOverlay {
         self.draw_hooks.lock().unwrap().clear();
     }
 
-    /// Wrap built-in commands with any host pre/post draw hooks.
+    /// Wrap built-in commands with any host pre/post draw hooks. In suppression
+    /// mode the built-ins are dropped, so the host's hooks fully replace them
+    /// (the pre and post hooks still run).
     fn compose_with_hooks(
         &self,
         builtins: &[DrawCommand],
@@ -374,7 +379,16 @@ impl KeypointsOverlay {
         height: i32,
     ) -> Vec<DrawCommand> {
         let ctx = crate::hooks::DrawHookContext { width, height };
-        self.draw_hooks.lock().unwrap().compose(builtins, &ctx)
+        let suppress = self.settings.lock().unwrap().suppress_builtin_rendering;
+        let hooks = self.draw_hooks.lock().unwrap();
+        // Only suppress when a hook is set, so suppression replaces built-ins
+        // rather than silently blanking the overlay when nothing draws.
+        let builtins: &[DrawCommand] = if suppress && hooks.has_hooks() {
+            &[]
+        } else {
+            builtins
+        };
+        hooks.compose(builtins, &ctx)
     }
 }
 
@@ -463,6 +477,14 @@ impl ObjectImpl for KeypointsOverlay {
                     .default_value(None)
                     .mutable_playing()
                     .build(),
+                glib::ParamSpecBoolean::builder("suppress-builtin-rendering")
+                    .nick("Suppress built-in rendering")
+                    .blurb(
+                        "Skip the element's own keypoints/labels so custom draw hooks fully replace them",
+                    )
+                    .default_value(DEFAULT_SUPPRESS_BUILTIN_RENDERING)
+                    .mutable_playing()
+                    .build(),
             ]
         });
 
@@ -521,6 +543,10 @@ impl ObjectImpl for KeypointsOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.semantic_tag = value.get().expect("type checked upstream");
             }
+            "suppress-builtin-rendering" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.suppress_builtin_rendering = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -562,6 +588,10 @@ impl ObjectImpl for KeypointsOverlay {
             "semantic-tag" => {
                 let settings = self.settings.lock().unwrap();
                 settings.semantic_tag.to_value()
+            }
+            "suppress-builtin-rendering" => {
+                let settings = self.settings.lock().unwrap();
+                settings.suppress_builtin_rendering.to_value()
             }
             _ => unimplemented!(),
         }
@@ -645,8 +675,12 @@ impl VideoFilterImpl for KeypointsOverlay {
         drop(render_context);
 
         // Publish what we drew (built-ins only, not host hooks) so downstream
-        // overlays avoid occluding it.
-        if !commands.is_empty() {
+        // overlays avoid occluding it. When suppression is active the built-ins
+        // are not rendered, so nothing is claimed (suppression only applies when
+        // a hook replaces them).
+        let builtins_suppressed =
+            settings.suppress_builtin_rendering && self.draw_hooks.lock().unwrap().has_hooks();
+        if !builtins_suppressed && !commands.is_empty() {
             // SAFETY: the frame is writable and uniquely borrowed here.
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
             crate::coordination::claim_commands(buffer, &commands, OVERLAY_OWNER);

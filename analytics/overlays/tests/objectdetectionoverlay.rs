@@ -8,6 +8,8 @@
 
 use gst::prelude::*;
 use gst_analytics::AnalyticsRelationMetaODExt;
+use gstoverlays::DrawCommand;
+use gstoverlays::hooks::{DrawHookContext, OverlayDrawHooksExt};
 
 const WIDTH: usize = 64;
 const HEIGHT: usize = 64;
@@ -202,6 +204,85 @@ fn eos_event_is_accepted() {
     // Verify the element accepts EOS (End of Stream) events gracefully.
     // This ensures proper stream termination and resource cleanup.
     assert!(harness.push_event(gst::event::Eos::new()));
+}
+
+#[test]
+fn suppress_builtin_rendering_without_hooks_is_noop() {
+    init();
+
+    let mut harness = make_harness();
+    harness
+        .element()
+        .unwrap()
+        .set_property("suppress-builtin-rendering", true);
+
+    // Suppression only applies when a hook replaces the built-ins. With no hook
+    // set it is a no-op, so the built-ins are still drawn (never silently blank).
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::ZERO, true)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    assert!(buffer_has_drawn_pixels(&harness.pull().unwrap()));
+}
+
+#[test]
+fn suppress_builtin_rendering_toggles_during_playback() {
+    init();
+
+    let mut harness = make_harness();
+    let element = harness.element().unwrap();
+
+    // Suppression replaces built-ins with hooks, so a hook must be present for
+    // it to take effect. Draw a marker away from the built-in box (at 10,10 from
+    // make_buffer) so the two can be told apart by pixel.
+    element.set_post_draw_hook(|_ctx: &DrawHookContext| {
+        vec![DrawCommand::Rectangle {
+            x: 40.0,
+            y: 40.0,
+            width: 16.0,
+            height: 16.0,
+            rotation: 0.0,
+            argb: 0xFFFF_FFFF,
+            filled: true,
+        }]
+    });
+
+    // Frame 1: suppression off (default) -> both the box and the hook draw.
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::ZERO, true)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    let out = harness.pull().unwrap();
+    assert!(pixel_is_nonzero(&out, 10, 10), "built-in box should draw");
+    assert!(pixel_is_nonzero(&out, 45, 45), "hook should draw");
+
+    // Toggle suppression on mid-stream (the property is mutable in PLAYING):
+    // the built-in box is gone, the hook still renders.
+    element.set_property("suppress-builtin-rendering", true);
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::from_mseconds(100), true)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    let out = harness.pull().unwrap();
+    assert!(
+        pixel_is_zero(&out, 10, 10),
+        "built-in box should be suppressed on the next frame"
+    );
+    assert!(
+        pixel_is_nonzero(&out, 45, 45),
+        "hook should keep drawing while suppressed"
+    );
+
+    // Toggle it back off -> the built-in box returns.
+    element.set_property("suppress-builtin-rendering", false);
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::from_mseconds(200), true)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    assert!(
+        pixel_is_nonzero(&harness.pull().unwrap(), 10, 10),
+        "clearing suppression should restore the built-in box"
+    );
 }
 
 #[test]

@@ -82,14 +82,17 @@ mod tests {
         assert!(!e.property::<bool>("filled-box"));
         assert_eq!(e.property::<u64>("expire-overlay"), 1_000_000_000);
         assert!(e.property::<bool>("tracking-outline-colors"));
+        assert!(!e.property::<bool>("suppress-builtin-rendering"));
 
         e.set_property("draw-labels", false);
         e.set_property("filled-box", true);
         e.set_property("expire-overlay", 2_000_000_000u64);
+        e.set_property("suppress-builtin-rendering", true);
 
         assert!(!e.property::<bool>("draw-labels"));
         assert!(e.property::<bool>("filled-box"));
         assert_eq!(e.property::<u64>("expire-overlay"), 2_000_000_000);
+        assert!(e.property::<bool>("suppress-builtin-rendering"));
     }
 
     #[test]
@@ -125,10 +128,12 @@ mod tests {
         assert_eq!(e.property::<u32>("skeleton-color"), 0xFF00_FF00);
         assert_eq!(e.property::<f64>("skeleton-line-width"), 2.0);
         assert_eq!(e.property::<Option<String>>("semantic-tag"), None);
+        assert!(!e.property::<bool>("suppress-builtin-rendering"));
 
         e.set_property("draw-skeleton", true);
         e.set_property("skeleton-line-width", 6.0f64);
         e.set_property("semantic-tag", Some("pose/".to_string()));
+        e.set_property("suppress-builtin-rendering", true);
 
         assert!(e.property::<bool>("draw-skeleton"));
         assert_eq!(e.property::<f64>("skeleton-line-width"), 6.0);
@@ -136,6 +141,7 @@ mod tests {
             e.property::<Option<String>>("semantic-tag"),
             Some("pose/".to_string())
         );
+        assert!(e.property::<bool>("suppress-builtin-rendering"));
     }
 
     #[test]
