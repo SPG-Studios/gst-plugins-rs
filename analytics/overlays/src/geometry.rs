@@ -105,8 +105,15 @@ impl OccupiedRegionRegistry {
         self.regions.clear();
     }
 
+    /// Register a highlight region (a bounding box or keypoint marker).
+    ///
+    /// Highlights are fixed at the positions the model dictates, so they always
+    /// register and may overlap one another. Labels, reserved at a lower
+    /// priority, still avoid them. Returns `false` only when the rect lies
+    /// entirely outside the frame.
     pub fn reserve_highlight(&mut self, rect: Rect) -> bool {
-        self.reserve(RegionPriority::Highlight, rect)
+        self.force_reserve(RegionPriority::Highlight, rect)
+            .is_some()
     }
 
     pub fn reserve_label(&mut self, rect: Rect) -> bool {
@@ -227,6 +234,21 @@ mod tests {
         assert!(!registry.reserve_label(Rect::from_xywh(20, 15, 30, 10)));
         assert!(registry.reserve_label(Rect::from_xywh(80, 80, 20, 10)));
         assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn highlights_may_overlap_each_other() {
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+
+        // Boxes / keypoint markers are fixed by the model, so overlapping ones
+        // all register (unlike labels, which cannot overlap).
+        assert!(registry.reserve_highlight(Rect::from_xywh(10, 10, 40, 40)));
+        assert!(registry.reserve_highlight(Rect::from_xywh(30, 30, 40, 40)));
+        assert_eq!(registry.len(), 2);
+
+        // A label may not overlap either highlight, but is free elsewhere.
+        assert!(!registry.reserve_label(Rect::from_xywh(35, 35, 10, 10)));
+        assert!(registry.reserve_label(Rect::from_xywh(120, 120, 20, 10)));
     }
 
     #[test]
