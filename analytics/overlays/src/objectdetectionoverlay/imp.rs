@@ -259,6 +259,19 @@ fn analytics_to_draw_commands(
     // Avoid regions other elements upstream have already claimed.
     crate::coordination::seed_registry_from_claims(&mut occupied, buffer, OVERLAY_OWNER);
 
+    // A label deferred to the second pass.
+    struct PendingLabel {
+        bbox: BBox,
+        box_rect: Rect,
+        text: String,
+        preferred_x: i32,
+        preferred_y: i32,
+    }
+    let mut pending_labels: Vec<PendingLabel> = Vec::new();
+
+    // Pass 1: register every box as a highlight (boxes are model-fixed and may
+    // overlap each other) and draw the rectangles. Labels are deferred so they
+    // can avoid *all* boxes, not just the ones seen so far.
     for od_mtd in meta.iter::<AnalyticsODMtd>() {
         let Ok(location) = od_mtd.location() else {
             continue;
@@ -296,8 +309,9 @@ fn analytics_to_draw_commands(
             w: bbox_w,
             h: bbox_h,
         };
+        let box_rect = Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h);
 
-        occupied.reserve_highlight(Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h));
+        occupied.reserve_highlight(box_rect);
 
         commands.push(DrawCommand::Rectangle {
             x: bbox_x as f32,
@@ -309,27 +323,19 @@ fn analytics_to_draw_commands(
             filled: settings.filled_box,
         });
 
-        let box_rect = Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h);
-
         if settings.draw_labels {
-            let label = label_text_with_related(&meta, &od_mtd);
-            if let Some(placement) =
-                place_od_label(&mut occupied, bbox, &label, location.x, location.y)
-            {
-                push_od_label(
-                    &mut commands,
-                    placement,
-                    label,
-                    box_rect,
-                    settings.labels_color,
-                );
-            }
+            pending_labels.push(PendingLabel {
+                bbox,
+                box_rect,
+                text: label_text_with_related(&meta, &od_mtd),
+                preferred_x: location.x,
+                preferred_y: location.y,
+            });
         }
 
         if settings.draw_tracking_labels
             && let Some(tracking_id) = tracking_id
         {
-            let tracking_text = tracking_label_text(tracking_id);
             // The label's default position sits just below the box so it does
             // not overlap the box highlight; the leader line (when needed) is
             // drawn between the box edge and the label edge.
@@ -338,21 +344,33 @@ fn analytics_to_draw_commands(
                 .saturating_add(location.h)
                 .saturating_add(LABEL_LAYOUT_HEIGHT)
                 .saturating_add(LABEL_LAYOUT_GAP);
-            if let Some(placement) = place_od_label(
-                &mut occupied,
+            pending_labels.push(PendingLabel {
                 bbox,
-                &tracking_text,
-                location.x,
-                default_baseline,
-            ) {
-                push_od_label(
-                    &mut commands,
-                    placement,
-                    tracking_text,
-                    box_rect,
-                    settings.labels_color,
-                );
-            }
+                box_rect,
+                text: tracking_label_text(tracking_id),
+                preferred_x: location.x,
+                preferred_y: default_baseline,
+            });
+        }
+    }
+
+    // Pass 2: place labels now that every box is registered, so they avoid all
+    // boxes and render on top of them.
+    for job in pending_labels {
+        if let Some(placement) = place_od_label(
+            &mut occupied,
+            job.bbox,
+            &job.text,
+            job.preferred_x,
+            job.preferred_y,
+        ) {
+            push_od_label(
+                &mut commands,
+                placement,
+                job.text,
+                job.box_rect,
+                settings.labels_color,
+            );
         }
     }
 
@@ -1755,5 +1773,65 @@ mod tests {
             element.imp().compose_with_hooks(&builtins, 100, 80),
             builtins
         );
+    }
+
+    #[test]
+    fn labels_do_not_overlap_any_box_even_when_boxes_overlap() {
+        gst::init().unwrap();
+
+        // Two overlapping boxes. The label of the first must avoid the second
+        // (which is only possible if all boxes are registered before labels).
+        let mut buffer = gst::Buffer::new();
+        {
+            let mut relation = AnalyticsRelationMeta::add(buffer.make_mut());
+            relation
+                .add_od_mtd(glib::Quark::from_str("a"), 40, 40, 40, 30, 0.9)
+                .unwrap();
+            relation
+                .add_od_mtd(glib::Quark::from_str("b"), 60, 55, 40, 30, 0.9)
+                .unwrap();
+        }
+
+        let settings = Settings {
+            render_enabled: true,
+            draw_labels: true,
+            draw_tracking_labels: false,
+            ..Settings::default()
+        };
+        let (analytics, commands) =
+            analytics_to_draw_commands(buffer.as_ref(), settings, test_frame_bounds());
+        assert_eq!(analytics.object_count, 2);
+
+        let boxes: Vec<Rect> = commands
+            .iter()
+            .filter_map(|c| match c {
+                DrawCommand::Rectangle {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => Some(Rect::from_xywh(
+                    *x as i32,
+                    *y as i32,
+                    *width as i32,
+                    *height as i32,
+                )),
+                _ => None,
+            })
+            .collect();
+        let labels: Vec<Rect> = commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Text { .. }))
+            .filter_map(crate::render::content_bounds)
+            .collect();
+
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(labels.len(), 2);
+        for label in &labels {
+            for b in &boxes {
+                assert!(!label.intersects(*b), "label {label:?} overlaps box {b:?}");
+            }
+        }
     }
 }

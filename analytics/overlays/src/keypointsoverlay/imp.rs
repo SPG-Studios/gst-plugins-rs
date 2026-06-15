@@ -193,6 +193,8 @@ fn push_keypoints(
     let mut first_in_frame: Option<KeypointSample> = None;
     let keypoint_radius_px = ctx.settings.keypoint_radius.ceil() as i32;
 
+    // Pass 1: register and draw every keypoint marker (a model-fixed highlight,
+    // so markers may overlap). Done before any label so labels avoid them all.
     for sample in samples {
         if !keypoint_in_frame(ctx.bounds, sample.x, sample.y) {
             continue;
@@ -215,8 +217,31 @@ fn push_keypoints(
             radius: ctx.settings.keypoint_radius as f32,
             argb: ctx.settings.keypoint_color,
         });
+    }
 
-        if ctx.settings.draw_labels && !ctx.draw_group_label_once {
+    if !ctx.settings.draw_labels {
+        return;
+    }
+
+    // Pass 2: labels, now avoiding every marker registered above.
+    if ctx.draw_group_label_once {
+        if let Some(sample) = first_in_frame {
+            let label = confidence_label(sample.confidence);
+            if let Some(placement) = place_keypoint_label(ctx.occupied, sample, &label) {
+                push_keypoint_label(
+                    commands,
+                    placement,
+                    sample,
+                    label,
+                    ctx.settings.labels_color,
+                );
+            }
+        }
+    } else {
+        for sample in samples {
+            if !keypoint_in_frame(ctx.bounds, sample.x, sample.y) {
+                continue;
+            }
             let label = confidence_label(sample.confidence);
             if let Some(placement) = place_keypoint_label(ctx.occupied, *sample, &label) {
                 push_keypoint_label(
@@ -227,22 +252,6 @@ fn push_keypoints(
                     ctx.settings.labels_color,
                 );
             }
-        }
-    }
-
-    if ctx.settings.draw_labels
-        && ctx.draw_group_label_once
-        && let Some(sample) = first_in_frame
-    {
-        let label = confidence_label(sample.confidence);
-        if let Some(placement) = place_keypoint_label(ctx.occupied, sample, &label) {
-            push_keypoint_label(
-                commands,
-                placement,
-                sample,
-                label,
-                ctx.settings.labels_color,
-            );
         }
     }
 }
@@ -1240,5 +1249,70 @@ mod tests {
         let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
 
         assert_eq!(count_lines(&commands), 0);
+    }
+
+    #[test]
+    fn labels_do_not_overlap_keypoint_markers() {
+        init();
+
+        // Two keypoints close enough that their markers overlap.
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 128 * 128 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+            relation
+                .add_keypoint_mtd(
+                    AnalyticsKeypointDimensions::_2d,
+                    50,
+                    50,
+                    0,
+                    AnalyticsKeypointVisibility::VISIBLE,
+                    0.9,
+                )
+                .unwrap();
+            relation
+                .add_keypoint_mtd(
+                    AnalyticsKeypointDimensions::_2d,
+                    54,
+                    52,
+                    0,
+                    AnalyticsKeypointVisibility::VISIBLE,
+                    0.9,
+                )
+                .unwrap();
+        }
+
+        // Ungrouped mode (no semantic tag) draws a label per keypoint.
+        let settings = Settings {
+            draw_labels: true,
+            ..Default::default()
+        };
+        let bounds = FrameBounds {
+            width: 128,
+            height: 128,
+        };
+        let (_, commands) = analytics_to_draw_commands(buffer.as_ref(), &settings, bounds);
+
+        let markers: Vec<Rect> = commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::Circle { .. }))
+            .filter_map(crate::render::content_bounds)
+            .collect();
+        let labels: Vec<Rect> = commands
+            .iter()
+            .filter(|c| matches!(c, DrawCommand::TextCentered { .. }))
+            .filter_map(crate::render::content_bounds)
+            .collect();
+
+        assert_eq!(markers.len(), 2);
+        assert_eq!(labels.len(), 2);
+        for label in &labels {
+            for marker in &markers {
+                assert!(
+                    !label.intersects(*marker),
+                    "label {label:?} overlaps keypoint marker {marker:?}"
+                );
+            }
+        }
     }
 }
