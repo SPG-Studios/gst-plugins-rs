@@ -15,6 +15,9 @@
 //!   * a **post** hook — the sample `BorderHook` plus a translucent magenta
 //!     panel that draws *over* the built-in box, plus a watermark label.
 //!
+//! Set `SUPPRESS=1` to enable hook-only mode: the built-in box/label is
+//! suppressed so only the host hooks render.
+//!
 //! Run via gst-env so the core elements resolve, e.g.:
 //!   gst-env.py --builddir build-local \
 //!     cargo run -p gst-plugin-overlays --example draw_hooks_demo -- out.png
@@ -75,6 +78,12 @@ fn main() {
         .property("render-enabled", true)
         .build()
         .unwrap();
+
+    // Hook-only mode: drop the element's built-in box/label so only the host
+    // hooks render. Toggle with SUPPRESS=1.
+    if matches!(std::env::var("SUPPRESS").as_deref(), Ok("1")) {
+        overlay.set_property("suppress-builtin-rendering", true);
+    }
 
     // Pre hook: translucent cyan panel. The built-in box draws OVER it.
     overlay.set_pre_draw_hook(|_ctx: &DrawHookContext| {

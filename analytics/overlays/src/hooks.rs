@@ -79,6 +79,11 @@ impl DrawHooks {
         self.post = None;
     }
 
+    /// Whether a pre or post hook is set.
+    pub fn has_hooks(&self) -> bool {
+        self.pre.is_some() || self.post.is_some()
+    }
+
     /// Build the final command list: pre-hook output, then the element's
     /// `builtins`, then post-hook output. Hooks that are unset contribute
     /// nothing, so with no hooks this is just `builtins`.

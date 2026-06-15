@@ -41,6 +41,7 @@ const DEFAULT_LABELS_COLOR: u32 = 0xFFFF_FFFF;
 const DEFAULT_FILLED_BOX: bool = false;
 const DEFAULT_EXPIRE_OVERLAY: u64 = 1_000_000_000;
 const DEFAULT_TRACKING_OUTLINE_COLORS: bool = true;
+const DEFAULT_SUPPRESS_BUILTIN_RENDERING: bool = false;
 // Color generation constants for track coloring (HSV space)
 const TRACK_COLOR_SATURATION: f32 = 0.85;
 const TRACK_COLOR_VALUE: f32 = 0.95;
@@ -55,6 +56,7 @@ struct Settings {
     filled_box: bool,
     expire_overlay: u64,
     tracking_outline_colors: bool,
+    suppress_builtin_rendering: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +70,7 @@ impl Default for Settings {
             filled_box: DEFAULT_FILLED_BOX,
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         }
     }
 }
@@ -442,7 +445,9 @@ impl ObjectDetectionOverlay {
         self.draw_hooks.lock().unwrap().clear();
     }
 
-    /// Wrap built-in commands with any host pre/post draw hooks.
+    /// Wrap built-in commands with any host pre/post draw hooks. In suppression
+    /// mode the built-ins are dropped, so the host's hooks fully replace them
+    /// (the pre and post hooks still run).
     fn compose_with_hooks(
         &self,
         builtins: &[DrawCommand],
@@ -450,7 +455,16 @@ impl ObjectDetectionOverlay {
         height: i32,
     ) -> Vec<DrawCommand> {
         let ctx = crate::hooks::DrawHookContext { width, height };
-        self.draw_hooks.lock().unwrap().compose(builtins, &ctx)
+        let suppress = self.settings.lock().unwrap().suppress_builtin_rendering;
+        let hooks = self.draw_hooks.lock().unwrap();
+        // Only suppress when a hook is set, so suppression replaces built-ins
+        // rather than silently blanking the overlay when nothing draws.
+        let builtins: &[DrawCommand] = if suppress && hooks.has_hooks() {
+            &[]
+        } else {
+            builtins
+        };
+        hooks.compose(builtins, &ctx)
     }
 
     fn reset_stream_state(&self) {
@@ -686,6 +700,14 @@ impl ObjectImpl for ObjectDetectionOverlay {
                     .default_value(DEFAULT_TRACKING_OUTLINE_COLORS)
                     .mutable_playing()
                     .build(),
+                glib::ParamSpecBoolean::builder("suppress-builtin-rendering")
+                    .nick("Suppress built-in rendering")
+                    .blurb(
+                        "Skip the element's own boxes/labels so custom draw hooks fully replace them",
+                    )
+                    .default_value(DEFAULT_SUPPRESS_BUILTIN_RENDERING)
+                    .mutable_playing()
+                    .build(),
             ]
         });
 
@@ -741,6 +763,10 @@ impl ObjectImpl for ObjectDetectionOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.tracking_outline_colors = value.get().expect("type checked upstream");
             }
+            "suppress-builtin-rendering" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.suppress_builtin_rendering = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -778,6 +804,10 @@ impl ObjectImpl for ObjectDetectionOverlay {
             "tracking-outline-colors" => {
                 let settings = self.settings.lock().unwrap();
                 settings.tracking_outline_colors.to_value()
+            }
+            "suppress-builtin-rendering" => {
+                let settings = self.settings.lock().unwrap();
+                settings.suppress_builtin_rendering.to_value()
             }
             _ => unimplemented!(),
         }
@@ -958,8 +988,12 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
                 .map_err(|_| gst::FlowError::Error)?;
         }
 
-        // Publish what we drew so downstream overlays avoid occluding it.
-        if !commands.is_empty() {
+        // Publish what we drew so downstream overlays avoid occluding it. When
+        // suppression is active the built-ins are not rendered, so nothing is
+        // claimed (suppression only applies when a hook replaces them).
+        let builtins_suppressed =
+            settings.suppress_builtin_rendering && self.draw_hooks.lock().unwrap().has_hooks();
+        if !builtins_suppressed && !commands.is_empty() {
             // SAFETY: the frame is writable and uniquely borrowed here.
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
             crate::coordination::claim_commands(buffer, &commands, OVERLAY_OWNER);
@@ -1094,6 +1128,7 @@ mod tests {
             filled_box: false,
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         };
 
         let (analytics, commands) =
@@ -1160,6 +1195,7 @@ mod tests {
             filled_box: false,
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         };
 
         let (analytics, commands) =
@@ -1208,6 +1244,7 @@ mod tests {
             filled_box: false,
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: true,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         };
 
         let (_, commands) =
@@ -1246,6 +1283,7 @@ mod tests {
             filled_box: false,
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         };
 
         let (_, commands) =
@@ -1327,6 +1365,7 @@ mod tests {
             filled_box: false,
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: false,
+            suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
         };
 
         let (_, commands) =
@@ -1657,5 +1696,64 @@ mod tests {
                 ..
             } if width == 100.0 && height == 80.0
         ));
+    }
+
+    #[test]
+    fn suppress_builtin_rendering_replaces_builtins_with_hooks() {
+        gst::init().unwrap();
+        use crate::hooks::OverlayDrawHooksExt;
+
+        let element =
+            glib::Object::builder::<crate::objectdetectionoverlay::ObjectDetectionOverlay>()
+                .build();
+        element.set_property("suppress-builtin-rendering", true);
+        element.set_post_draw_hook(crate::hooks::BorderHook {
+            argb: 0xFF00_FF00,
+            inset: 0.0,
+        });
+
+        let builtins = vec![DrawCommand::Rectangle {
+            x: 1.0,
+            y: 1.0,
+            width: 2.0,
+            height: 2.0,
+            rotation: 0.0,
+            argb: 0,
+            filled: false,
+        }];
+        let composed = element.imp().compose_with_hooks(&builtins, 100, 80);
+
+        // The built-ins are dropped; only the host's border remains.
+        assert_eq!(composed.len(), 1);
+        assert!(matches!(
+            composed[0],
+            DrawCommand::Rectangle { width, height, .. } if width == 100.0 && height == 80.0
+        ));
+    }
+
+    #[test]
+    fn suppress_builtin_rendering_without_hooks_keeps_builtins() {
+        gst::init().unwrap();
+
+        let element =
+            glib::Object::builder::<crate::objectdetectionoverlay::ObjectDetectionOverlay>()
+                .build();
+        element.set_property("suppress-builtin-rendering", true);
+
+        let builtins = vec![DrawCommand::Rectangle {
+            x: 1.0,
+            y: 1.0,
+            width: 2.0,
+            height: 2.0,
+            rotation: 0.0,
+            argb: 0,
+            filled: false,
+        }];
+        // Suppression only applies when a hook replaces the built-ins; with no
+        // hook set it is a no-op so the built-ins are kept (never silently blank).
+        assert_eq!(
+            element.imp().compose_with_hooks(&builtins, 100, 80),
+            builtins
+        );
     }
 }
