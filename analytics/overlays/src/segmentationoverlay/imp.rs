@@ -775,6 +775,7 @@ mod tests {
 
     #[test]
     fn can_handle_caps_accepts_video_raw_caps() {
+        gst::init().unwrap();
         let caps = gst_video::VideoCapsBuilder::new()
             .format(gst_video::VideoFormat::I420)
             .build();
@@ -783,12 +784,14 @@ mod tests {
 
     #[test]
     fn can_handle_caps_rejects_non_video_caps() {
+        gst::init().unwrap();
         let caps = gst::Caps::builder("audio/x-raw").build();
         assert!(!can_handle_caps(&caps));
     }
 
     #[test]
     fn reset_runtime_state_clears_cached_overlay_state() {
+        gst::init().unwrap();
         let overlay = SegmentationOverlay::default();
 
         {
