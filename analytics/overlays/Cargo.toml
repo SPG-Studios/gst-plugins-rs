@@ -28,6 +28,8 @@ gst-plugin-version-helper.workspace = true
 gst-app.workspace = true
 # v1_16 for Harness::add_propose_allocation_meta (composition-attach test).
 gst-check = { workspace = true, features = ["v1_16"] }
+# Encoding/decoding golden reference images (see tests/golden.rs).
+png = "0.18"
 
 [features]
 static = []

@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+use std::sync::LazyLock;
+
 use gst::BufferRef;
 use gst_video::prelude::VideoFrameExt;
 use gst_video::{VideoFormat, VideoFrameRef};
@@ -110,20 +112,23 @@ fn label_outline_offset(font_size: f32) -> f32 {
     (font_size / 15.0).max(1.0)
 }
 
-fn make_label_font() -> skia::Font {
-    let font_mgr = skia::FontMgr::default();
-    let typeface = ["Arial", "Liberation Sans", "DejaVu Sans", "Sans"]
-        .iter()
-        .find_map(|family| font_mgr.match_family_style(*family, skia::FontStyle::normal()))
-        .or_else(|| font_mgr.legacy_make_typeface(None, skia::FontStyle::normal()));
+/// The label font, embedded at build time. This is the *only* font the renderer
+/// uses: relying on whatever font the system happens to provide would make label
+/// rendering differ across machines, which defeats the golden-image tests (and
+/// gives every deployment slightly different output). See `fonts/README.md`.
+const LABEL_FONT_DATA: &[u8] = include_bytes!("../../fonts/DejaVuSans-subset.ttf");
 
-    let mut font = if let Some(typeface) = typeface {
-        skia::Font::from_typeface(typeface, LABEL_FONT_SIZE)
-    } else {
-        let mut default_font = skia::Font::default();
-        default_font.set_size(LABEL_FONT_SIZE);
-        default_font
-    };
+/// The parsed typeface, built once from [`LABEL_FONT_DATA`]. `Typeface` is an
+/// immutable, atomically refcounted, thread-safe Skia object, so it is shared
+/// across calls and threads; only the cheap per-call `Font` wrapper is rebuilt.
+static LABEL_TYPEFACE: LazyLock<skia::Typeface> = LazyLock::new(|| {
+    skia::FontMgr::new()
+        .new_from_data(LABEL_FONT_DATA, None)
+        .expect("embedded label font failed to parse")
+});
+
+fn make_label_font() -> skia::Font {
+    let mut font = skia::Font::from_typeface(LABEL_TYPEFACE.clone(), LABEL_FONT_SIZE);
     font.set_subpixel(true);
     font.set_edging(skia::font::Edging::AntiAlias);
     font.set_linear_metrics(true);
