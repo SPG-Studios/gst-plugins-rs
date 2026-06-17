@@ -25,6 +25,14 @@
 // A missing golden is created (and the test fails once, to flag it for review).
 // On a mismatch the actual and a difference image are written to the test
 // temp dir (printed in the failure message) for inspection.
+//
+// Linux only: text rendering goes through skia's platform-native font backend
+// (freetype on Linux, DirectWrite on Windows, CoreText on macOS), so glyphs are
+// not pixel-identical across operating systems and the committed PNGs only match
+// on the platform they were blessed on. As a self-referential regression guard,
+// running on the one canonical platform (Linux, where CI blesses) is sufficient;
+// the command-level behaviour tests still cover rendering on every OS.
+#![cfg(target_os = "linux")]
 
 use glib::translate::{IntoGlibPtr, from_glib};
 use gst::prelude::*;
