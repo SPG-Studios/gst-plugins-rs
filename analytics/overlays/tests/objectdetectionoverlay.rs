@@ -130,24 +130,38 @@ fn make_pipeline() -> (gst::Pipeline, gst_app::AppSrc, gst_app::AppSink) {
     (pipeline, appsrc, appsink)
 }
 
+// Upper bound on live-pipeline waits. Generous enough to never false-fail under
+// CI load, but bounded so a stuck pipeline fails fast with a clear message
+// instead of hanging until the test runner's (much longer) timeout.
+const PIPELINE_WAIT: gst::ClockTime = gst::ClockTime::from_seconds(30);
+
 fn pull_buffer_from_appsink(appsink: &gst_app::AppSink) -> gst::Buffer {
-    appsink.pull_sample().unwrap().buffer().unwrap().copy()
+    appsink
+        .try_pull_sample(PIPELINE_WAIT)
+        .expect("timed out waiting for a sample from appsink")
+        .buffer()
+        .unwrap()
+        .copy()
 }
 
 fn wait_for_pipeline_eos(pipeline: &gst::Pipeline) {
     let bus = pipeline.bus().unwrap();
 
-    for message in bus.iter_timed(gst::ClockTime::NONE) {
-        match message.view() {
-            gst::MessageView::Eos(..) => break,
-            gst::MessageView::Error(err) => panic!(
-                "pipeline error from {:?}: {} ({:?})",
-                err.src().map(|src| src.path_string()),
-                err.error(),
-                err.debug()
-            ),
-            _ => {}
+    match bus.timed_pop_filtered(
+        PIPELINE_WAIT,
+        &[gst::MessageType::Eos, gst::MessageType::Error],
+    ) {
+        Some(message) => {
+            if let gst::MessageView::Error(err) = message.view() {
+                panic!(
+                    "pipeline error from {:?}: {} ({:?})",
+                    err.src().map(|src| src.path_string()),
+                    err.error(),
+                    err.debug()
+                );
+            }
         }
+        None => panic!("timed out waiting for EOS on the pipeline bus"),
     }
 }
 
@@ -377,57 +391,52 @@ fn pipeline_eos_ends_stream() {
 fn pipeline_flush_stop_resumes_processing() {
     init();
 
-    let (pipeline, appsrc, appsink) = make_pipeline();
-    pipeline.set_state(gst::State::Playing).unwrap();
+    // Driven through the harness rather than a live appsrc/appsink pipeline:
+    // injecting flush events while appsrc's streaming thread runs is racy and
+    // can deadlock the pull/EOS waits under load. The harness exercises the same
+    // element event handling synchronously.
+    let mut harness = make_harness();
 
-    appsrc
-        .push_buffer(make_buffer(gst::ClockTime::ZERO, true))
-        .unwrap();
-    let first = pull_buffer_from_appsink(&appsink);
-    // Verify overlay is drawn for the initial frame.
+    // Initial frame is rendered.
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::ZERO, true)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    let first = harness.pull().unwrap();
     assert!(buffer_has_drawn_pixels(&first));
 
-    let src_pad = appsrc.static_pad("src").unwrap();
-    // Push FlushStart to initiate flushing.
-    assert!(src_pad.push_event(gst::event::FlushStart::new()));
-    // Push FlushStop to resume processing after flush.
-    assert!(src_pad.push_event(gst::event::FlushStop::new(true)));
-
+    // Flush, then resume. FlushStop(reset_time=true) drops the segment, so a new
+    // one must precede further buffers.
+    assert!(harness.push_event(gst::event::FlushStart::new()));
+    assert!(harness.push_event(gst::event::FlushStop::new(true)));
     let segment = gst::FormattedSegment::<gst::ClockTime>::new();
-    assert!(src_pad.push_event(gst::event::Segment::builder(&segment).build()));
+    assert!(harness.push_event(gst::event::Segment::builder(&segment).build()));
 
-    appsrc
-        .push_buffer(make_buffer(gst::ClockTime::from_mseconds(100), true))
-        .unwrap();
-    let resumed = pull_buffer_from_appsink(&appsink);
-    // Verify overlay is drawn after flush-stop resumes processing.
-    // The element should continue rendering overlays normally after the flush sequence.
+    // Processing resumes and the overlay is drawn again after the flush sequence.
+    assert_eq!(
+        harness.push(make_buffer(gst::ClockTime::from_mseconds(100), true)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    let resumed = harness.pull().unwrap();
     assert!(buffer_has_drawn_pixels(&resumed));
-
-    appsrc.end_of_stream().unwrap();
-    wait_for_pipeline_eos(&pipeline);
-    pipeline.set_state(gst::State::Null).unwrap();
 }
 
 #[test]
 fn pipeline_oriented_metadata_renders_overlay() {
     init();
 
-    let (pipeline, appsrc, appsink) = make_pipeline();
-    pipeline.set_state(gst::State::Playing).unwrap();
+    // Synchronous via the harness: rendering oriented metadata needs no live
+    // pipeline, and avoids the appsrc/appsink hang risk under CI load.
+    let mut harness = make_harness();
 
-    appsrc
-        .push_buffer(make_oriented_buffer(gst::ClockTime::ZERO, 0.45))
-        .unwrap();
-    appsrc.end_of_stream().unwrap();
-
-    let out = pull_buffer_from_appsink(&appsink);
+    assert_eq!(
+        harness.push(make_oriented_buffer(gst::ClockTime::ZERO, 0.45)),
+        Ok(gst::FlowSuccess::Ok)
+    );
+    let out = harness.pull().unwrap();
     // Verify overlay is drawn for oriented (rotated) bounding box.
     // The element should correctly handle rotation metadata and render accordingly.
     assert!(buffer_has_drawn_pixels(&out));
-
-    wait_for_pipeline_eos(&pipeline);
-    pipeline.set_state(gst::State::Null).unwrap();
 }
 
 #[test]

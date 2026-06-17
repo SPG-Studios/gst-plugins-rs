@@ -120,25 +120,39 @@ fn make_pipeline_with_options(
     (pipeline, appsrc, appsink)
 }
 
+// Upper bound on live-pipeline waits. Generous enough to never false-fail under
+// CI load, but bounded so a stuck pipeline fails fast with a clear message
+// instead of hanging until the test runner's (much longer) timeout.
+const PIPELINE_WAIT: gst::ClockTime = gst::ClockTime::from_seconds(30);
+
 fn wait_for_pipeline_eos(pipeline: &gst::Pipeline) {
     let bus = pipeline.bus().unwrap();
 
-    for message in bus.iter_timed(gst::ClockTime::NONE) {
-        match message.view() {
-            gst::MessageView::Eos(..) => break,
-            gst::MessageView::Error(err) => panic!(
-                "pipeline error from {:?}: {} ({:?})",
-                err.src().map(|src| src.path_string()),
-                err.error(),
-                err.debug()
-            ),
-            _ => {}
+    match bus.timed_pop_filtered(
+        PIPELINE_WAIT,
+        &[gst::MessageType::Eos, gst::MessageType::Error],
+    ) {
+        Some(message) => {
+            if let gst::MessageView::Error(err) = message.view() {
+                panic!(
+                    "pipeline error from {:?}: {} ({:?})",
+                    err.src().map(|src| src.path_string()),
+                    err.error(),
+                    err.debug()
+                );
+            }
         }
+        None => panic!("timed out waiting for EOS on the pipeline bus"),
     }
 }
 
 fn pull_buffer_from_appsink(appsink: &gst_app::AppSink) -> gst::Buffer {
-    appsink.pull_sample().unwrap().buffer().unwrap().copy()
+    appsink
+        .try_pull_sample(PIPELINE_WAIT)
+        .expect("timed out waiting for a sample from appsink")
+        .buffer()
+        .unwrap()
+        .copy()
 }
 
 fn make_mask_buffer(width: u32, height: u32, values: Vec<u8>) -> gst::Buffer {
