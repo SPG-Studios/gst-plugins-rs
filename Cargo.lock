@@ -5697,6 +5697,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-st337depay"
+version = "0.16.0-alpha"
+dependencies = [
+ "bitstream-io",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-check",
+]
+
+[[package]]
 name = "gst-plugin-streamgrouper"
 version = "0.16.0-alpha"
 dependencies = [
