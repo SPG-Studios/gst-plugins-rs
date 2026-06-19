@@ -22,7 +22,6 @@ use gst_video::subclass::prelude::*;
 
 use crate::lifecycle::{OverlayLifecycle, lifecycle_event_kind};
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 
@@ -53,9 +52,36 @@ pub struct SegmentationOverlay {
     state: Mutex<State>,
 }
 
+/// Per-segment colours indexed directly by the mask's Gray8 value (0..=255).
+///
+/// This replaces a `HashMap<usize, u32>` whose default-SipHash lookup ran for
+/// every output pixel and dominated the segmentation hot path (~21% of the
+/// element's cost in profiling). Mask values are bytes, so a fixed 256-entry
+/// table makes the per-pixel lookup a plain array index. Colours are still
+/// assigned lazily in first-seen order (preserving the previous behaviour), so
+/// only the storage changed, not the resulting colours.
+struct SegmentColorTable([Option<u32>; 256]);
+
+impl Default for SegmentColorTable {
+    fn default() -> Self {
+        Self([None; 256])
+    }
+}
+
+impl SegmentColorTable {
+    fn clear(&mut self) {
+        self.0 = [None; 256];
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.0.iter().all(Option::is_none)
+    }
+}
+
 #[derive(Default)]
 struct State {
-    segment_colors: HashMap<usize, u32>,
+    segment_colors: SegmentColorTable,
     next_color_index: u64,
     composition: Option<gst_video::VideoOverlayComposition>,
     attach_composition: bool,
@@ -158,16 +184,15 @@ fn color_for_segment(
         return None;
     }
 
-    let entry = state
-        .segment_colors
-        .entry(segment_value)
-        .or_insert_with(|| {
-            let color = generate_segment_color(state.next_color_index, hint_maximum_segment_type);
-            state.next_color_index = state.next_color_index.saturating_add(1);
-            color
-        });
-
-    Some(*entry)
+    // Direct array index (mask values are bytes); `None` for any out-of-range
+    // value. Colours are assigned lazily on first appearance, as before.
+    let slot = state.segment_colors.0.get_mut(segment_value)?;
+    if slot.is_none() {
+        let color = generate_segment_color(state.next_color_index, hint_maximum_segment_type);
+        state.next_color_index = state.next_color_index.saturating_add(1);
+        *slot = Some(color);
+    }
+    *slot
 }
 
 fn selected_type_quarks(selected_types: Option<&str>) -> Option<Vec<glib::Quark>> {
@@ -796,7 +821,7 @@ mod tests {
 
         {
             let mut state = overlay.state.lock().unwrap();
-            state.segment_colors.insert(1, 0x00ff_0000);
+            state.segment_colors.0[1] = Some(0x00ff_0000);
             state.next_color_index = 1;
 
             let mut overlay_buf = gst::Buffer::from_mut_slice(vec![0_u8; 4]);
