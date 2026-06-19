@@ -15,12 +15,16 @@ mod caps;
 mod cicp;
 pub mod format;
 
+#[cfg(feature = "animated_formats")]
+mod anim;
 mod decoder;
 mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     overlay::register(plugin)?;
     decoder::register(plugin)?;
+    #[cfg(feature = "animated_formats")]
+    anim::register(plugin)?;
     Ok(())
 }
 
