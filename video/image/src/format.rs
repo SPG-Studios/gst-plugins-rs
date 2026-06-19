@@ -247,4 +247,92 @@ impl Format {
             make_caps!("image/x-xpixmap"),
         ]
     }
+
+    pub fn all_encoder_formats() -> impl IntoIterator<Item = gst::Caps> {
+        [
+            #[cfg(any(feature = "png", feature = "ico"))]
+            make_encoder_caps!(
+                ImageFormat::Png,
+                [
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    gst_video::VideoFormat::Gray8,
+                ]
+            ),
+            #[cfg(feature = "tiff")]
+            make_encoder_caps!(
+                ImageFormat::Tiff,
+                [
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Gray16Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Gray16Le,
+                    gst_video::VideoFormat::Gray8,
+                ]
+            ),
+            #[cfg(feature = "jpeg")]
+            make_encoder_caps!(
+                ImageFormat::Jpeg,
+                [gst_video::VideoFormat::Rgb, gst_video::VideoFormat::Gray8,]
+            ),
+            #[cfg(feature = "bmp")]
+            make_encoder_caps_with_extra_mimetypes!(
+                ImageFormat::Bmp,
+                "image/x-MS-bmp",
+                [
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    // FIXME upstream: image-rs stores grayscale BMP as RGBA
+                    // https://github.com/image-rs/image/pull/2953
+                    // https://github.com/image-rs/image/pull/3011
+                    // gst_video::VideoFormat::Gray8,
+                ]
+            ),
+            #[cfg(feature = "tga")]
+            make_encoder_caps_with_extra_mimetypes!(
+                ImageFormat::Tga,
+                "image/x-tga",
+                [
+                    gst_video::VideoFormat::Rgba,
+                    gst_video::VideoFormat::Rgb,
+                    gst_video::VideoFormat::Gray8,
+                ]
+            ),
+            #[cfg(feature = "avif")]
+            make_encoder_caps!(
+                ImageFormat::Avif,
+                [gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Rgb]
+            ),
+            #[cfg(feature = "ff")]
+            make_encoder_caps!(
+                "image/x-farbfeld",
+                [
+                    #[cfg(target_endian = "big")]
+                    gst_video::VideoFormat::Rgba64Be,
+                    #[cfg(target_endian = "little")]
+                    gst_video::VideoFormat::Rgba64Le,
+                ]
+            ),
+            #[cfg(feature = "qoi")]
+            make_encoder_caps_with_extra_mimetypes!(
+                ImageFormat::Qoi,
+                "image/qoi",
+                [gst_video::VideoFormat::Rgba, gst_video::VideoFormat::Rgb]
+            ),
+        ]
+    }
 }

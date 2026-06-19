@@ -16,9 +16,11 @@ mod cicp;
 pub mod format;
 
 mod decoder;
+mod encoder;
 mod overlay;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    encoder::register(plugin)?;
     overlay::register(plugin)?;
     decoder::register(plugin)?;
     Ok(())

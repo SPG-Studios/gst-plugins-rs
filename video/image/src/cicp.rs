@@ -15,6 +15,19 @@ impl From<ImageCicp> for Cicp {
     }
 }
 
+pub(crate) trait CanCicpRgb {
+    /// Implements publicly Cicp::from(self.into_rgb()) == self
+    /// (which checks for the two conditions below).
+    fn is_rgb(&self) -> bool;
+}
+
+impl CanCicpRgb for ImageCicp {
+    fn is_rgb(&self) -> bool {
+        self.0.matrix == image::metadata::CicpMatrixCoefficients::Identity
+            && self.0.full_range == image::metadata::CicpVideoFullRangeFlag::FullRange
+    }
+}
+
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 pub(crate) enum UnsupportedCicp {
     #[error("Unknown color range {:?}", .0)]
@@ -85,6 +98,12 @@ pub(crate) enum UnsupportedVideoColorimetry {
     TransferFunction(VideoTransferFunction),
     #[error("Unknown color primaries {:?}", .0)]
     Primaries(VideoColorPrimaries),
+}
+
+impl From<UnsupportedVideoColorimetry> for Result<ImageCicp, UnsupportedVideoColorimetry> {
+    fn from(value: UnsupportedVideoColorimetry) -> Self {
+        Err(value)
+    }
 }
 
 impl TryFrom<VideoColorimetry> for ImageCicp {
