@@ -14013,7 +14013,7 @@
                 "rank": "none"
             },
             "rtph266depay": {
-                "author": "sr1990 <sr1990003@gmail.com>",
+                "author": "Sanil Raut <sr1990003@gmail.com>",
                 "description": "Depayload H266 (VVC) from RTP packets (RFC 9328)",
                 "hierarchy": [
                     "GstRtpH266Depay",
@@ -14065,7 +14065,7 @@
                 "rank": "primary"
             },
             "rtph266pay": {
-                "author": "sr1990 <sr1990003@gmail.com>",
+                "author": "Sanil Raut <sr1990003@gmail.com>",
                 "description": "Payload H266 (VVC) as RTP packets (RFC 9328)",
                 "hierarchy": [
                     "GstRtpH266Pay",
