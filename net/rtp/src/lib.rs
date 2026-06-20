@@ -33,6 +33,7 @@ mod basepay;
 mod ac3;
 mod amr;
 mod av1;
+mod h266;
 mod jpeg;
 mod klv;
 mod linear_audio;
@@ -76,6 +77,9 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 
     av1::depay::register(plugin)?;
     av1::pay::register(plugin)?;
+
+    h266::depay::register(plugin)?;
+    h266::pay::register(plugin)?;
 
     jpeg::depay::register(plugin)?;
     jpeg::pay::register(plugin)?;

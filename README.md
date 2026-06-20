@@ -130,6 +130,8 @@ You will find the following plugins in this repository:
 
       - `rtpgccbwe`: RTP bandwidth estimator based on the Google Congestion Control algorithm.
 
+      - `rtph266pay` / `rtph266depay`: RTP (de)payloader for the H.266 (VVC) video codec.
+
     - `rtsp`:
 
       - `rtspsrc2`: New Rust implementation of a Real Time Streaming Protocol (RTSP) (RFC 2326, 7826) source element.
