@@ -325,6 +325,47 @@ fn pipeline_small_mask_vector_renders_overlay() {
 }
 
 #[test]
+fn publishes_avoid_claims_for_mask_regions() {
+    init();
+
+    let mut harness = make_harness(None);
+
+    let mask = make_mask_buffer(4, 4, vec![1; 16]);
+    let input = make_segmented_buffer(gst::ClockTime::ZERO, vec![(mask, 8, 8, 12, 12)], false);
+    let out = harness.push_and_pull(input).expect("pull output buffer");
+
+    // The element publishes the regions it drew via the shared claimed-regions
+    // meta so downstream overlays steer their labels away. Read it by its
+    // well-known registered name (no crate-internal access needed).
+    let meta = gst::meta::CustomMeta::from_buffer(&out, "GstAnalyticsClaimedRegions")
+        .expect("segmentation should publish claimed regions");
+    let structure = meta.structure();
+    let coords = structure.get::<gst::Array>("coords").expect("coords array");
+    let owners = structure.get::<gst::Array>("owners").expect("owners array");
+    let coords = coords.as_slice();
+    let owners = owners.as_slice();
+
+    // Five ints per region: x, y, w, h, kind (0 = Occlude, 1 = Avoid).
+    assert_eq!(coords.len() % 5, 0);
+    let region_count = coords.len() / 5;
+    assert!(region_count >= 1, "expected at least one mask claim");
+
+    let mut found = false;
+    for i in 0..region_count {
+        let coord = |j: usize| coords[i * 5 + j].get::<i32>().unwrap();
+        let owner = owners[i].get::<String>().unwrap();
+        if owner == "segoverlay" {
+            // Masks are claimed as soft Avoid (kind == 1), at the destination
+            // rect they were drawn into (clamped to the frame).
+            assert_eq!(coord(4), 1, "mask claim should be Avoid, not Occlude");
+            assert_eq!((coord(0), coord(1), coord(2), coord(3)), (8, 8, 12, 12));
+            found = true;
+        }
+    }
+    assert!(found, "expected a segoverlay-owned Avoid mask claim");
+}
+
+#[test]
 fn pipeline_large_mask_vector_scales_over_full_frame() {
     init();
 

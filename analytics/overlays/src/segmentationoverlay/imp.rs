@@ -16,6 +16,8 @@ use gst_base::subclass::prelude::*;
 use gst_video::prelude::VideoFrameExt;
 use gst_video::subclass::prelude::*;
 
+use crate::coordination::{ClaimedRegion, add_claimed_regions};
+use crate::geometry::Rect;
 use crate::lifecycle::{OverlayLifecycle, lifecycle_event_kind};
 
 use super::masks::{
@@ -31,6 +33,10 @@ pub struct SegmentationOverlay {
     settings: Mutex<Settings>,
     state: Mutex<State>,
 }
+
+/// Owner tag this element uses when claiming shared regions, so downstream
+/// overlays can avoid drawing their labels on top of the masks.
+const OVERLAY_OWNER: &str = "segoverlay";
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -357,6 +363,9 @@ impl VideoFilterImpl for SegmentationOverlay {
 
         let selected_types = state.selected_type_quarks();
 
+        // Destination rects of the masks we draw, claimed below so downstream
+        // overlays steer their labels around them.
+        let mut claimed_rects: Vec<Rect> = Vec::new();
         if let Some(meta) = frame.buffer().meta::<AnalyticsRelationMeta>() {
             let mut composition = frame
                 .buffer()
@@ -404,6 +413,8 @@ impl VideoFilterImpl for SegmentationOverlay {
                     continue;
                 };
 
+                claimed_rects.push(Rect::from_xywh(ofx, ofy, canvas_w as i32, canvas_h as i32));
+
                 let rect = gst_video::VideoOverlayRectangle::new_raw(
                     &canvas,
                     ofx,
@@ -439,6 +450,19 @@ impl VideoFilterImpl for SegmentationOverlay {
                     .blend(frame)
                     .map_err(|_| gst::FlowError::Error)?;
             }
+        }
+
+        // Publish the mask regions we drew as soft Avoid claims, so a downstream
+        // overlay's label placement prefers not to draw on top of them. Masks
+        // are large and semi-transparent, hence Avoid rather than Occlude.
+        if !claimed_rects.is_empty() {
+            // SAFETY: the frame is writable and uniquely borrowed here.
+            let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
+            let regions: Vec<ClaimedRegion> = claimed_rects
+                .iter()
+                .map(|rect| ClaimedRegion::avoid(*rect, OVERLAY_OWNER))
+                .collect();
+            add_claimed_regions(buffer, &regions);
         }
 
         Ok(gst::FlowSuccess::Ok)

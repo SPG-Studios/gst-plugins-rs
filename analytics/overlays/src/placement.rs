@@ -34,54 +34,72 @@ pub struct LabelPlacement {
     pub displaced: bool,
 }
 
-/// Place a label using a candidate-based strategy:
+/// Place a label using a candidate-based strategy. The positions tried are the
+/// `default` followed by `candidates` in order.
 ///
-/// 1. Try the `default` position; if free, use it (not displaced).
-/// 2. Otherwise take the first free candidate, in order (displaced).
-/// 3. Otherwise force-place at the candidate with the least overlap (displaced).
+/// 1. Among positions free of hard regions (boxes, other labels, hard claims),
+///    pick the one with the least soft-[`Avoid`](crate::geometry::RegionPriority::Avoid)
+///    overlap — a segmentation mask or an outline-box claim. The default wins
+///    ties, so a clear default is never moved; a label moves only to dodge a mask
+///    when a cleaner spot exists, and sits on the least-covered mask when every
+///    hard-free spot overlaps one.
+/// 2. If no position is free of hard regions, force-place at the candidate with
+///    the least hard overlap.
 ///
-/// Candidates whose region lies entirely outside the frame are skipped. Ties on
-/// overlap area are broken by candidate order, so placement is deterministic.
-/// Returns `None` when neither the default nor any candidate intersects the
-/// frame.
+/// Any position lying entirely outside the frame is skipped. Ties are broken by
+/// order, so placement is deterministic. A position is *displaced* (callers draw
+/// a leader line) whenever it is not the default. Returns `None` when neither the
+/// default nor any candidate intersects the frame.
 pub fn place_label(
     registry: &mut OccupiedRegionRegistry,
     default: Rect,
     candidates: &[Rect],
 ) -> Option<LabelPlacement> {
-    // 1. Preferred position.
-    if registry.reserve_label(default) {
-        return Some(LabelPlacement {
-            rect: default,
-            displaced: false,
-        });
-    }
-
-    // 2. First free fallback.
-    for &candidate in candidates {
-        if registry.reserve_label(candidate) {
-            return Some(LabelPlacement {
-                rect: candidate,
-                displaced: true,
-            });
+    // Phase 1: among positions free of hard regions, pick the least soft-Avoid
+    // (segmentation mask) overlap. The default is considered first and wins ties.
+    let positions =
+        std::iter::once((default, false)).chain(candidates.iter().map(|&rect| (rect, true)));
+    let mut best_clear: Option<(i64, Rect, bool)> = None;
+    for (rect, displaced) in positions {
+        let Some(hard_overlap) = registry.label_overlap_area(rect) else {
+            continue; // entirely outside the frame
+        };
+        if hard_overlap != 0 {
+            continue; // not free of hard regions
+        }
+        let avoid_overlap = registry.avoid_overlap_area(rect).unwrap_or(0);
+        // Strict `<` keeps the earliest position (the default) on ties.
+        let better = match best_clear {
+            Some((best_avoid, _, _)) => avoid_overlap < best_avoid,
+            None => true,
+        };
+        if better {
+            best_clear = Some((avoid_overlap, rect, displaced));
         }
     }
+    if let Some((_, rect, displaced)) = best_clear {
+        // The position is free of hard regions, so this reservation succeeds.
+        registry.reserve_label(rect);
+        return Some(LabelPlacement { rect, displaced });
+    }
 
-    // 3. Least-overlap fallback among the candidates that intersect the frame.
-    let mut best: Option<(i64, usize)> = None;
+    // Phase 2: every position overlaps a hard region. Force-place at the
+    // candidate with the least hard overlap (the default is excluded — it is the
+    // position we were trying to move away from).
+    let mut best_forced: Option<(i64, usize)> = None;
     for (index, &candidate) in candidates.iter().enumerate() {
         let Some(overlap) = registry.label_overlap_area(candidate) else {
             continue; // entirely outside the frame
         };
 
         // Strict `<` (i.e. skip on `>=`) keeps the earliest candidate on ties.
-        match best {
+        match best_forced {
             Some((best_overlap, _)) if overlap >= best_overlap => {}
-            _ => best = Some((overlap, index)),
+            _ => best_forced = Some((overlap, index)),
         }
     }
 
-    let (_, index) = best?;
+    let (_, index) = best_forced?;
     let candidate = candidates[index];
     registry.force_reserve_label(candidate);
     Some(LabelPlacement {
@@ -174,6 +192,57 @@ mod tests {
         assert!(!placement.displaced);
         // Only the default region was reserved.
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn label_moves_off_a_soft_avoid_region_to_a_clear_spot() {
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        // A segmentation mask covers the default position.
+        registry.reserve_avoid(rect(0, 0, 60, 60));
+
+        let default = rect(10, 10, 40, 20); // sits on the mask
+        let candidates = [rect(100, 100, 40, 20)]; // clear of the mask
+        let placement =
+            place_label(&mut registry, default, &candidates).expect("expected a placement");
+
+        // The default is not blocked (avoid is soft), but a clear spot is
+        // preferred, so the label moves and reports as displaced.
+        assert_eq!(placement.rect, candidates[0]);
+        assert!(placement.displaced);
+    }
+
+    #[test]
+    fn label_keeps_clear_default_despite_an_avoid_region_elsewhere() {
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        registry.reserve_avoid(rect(100, 100, 60, 60)); // mask away from the default
+
+        let default = rect(10, 10, 40, 20); // clear
+        let placement = place_label(&mut registry, default, &[rect(60, 10, 40, 20)])
+            .expect("expected a placement");
+
+        assert_eq!(placement.rect, default);
+        assert!(!placement.displaced);
+    }
+
+    #[test]
+    fn label_sits_on_least_covered_mask_when_no_clear_spot_exists() {
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        // The left half of the frame is masked; every position overlaps it by a
+        // different amount, and there are no hard regions.
+        registry.reserve_avoid(rect(0, 0, 100, 200));
+
+        let default = rect(0, 0, 40, 20); // fully masked: 40x20 = 800 px
+        let candidates = [
+            rect(80, 0, 40, 20), // masked 20x20 = 400 px (least)
+            rect(60, 0, 40, 20), // masked 40x20 = 800 px
+        ];
+        let placement =
+            place_label(&mut registry, default, &candidates).expect("expected a placement");
+
+        // No hard-free, mask-free spot exists, so the label sits on the
+        // least-covered mask position rather than being force-displaced.
+        assert_eq!(placement.rect, candidates[0]);
+        assert!(placement.displaced);
     }
 
     #[test]

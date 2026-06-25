@@ -75,8 +75,16 @@ impl Rect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RegionPriority {
+    /// Hard, model-fixed content (bounding boxes, keypoint markers) and hard
+    /// cross-element claims. Labels must not overlap these.
     Highlight = 0,
+    /// A placed label. Other labels avoid it.
     Label = 1,
+    /// A soft region (a segmentation mask, an outline-box claim): labels prefer
+    /// not to overlap it, but may when no hard-free, mask-free spot exists. It
+    /// never *blocks* placement — only [`OccupiedRegionRegistry::avoid_overlap_area`]
+    /// reads it, so it acts as a tie-breaker rather than an obstacle.
+    Avoid = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +126,15 @@ impl OccupiedRegionRegistry {
 
     pub fn reserve_label(&mut self, rect: Rect) -> bool {
         self.reserve(RegionPriority::Label, rect)
+    }
+
+    /// Register a soft [`RegionPriority::Avoid`] region (a segmentation mask or
+    /// an outline-box claim). Like a highlight it is always recorded and may
+    /// overlap anything, but unlike a highlight it does not *block* label
+    /// placement — labels only steer around it when a clear alternative exists
+    /// (see [`Self::avoid_overlap_area`] and `placement::place_label`).
+    pub fn reserve_avoid(&mut self, rect: Rect) -> bool {
+        self.force_reserve(RegionPriority::Avoid, rect).is_some()
     }
 
     pub fn reserve(&mut self, priority: RegionPriority, rect: Rect) -> bool {
@@ -171,6 +188,24 @@ impl OccupiedRegionRegistry {
 
     pub fn label_overlap_area(&self, rect: Rect) -> Option<i64> {
         self.overlap_area(RegionPriority::Label, rect)
+    }
+
+    /// Total area where `rect`, clipped to the frame, overlaps soft
+    /// [`RegionPriority::Avoid`] regions only (segmentation masks, outline-box
+    /// claims). Used to prefer a clear label position over one that sits on a
+    /// mask. Returns `None` when `rect` lies entirely outside the frame.
+    pub fn avoid_overlap_area(&self, rect: Rect) -> Option<i64> {
+        let clipped = rect.intersection(self.frame)?;
+
+        let area = self
+            .regions
+            .iter()
+            .filter(|region| region.priority == RegionPriority::Avoid)
+            .filter_map(|region| region.rect.intersection(clipped))
+            .map(|overlap| i64::from(overlap.width()) * i64::from(overlap.height()))
+            .sum();
+
+        Some(area)
     }
 
     /// Reserve `rect`, clipped to the frame, unconditionally — even when it
@@ -332,6 +367,29 @@ mod tests {
         assert_eq!(
             registry.force_reserve_label(Rect::from_xywh(200, 200, 10, 10)),
             None
+        );
+    }
+
+    #[test]
+    fn avoid_regions_are_soft_and_measured() {
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        registry.reserve_avoid(Rect::from_xywh(0, 0, 100, 100));
+
+        // Unlike a highlight, an avoid region does not block a label (it is soft).
+        assert!(!registry.is_occupied(RegionPriority::Label, Rect::from_xywh(10, 10, 20, 20)));
+        assert!(registry.reserve_label(Rect::from_xywh(10, 10, 20, 20)));
+
+        // The overlap with avoid regions is measurable so placement can rank it.
+        assert_eq!(
+            registry.avoid_overlap_area(Rect::from_xywh(90, 90, 20, 20)),
+            Some(10 * 10)
+        );
+
+        // avoid_overlap_area counts only avoid regions, not hard ones.
+        registry.reserve_highlight(Rect::from_xywh(150, 150, 20, 20));
+        assert_eq!(
+            registry.avoid_overlap_area(Rect::from_xywh(150, 150, 20, 20)),
+            Some(0)
         );
     }
 }
