@@ -71,6 +71,7 @@ members = [
     "video/closedcaption",
     "video/colorlut",
     "video/dav1d",
+    "video/dsc",
     "video/ffv1",
     "video/gif",
     "video/gtk4",

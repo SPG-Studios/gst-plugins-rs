@@ -218,6 +218,10 @@ You will find the following plugins in this repository:
 
     - `dav1d`: AV1 decoder based on the [dav1d](https://code.videolan.org/videolan/dav1d) library.
 
+    - `dsc`: Digitally Signed Content plugin providing:
+      - `dscsigner`: Creates H.274 DSC metadata (initialization/selection/verification) and signatures for HEVC/VVC streams.
+      - `dscverifier`: Verifies DSC signatures using configured key/trust stores.
+
     - `ffv1`: FFV1 decoder based on the [ffv1](https://github.com/rust-av/ffv1) library.
 
     - `gif`: A GIF encoder based on the [gif](https://github.com/image-rs/image-gif) library.
