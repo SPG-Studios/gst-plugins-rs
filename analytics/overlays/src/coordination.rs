@@ -84,6 +84,15 @@ impl ClaimedRegion {
             owner: owner.into(),
         }
     }
+
+    /// A soft [`ClaimKind::Avoid`] claim.
+    pub fn avoid(rect: Rect, owner: impl Into<String>) -> Self {
+        Self {
+            rect,
+            kind: ClaimKind::Avoid,
+            owner: owner.into(),
+        }
+    }
 }
 
 /// Register the claimed-regions meta. Idempotent; call once at plugin init.
@@ -108,14 +117,31 @@ pub fn register() {
 
 /// Publish the regions an element rendered (derived from its draw commands) as
 /// claims, so downstream elements avoid occluding them. Thin strokes (skeleton
-/// and leader lines) are not claimed — see [`content_bounds`].
+/// and leader lines) are not claimed — see [`content_bounds`]. The claim kind is
+/// derived per command by [`command_claim_kind`].
 pub fn claim_commands(buffer: &mut gst::BufferRef, commands: &[DrawCommand], owner: &str) {
     let regions: Vec<ClaimedRegion> = commands
         .iter()
-        .filter_map(content_bounds)
-        .map(|rect| ClaimedRegion::occlude(rect, owner))
+        .filter_map(|command| {
+            let rect = content_bounds(command)?;
+            Some(match command_claim_kind(command) {
+                ClaimKind::Occlude => ClaimedRegion::occlude(rect, owner),
+                ClaimKind::Avoid => ClaimedRegion::avoid(rect, owner),
+            })
+        })
         .collect();
     add_claimed_regions(buffer, &regions);
+}
+
+/// The claim kind a drawn command warrants. An outline-only box is mostly
+/// transparent inside, so it is a soft [`ClaimKind::Avoid`]; everything else
+/// solid (a filled box, a text label, a keypoint marker) is a hard
+/// [`ClaimKind::Occlude`] that downstream content must not draw over.
+fn command_claim_kind(command: &DrawCommand) -> ClaimKind {
+    match command {
+        DrawCommand::Rectangle { filled: false, .. } => ClaimKind::Avoid,
+        _ => ClaimKind::Occlude,
+    }
 }
 
 /// Append claimed regions to `buffer`, merging with any already present.
@@ -153,11 +179,12 @@ pub fn claimed_regions(buffer: &gst::BufferRef) -> Vec<ClaimedRegion> {
 }
 
 /// Seed `registry` with every claimed region on `buffer` that was not claimed by
-/// `skip_owner`, so this element's placement avoids those areas.
+/// `skip_owner`, so this element's placement steers around those areas.
 ///
-/// Both claim kinds are reserved as highlights in this prototype, which makes
-/// label placement steer around them while leaving the distinction available
-/// for a future weighted/soft strategy.
+/// The claim kind maps to a placement priority: [`ClaimKind::Occlude`] becomes a
+/// hard highlight (labels must not overlap it), while [`ClaimKind::Avoid`]
+/// becomes a soft region (labels prefer not to overlap it — e.g. a segmentation
+/// mask — but may when no clear alternative exists).
 pub fn seed_registry_from_claims(
     registry: &mut OccupiedRegionRegistry,
     buffer: &gst::BufferRef,
@@ -167,7 +194,10 @@ pub fn seed_registry_from_claims(
         if region.owner == skip_owner {
             continue;
         }
-        registry.reserve_highlight(region.rect);
+        match region.kind {
+            ClaimKind::Occlude => registry.reserve_highlight(region.rect),
+            ClaimKind::Avoid => registry.reserve_avoid(region.rect),
+        };
     }
 }
 
@@ -292,6 +322,28 @@ mod tests {
     }
 
     #[test]
+    fn avoid_claims_are_seeded_as_soft_regions() {
+        init();
+
+        let claimed = Rect::from_xywh(40, 40, 60, 30);
+        let mut buffer = gst::Buffer::new();
+        add_claimed_regions(
+            buffer.make_mut(),
+            &[ClaimedRegion::avoid(claimed, "segoverlay")],
+        );
+
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay");
+
+        // Unlike an Occlude claim, an Avoid claim is soft: it does not block a
+        // label (so the label may still be placed there when forced) ...
+        assert!(!registry.is_occupied(RegionPriority::Label, claimed));
+        assert!(registry.reserve_label(Rect::from_xywh(50, 50, 20, 10)));
+        // ... but it is measurable, so placement steers around it when it can.
+        assert!(registry.avoid_overlap_area(claimed).unwrap() > 0);
+    }
+
+    #[test]
     fn claim_commands_publishes_solid_content_only() {
         init();
 
@@ -329,11 +381,42 @@ mod tests {
         // Rectangle + Text are claimed; the Line is not.
         assert_eq!(regions.len(), 2);
         assert!(regions.iter().all(|r| r.owner == "odoverlay"));
-        assert!(
-            regions
-                .iter()
-                .any(|r| r.rect == Rect::from_xywh(10, 20, 40, 30))
-        );
+
+        // The outline box (filled: false) is a soft Avoid; the text label is a
+        // hard Occlude.
+        let box_region = regions
+            .iter()
+            .find(|r| r.rect == Rect::from_xywh(10, 20, 40, 30))
+            .expect("box region claimed");
+        assert_eq!(box_region.kind, ClaimKind::Avoid);
+        let text_region = regions
+            .iter()
+            .find(|r| r.rect != Rect::from_xywh(10, 20, 40, 30))
+            .expect("text region claimed");
+        assert_eq!(text_region.kind, ClaimKind::Occlude);
+    }
+
+    #[test]
+    fn claim_commands_marks_filled_boxes_as_occlude() {
+        init();
+
+        let commands = vec![DrawCommand::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+            rotation: 0.0,
+            argb: 0,
+            filled: true,
+        }];
+
+        let mut buffer = gst::Buffer::new();
+        claim_commands(buffer.make_mut(), &commands, "odoverlay");
+
+        let regions = claimed_regions(buffer.as_ref());
+        assert_eq!(regions.len(), 1);
+        // A filled box is opaque, so it is a hard Occlude.
+        assert_eq!(regions[0].kind, ClaimKind::Occlude);
     }
 
     #[test]
