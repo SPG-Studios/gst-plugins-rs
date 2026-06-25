@@ -22,7 +22,7 @@ use crate::lifecycle::{OverlayLifecycle, lifecycle_event_kind};
 
 use super::masks::{
     AnalyticsSegmentationMtd, DEFAULT_HINT_MAXIMUM_SEGMENT_TYPE, DEFAULT_RENDER_ENABLED,
-    SegmentationMtdExt, Settings, State, cached_mask_filter, color_for_segment,
+    OVERLAY_OWNER, SegmentationMtdExt, Settings, State, cached_mask_filter, color_for_segment,
     related_classification, render_mask_canvas, update_selected_type_cache,
 };
 
@@ -33,10 +33,6 @@ pub struct SegmentationOverlay {
     settings: Mutex<Settings>,
     state: Mutex<State>,
 }
-
-/// Owner tag this element uses when claiming shared regions, so downstream
-/// overlays can avoid drawing their labels on top of the masks.
-const OVERLAY_OWNER: &str = "segoverlay";
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(

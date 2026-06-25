@@ -21,6 +21,11 @@ use gst_video::prelude::VideoFrameExt;
 
 use std::sync::Arc;
 
+/// Owner tag this element uses when claiming shared regions, so downstream
+/// overlays can avoid drawing their labels on top of the masks. Shared by the
+/// CPU element (`imp`) and the GL element (`segmentationoverlaygl`).
+pub(crate) const OVERLAY_OWNER: &str = "segoverlay";
+
 pub(crate) const DEFAULT_RENDER_ENABLED: bool = false;
 pub(crate) const DEFAULT_HINT_MAXIMUM_SEGMENT_TYPE: u32 = 10;
 const MASK_ALPHA: u8 = 0x80;
