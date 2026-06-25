@@ -127,7 +127,7 @@ static LABEL_TYPEFACE: LazyLock<skia::Typeface> = LazyLock::new(|| {
         .expect("embedded label font failed to parse")
 });
 
-fn make_label_font() -> skia::Font {
+pub(crate) fn make_label_font() -> skia::Font {
     let mut font = skia::Font::from_typeface(LABEL_TYPEFACE.clone(), LABEL_FONT_SIZE);
     font.set_subpixel(true);
     font.set_edging(skia::font::Edging::AntiAlias);
@@ -179,6 +179,127 @@ fn draw_outlined_label(
     fill.set_style(skia::paint::Style::Fill);
     fill.set_color(argb_to_skia_color(argb));
     canvas.draw_str(text, origin, font, &fill);
+}
+
+/// Replay a `DrawCommand` list onto a skia canvas. Backend-agnostic: the same
+/// list renders identically on a CPU raster surface (the in-place path) or a GPU
+/// surface (the GL elements), so both share this single implementation.
+pub(crate) fn replay_commands(canvas: &skia::Canvas, commands: &[DrawCommand]) {
+    let font = make_label_font();
+    let outline_ofs = label_outline_offset(LABEL_FONT_SIZE);
+
+    for command in commands {
+        match command {
+            DrawCommand::Rectangle {
+                x,
+                y,
+                width,
+                height,
+                rotation,
+                argb,
+                filled,
+            } => {
+                let mut paint = skia::Paint::default();
+                paint.set_anti_alias(true);
+                paint.set_color(argb_to_skia_color(*argb));
+                if *filled {
+                    paint.set_style(skia::paint::Style::Fill);
+                } else {
+                    paint.set_style(skia::paint::Style::Stroke);
+                    paint.set_stroke_width(BOX_STROKE_WIDTH);
+                }
+
+                if rotation.abs() < ROTATION_EPSILON {
+                    let rect = skia::Rect::from_xywh(*x, *y, *width, *height);
+                    canvas.draw_rect(rect, &paint);
+                } else {
+                    let xc = *x + *width / 2.0;
+                    let yc = *y + *height / 2.0;
+                    let cos_r = rotation.cos();
+                    let sin_r = rotation.sin();
+
+                    let corners = [
+                        (-*width / 2.0, -*height / 2.0),
+                        (*width / 2.0, -*height / 2.0),
+                        (*width / 2.0, *height / 2.0),
+                        (-*width / 2.0, *height / 2.0),
+                    ];
+
+                    let mut path_builder = skia::PathBuilder::new();
+                    for (index, (dx, dy)) in corners.iter().copied().enumerate() {
+                        let rx = dx * cos_r - dy * sin_r + xc;
+                        let ry = dx * sin_r + dy * cos_r + yc;
+
+                        if index == 0 {
+                            path_builder.move_to((rx, ry));
+                        } else {
+                            path_builder.line_to((rx, ry));
+                        }
+                    }
+                    path_builder.close();
+                    let path = path_builder.detach();
+                    canvas.draw_path(&path, &paint);
+                }
+            }
+            DrawCommand::Circle {
+                cx,
+                cy,
+                radius,
+                argb,
+            } => {
+                let mut paint = skia::Paint::default();
+                paint.set_anti_alias(true);
+                paint.set_color(argb_to_skia_color(*argb));
+                paint.set_style(skia::paint::Style::Fill);
+                canvas.draw_circle(skia::Point::new(*cx, *cy), *radius, &paint);
+            }
+            DrawCommand::Line {
+                x0,
+                y0,
+                x1,
+                y1,
+                argb,
+                width,
+            } => {
+                let mut paint = skia::Paint::default();
+                paint.set_anti_alias(true);
+                paint.set_color(argb_to_skia_color(*argb));
+                paint.set_style(skia::paint::Style::Stroke);
+                paint.set_stroke_width(*width);
+                canvas.draw_line(
+                    skia::Point::new(*x0, *y0),
+                    skia::Point::new(*x1, *y1),
+                    &paint,
+                );
+            }
+            DrawCommand::Text { x, y, text, argb } => {
+                // Measure with a stroke paint to keep the layout identical
+                // to before; the glyphs themselves are drawn filled.
+                let mut measure_paint = skia::Paint::default();
+                measure_paint.set_style(skia::paint::Style::Stroke);
+                measure_paint.set_stroke_width(LABEL_STROKE_WIDTH);
+
+                // Place text so its bottom sits just above the provided anchor y.
+                let (_, bounds) = font.measure_str(text, Some(&measure_paint));
+                let draw_x = *x + outline_ofs;
+                let baseline_y = *y - outline_ofs - LABEL_EXTRA_VERTICAL_GAP - bounds.bottom();
+
+                draw_outlined_label(canvas, &font, text, (draw_x, baseline_y), *argb);
+            }
+            DrawCommand::TextCentered { x, y, text, argb } => {
+                let mut measure_paint = skia::Paint::default();
+                measure_paint.set_style(skia::paint::Style::Stroke);
+                measure_paint.set_stroke_width(KEYPOINT_LABEL_STROKE_WIDTH);
+
+                let (_, bounds) = font.measure_str(text, Some(&measure_paint));
+                let draw_x = *x + outline_ofs;
+                let baseline_y = *y - (bounds.top() + bounds.bottom()) / 2.0;
+
+                draw_outlined_label(canvas, &font, text, (draw_x, baseline_y), *argb);
+            }
+            DrawCommand::NoOp => {}
+        }
+    }
 }
 
 /// Bounding box of a command's visible, "solid" content, used to publish claimed
@@ -457,123 +578,7 @@ impl RenderBackend for SkiaBackend {
                 .ok_or(gst::FlowError::Error)?;
 
             let canvas = surface.canvas();
-            let font = make_label_font();
-
-            let outline_ofs = label_outline_offset(LABEL_FONT_SIZE);
-
-            for command in commands {
-                match command {
-                    DrawCommand::Rectangle {
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        argb,
-                        filled,
-                    } => {
-                        let mut paint = skia::Paint::default();
-                        paint.set_anti_alias(true);
-                        paint.set_color(argb_to_skia_color(*argb));
-                        if *filled {
-                            paint.set_style(skia::paint::Style::Fill);
-                        } else {
-                            paint.set_style(skia::paint::Style::Stroke);
-                            paint.set_stroke_width(BOX_STROKE_WIDTH);
-                        }
-
-                        if rotation.abs() < ROTATION_EPSILON {
-                            let rect = skia::Rect::from_xywh(*x, *y, *width, *height);
-                            canvas.draw_rect(rect, &paint);
-                        } else {
-                            let xc = *x + *width / 2.0;
-                            let yc = *y + *height / 2.0;
-                            let cos_r = rotation.cos();
-                            let sin_r = rotation.sin();
-
-                            let corners = [
-                                (-*width / 2.0, -*height / 2.0),
-                                (*width / 2.0, -*height / 2.0),
-                                (*width / 2.0, *height / 2.0),
-                                (-*width / 2.0, *height / 2.0),
-                            ];
-
-                            let mut path_builder = skia::PathBuilder::new();
-                            for (index, (dx, dy)) in corners.iter().copied().enumerate() {
-                                let rx = dx * cos_r - dy * sin_r + xc;
-                                let ry = dx * sin_r + dy * cos_r + yc;
-
-                                if index == 0 {
-                                    path_builder.move_to((rx, ry));
-                                } else {
-                                    path_builder.line_to((rx, ry));
-                                }
-                            }
-                            path_builder.close();
-                            let path = path_builder.detach();
-                            canvas.draw_path(&path, &paint);
-                        }
-                    }
-                    DrawCommand::Circle {
-                        cx,
-                        cy,
-                        radius,
-                        argb,
-                    } => {
-                        let mut paint = skia::Paint::default();
-                        paint.set_anti_alias(true);
-                        paint.set_color(argb_to_skia_color(*argb));
-                        paint.set_style(skia::paint::Style::Fill);
-                        canvas.draw_circle(skia::Point::new(*cx, *cy), *radius, &paint);
-                    }
-                    DrawCommand::Line {
-                        x0,
-                        y0,
-                        x1,
-                        y1,
-                        argb,
-                        width,
-                    } => {
-                        let mut paint = skia::Paint::default();
-                        paint.set_anti_alias(true);
-                        paint.set_color(argb_to_skia_color(*argb));
-                        paint.set_style(skia::paint::Style::Stroke);
-                        paint.set_stroke_width(*width);
-                        canvas.draw_line(
-                            skia::Point::new(*x0, *y0),
-                            skia::Point::new(*x1, *y1),
-                            &paint,
-                        );
-                    }
-                    DrawCommand::Text { x, y, text, argb } => {
-                        // Measure with a stroke paint to keep the layout identical
-                        // to before; the glyphs themselves are drawn filled.
-                        let mut measure_paint = skia::Paint::default();
-                        measure_paint.set_style(skia::paint::Style::Stroke);
-                        measure_paint.set_stroke_width(LABEL_STROKE_WIDTH);
-
-                        // Place text so its bottom sits just above the provided anchor y.
-                        let (_, bounds) = font.measure_str(text, Some(&measure_paint));
-                        let draw_x = *x + outline_ofs;
-                        let baseline_y =
-                            *y - outline_ofs - LABEL_EXTRA_VERTICAL_GAP - bounds.bottom();
-
-                        draw_outlined_label(canvas, &font, text, (draw_x, baseline_y), *argb);
-                    }
-                    DrawCommand::TextCentered { x, y, text, argb } => {
-                        let mut measure_paint = skia::Paint::default();
-                        measure_paint.set_style(skia::paint::Style::Stroke);
-                        measure_paint.set_stroke_width(KEYPOINT_LABEL_STROKE_WIDTH);
-
-                        let (_, bounds) = font.measure_str(text, Some(&measure_paint));
-                        let draw_x = *x + outline_ofs;
-                        let baseline_y = *y - (bounds.top() + bounds.bottom()) / 2.0;
-
-                        draw_outlined_label(canvas, &font, text, (draw_x, baseline_y), *argb);
-                    }
-                    DrawCommand::NoOp => {}
-                }
-            }
+            replay_commands(canvas, commands);
 
             return Ok(());
         }

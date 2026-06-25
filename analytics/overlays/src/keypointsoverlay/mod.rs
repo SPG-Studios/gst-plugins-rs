@@ -11,6 +11,10 @@ use gst::prelude::*;
 
 mod imp;
 
+// pub(crate) so the GL element (keypointsoverlaygl) can reuse the
+// command-generation (`analytics_to_draw_commands`) and render identically.
+pub(crate) mod commands;
+
 glib::wrapper! {
     pub struct KeypointsOverlay(ObjectSubclass<imp::KeypointsOverlay>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }

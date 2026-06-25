@@ -11,6 +11,10 @@ use gst::prelude::*;
 
 mod imp;
 
+// pub(crate) so the GL element (segmentationoverlaygl) can reuse the mask
+// colorization (`segmentation_mask_layers`) and composite the same layers.
+pub(crate) mod masks;
+
 glib::wrapper! {
     pub struct SegmentationOverlay(ObjectSubclass<imp::SegmentationOverlay>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
