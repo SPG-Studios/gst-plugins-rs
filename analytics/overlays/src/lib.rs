@@ -19,11 +19,17 @@ mod coordination;
 mod geometry;
 pub mod hooks;
 mod keypointsoverlay;
+#[cfg(feature = "gl")]
+mod keypointsoverlaygl;
 mod lifecycle;
 mod objectdetectionoverlay;
+#[cfg(feature = "gl")]
+mod objectdetectionoverlaygl;
 mod placement;
 mod render;
 mod segmentationoverlay;
+#[cfg(feature = "gl")]
+mod segmentationoverlaygl;
 
 /// The drawing vocabulary hosts use to emit custom content from a [`hooks::DrawHook`].
 pub use render::DrawCommand;
@@ -36,6 +42,12 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     objectdetectionoverlay::register(plugin)?;
     segmentationoverlay::register(plugin)?;
     keypointsoverlay::register(plugin)?;
+    #[cfg(feature = "gl")]
+    objectdetectionoverlaygl::register(plugin)?;
+    #[cfg(feature = "gl")]
+    segmentationoverlaygl::register(plugin)?;
+    #[cfg(feature = "gl")]
+    keypointsoverlaygl::register(plugin)?;
     Ok(())
 }
 

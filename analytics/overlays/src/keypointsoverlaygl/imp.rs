@@ -1,0 +1,301 @@
+// Copyright (C) 2026 Jeremy Whiting <jeremy.whiting@collabora.com>
+//
+// This Source Code Form is subject to the terms of the Mozilla Public License, v2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at
+// <https://mozilla.org/MPL/2.0/>.
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// GL keypoints overlay. Reads AnalyticsRelationMeta and renders markers +
+// skeleton + labels with skia's Ganesh GPU backend onto the pipeline's GL
+// textures, reusing the CPU element's command generation and the shared
+// `render::replay_commands`. The buffer (for the meta) is captured in
+// `before_transform`; the GPU draw happens in `filter_texture`.
+
+use gst::glib;
+use gst::subclass::prelude::*;
+use gst_base::subclass::BaseTransformMode;
+use gst_base::subclass::prelude::*;
+use gst_gl::prelude::*;
+use gst_gl::subclass::GLFilterMode;
+use gst_gl::subclass::prelude::*;
+
+use std::ffi::c_void;
+use std::sync::{LazyLock, Mutex};
+
+use skia::gpu;
+
+use crate::keypointsoverlay::commands as kp;
+use crate::render::{DrawCommand, replay_commands};
+
+static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
+    gst::DebugCategory::new(
+        "keypointsoverlaygl",
+        gst::DebugColorFlags::empty(),
+        Some("GL keypoints overlay (skia GPU)"),
+    )
+});
+
+const GL_TEXTURE_2D: u32 = 0x0DE1;
+const GL_RGBA8: u32 = 0x8058;
+
+struct GpuState {
+    context: gpu::DirectContext,
+}
+unsafe impl Send for GpuState {}
+
+#[derive(Default)]
+pub struct KeypointsOverlayGl {
+    gpu: Mutex<Option<GpuState>>,
+    dims: Mutex<(i32, i32)>,
+    pending: Mutex<Vec<DrawCommand>>,
+    /// Rendering settings (the CPU element's `Settings`, reused), driven by the
+    /// element's GObject properties.
+    settings: Mutex<kp::Settings>,
+}
+
+#[glib::object_subclass]
+impl ObjectSubclass for KeypointsOverlayGl {
+    const NAME: &'static str = "GstRsKeypointsOverlayGl";
+    type Type = super::KeypointsOverlayGl;
+    type ParentType = gst_gl::GLFilter;
+}
+
+impl ObjectImpl for KeypointsOverlayGl {
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            let d = kp::Settings::default();
+            vec![
+                glib::ParamSpecUInt::builder("keypoint-color")
+                    .nick("Keypoint color")
+                    .blurb("Color used to draw keypoints")
+                    .minimum(0)
+                    .maximum(u32::MAX)
+                    .default_value(d.keypoint_color)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecDouble::builder("keypoint-radius")
+                    .nick("Keypoint radius")
+                    .blurb("Radius in pixels used for keypoints")
+                    .minimum(1.0)
+                    .maximum(20.0)
+                    .default_value(d.keypoint_radius)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecBoolean::builder("draw-labels")
+                    .nick("Draw labels")
+                    .blurb("Draw keypoint confidence labels")
+                    .default_value(d.draw_labels)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("labels-color")
+                    .nick("Labels color")
+                    .blurb("Color used for keypoint labels")
+                    .minimum(0)
+                    .maximum(u32::MAX)
+                    .default_value(d.labels_color)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecBoolean::builder("draw-skeleton")
+                    .nick("Draw skeleton")
+                    .blurb("Draw skeleton relations between keypoints")
+                    .default_value(d.draw_skeleton)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecUInt::builder("skeleton-color")
+                    .nick("Skeleton color")
+                    .blurb("Color used for skeleton lines")
+                    .minimum(0)
+                    .maximum(u32::MAX)
+                    .default_value(d.skeleton_color)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecDouble::builder("skeleton-line-width")
+                    .nick("Skeleton line width")
+                    .blurb("Line width in pixels for skeleton rendering")
+                    .minimum(1.0)
+                    .maximum(10.0)
+                    .default_value(d.skeleton_line_width)
+                    .mutable_playing()
+                    .build(),
+                glib::ParamSpecString::builder("semantic-tag")
+                    .nick("Semantic tag")
+                    .blurb("Semantic tag prefix used to filter grouped keypoints")
+                    .default_value(d.semantic_tag.as_deref())
+                    .mutable_playing()
+                    .build(),
+            ]
+        });
+        PROPERTIES.as_ref()
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        let mut settings = self.settings.lock().unwrap();
+        let e = "type checked upstream";
+        match pspec.name() {
+            "keypoint-color" => settings.keypoint_color = value.get().expect(e),
+            "keypoint-radius" => settings.keypoint_radius = value.get().expect(e),
+            "draw-labels" => settings.draw_labels = value.get().expect(e),
+            "labels-color" => settings.labels_color = value.get().expect(e),
+            "draw-skeleton" => settings.draw_skeleton = value.get().expect(e),
+            "skeleton-color" => settings.skeleton_color = value.get().expect(e),
+            "skeleton-line-width" => settings.skeleton_line_width = value.get().expect(e),
+            "semantic-tag" => settings.semantic_tag = value.get().expect(e),
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        let settings = self.settings.lock().unwrap();
+        match pspec.name() {
+            "keypoint-color" => settings.keypoint_color.to_value(),
+            "keypoint-radius" => settings.keypoint_radius.to_value(),
+            "draw-labels" => settings.draw_labels.to_value(),
+            "labels-color" => settings.labels_color.to_value(),
+            "draw-skeleton" => settings.draw_skeleton.to_value(),
+            "skeleton-color" => settings.skeleton_color.to_value(),
+            "skeleton-line-width" => settings.skeleton_line_width.to_value(),
+            "semantic-tag" => settings.semantic_tag.to_value(),
+            _ => unimplemented!(),
+        }
+    }
+}
+impl GstObjectImpl for KeypointsOverlayGl {}
+
+impl ElementImpl for KeypointsOverlayGl {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static META: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
+            gst::subclass::ElementMetadata::new(
+                "GL Keypoints Overlay",
+                "Filter/Effect/Video/Visualization",
+                "Draws keypoint markers + skeleton on GL textures via skia GPU",
+                "Jeremy Whiting <jeremy.whiting@collabora.com>",
+            )
+        });
+        Some(&*META)
+    }
+}
+
+impl BaseTransformImpl for KeypointsOverlayGl {
+    const MODE: BaseTransformMode = BaseTransformMode::NeverInPlace;
+    const PASSTHROUGH_ON_SAME_CAPS: bool = false;
+    const TRANSFORM_IP_ON_PASSTHROUGH: bool = false;
+
+    fn before_transform(&self, inbuf: &gst::BufferRef) {
+        let (width, height) = *self.dims.lock().unwrap();
+        let commands = if width > 0 && height > 0 {
+            let bounds = kp::FrameBounds { width, height };
+            let settings = self.settings.lock().unwrap().clone();
+            let (_frame, commands) = kp::analytics_to_draw_commands(inbuf, &settings, bounds);
+            commands
+        } else {
+            Vec::new()
+        };
+        *self.pending.lock().unwrap() = commands;
+        self.parent_before_transform(inbuf);
+    }
+}
+
+impl GLBaseFilterImpl for KeypointsOverlayGl {
+    fn gl_set_caps(
+        &self,
+        incaps: &gst::Caps,
+        outcaps: &gst::Caps,
+    ) -> Result<(), gst::LoggableError> {
+        if let Ok(info) = gst_video::VideoInfo::from_caps(outcaps) {
+            *self.dims.lock().unwrap() = (info.width() as i32, info.height() as i32);
+        }
+        self.parent_gl_set_caps(incaps, outcaps)
+    }
+
+    fn gl_start(&self) -> Result<(), gst::LoggableError> {
+        let filter = self.obj();
+        let context = GLBaseFilterExt::context(&*filter)
+            .ok_or_else(|| gst::loggable_error!(CAT, "no GL context"))?;
+
+        let interface =
+            gpu::gl::Interface::new_load_with(|name| context.proc_address(name) as *const c_void)
+                .ok_or_else(|| gst::loggable_error!(CAT, "failed to create skia GL interface"))?;
+        let gr = gpu::direct_contexts::make_gl(interface, None)
+            .ok_or_else(|| gst::loggable_error!(CAT, "failed to create skia GL context"))?;
+
+        gst::info!(CAT, imp = self, "skia GPU context created");
+        *self.gpu.lock().unwrap() = Some(GpuState { context: gr });
+        self.parent_gl_start()
+    }
+
+    fn gl_stop(&self) {
+        *self.gpu.lock().unwrap() = None;
+        self.parent_gl_stop()
+    }
+}
+
+impl GLFilterImpl for KeypointsOverlayGl {
+    const MODE: GLFilterMode = GLFilterMode::Texture;
+
+    fn filter_texture(
+        &self,
+        input: &gst_gl::GLMemory,
+        output: &gst_gl::GLMemory,
+    ) -> Result<(), gst::LoggableError> {
+        let commands = self.pending.lock().unwrap().clone();
+
+        let mut guard = self.gpu.lock().unwrap();
+        let Some(state) = guard.as_mut() else {
+            return Err(gst::loggable_error!(CAT, "no GPU context"));
+        };
+        let ctx = &mut state.context;
+
+        let width = output.texture_width();
+        let height = output.texture_height();
+
+        ctx.reset(None);
+
+        let out_info = gpu::gl::TextureInfo {
+            target: GL_TEXTURE_2D,
+            id: output.texture_id(),
+            format: GL_RGBA8,
+            protected: gpu::Protected::No,
+        };
+        let out_bt = unsafe {
+            gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, out_info, "kp-out")
+        };
+        let Some(mut surface) = gpu::surfaces::wrap_backend_texture(
+            ctx,
+            &out_bt,
+            gpu::SurfaceOrigin::TopLeft,
+            None,
+            skia::ColorType::RGBA8888,
+            None,
+            None,
+        ) else {
+            return Err(gst::loggable_error!(CAT, "wrap_backend_texture failed"));
+        };
+
+        let in_info = gpu::gl::TextureInfo {
+            target: GL_TEXTURE_2D,
+            id: input.texture_id(),
+            format: GL_RGBA8,
+            protected: gpu::Protected::No,
+        };
+        let in_bt = unsafe {
+            gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, in_info, "kp-in")
+        };
+        let canvas = surface.canvas();
+        if let Some(image) = gpu::images::borrow_texture_from(
+            ctx,
+            &in_bt,
+            gpu::SurfaceOrigin::TopLeft,
+            skia::ColorType::RGBA8888,
+            skia::AlphaType::Premul,
+            None,
+        ) {
+            canvas.draw_image(&image, (0, 0), None);
+        }
+
+        replay_commands(canvas, &commands);
+
+        ctx.flush_and_submit();
+        Ok(())
+    }
+}

@@ -5471,6 +5471,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-base",
  "gstreamer-check",
+ "gstreamer-gl",
  "gstreamer-video",
  "png",
  "skia-safe",
