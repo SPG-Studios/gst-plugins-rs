@@ -11,6 +11,10 @@ use gst::prelude::*;
 
 mod imp;
 
+// pub(crate) so the GL element (objectdetectionoverlaygl) can reuse the
+// command-generation (`analytics_to_draw_commands`) and render identically.
+pub(crate) mod commands;
+
 glib::wrapper! {
     pub struct ObjectDetectionOverlay(ObjectSubclass<imp::ObjectDetectionOverlay>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
