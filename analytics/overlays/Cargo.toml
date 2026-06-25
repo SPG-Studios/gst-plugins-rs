@@ -20,6 +20,8 @@ gst-video.workspace = true
 gst-analytics = { workspace = true, features = ["v1_30"] }
 glib.workspace = true
 skia = { package = "skia-safe", version = "0.97" }
+# GL hardware-accelerated overlay elements (feature "gl").
+gst-gl = { workspace = true, optional = true }
 
 [build-dependencies]
 gst-plugin-version-helper.workspace = true
@@ -35,6 +37,9 @@ png = "0.18"
 static = []
 capi = []
 doc = []
+# GL hardware-accelerated overlay elements, rendering with skia's GPU (Ganesh)
+# backend on GstGL textures. Pulls a GL-enabled skia build.
+gl = ["dep:gst-gl", "skia/gl", "skia/egl"]
 
 [package.metadata.capi]
 min_version = "0.9.21"

@@ -407,6 +407,90 @@ pub(crate) fn render_mask_canvas(
     Some(canvas)
 }
 
+/// A colored mask ready to composite: rasterized at the mask's **native**
+/// resolution (so the expensive scaling is left to the consumer) plus the
+/// destination rectangle in frame coordinates.
+///
+/// Only used by the GL element, so it is gated on the `gl` feature.
+#[cfg(feature = "gl")]
+pub(crate) struct MaskLayer {
+    pub(crate) canvas: gst::Buffer,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) dst_x: i32,
+    pub(crate) dst_y: i32,
+    pub(crate) dst_w: u32,
+    pub(crate) dst_h: u32,
+}
+
+/// Colorize each segmentation mask at native resolution, returning the layers to
+/// composite. Shared with the GL element, which uploads each `canvas` and lets
+/// the GPU scale it to `(dst_w, dst_h)` at `(dst_x, dst_y)` — keeping the
+/// full-frame compositing off the CPU. Mirrors the CPU element's per-mtd loop
+/// (which instead scales on the CPU and composites via the overlay meta).
+///
+/// Only used by the GL element, so it is gated on the `gl` feature.
+#[cfg(feature = "gl")]
+pub(crate) fn segmentation_mask_layers(
+    buffer: &gst::BufferRef,
+    settings: &Settings,
+    state: &mut State,
+    frame_w: i32,
+    frame_h: i32,
+) -> Vec<MaskLayer> {
+    update_selected_type_cache(state, settings.selected_types.as_deref());
+    let selected_types = state.selected_type_quarks.clone();
+
+    let mut layers = Vec::new();
+    let Some(meta) = buffer.meta::<AnalyticsRelationMeta>() else {
+        return layers;
+    };
+
+    for seg_mtd in meta.iter::<AnalyticsSegmentationMtd>() {
+        let Some((mask, mut ofx, mut ofy, mut dst_w, mut dst_h)) = seg_mtd.mask() else {
+            continue;
+        };
+        if dst_w == 0 || dst_h == 0 {
+            continue;
+        }
+        ofx = ofx.clamp(0, frame_w);
+        ofy = ofy.clamp(0, frame_h);
+        dst_w = dst_w.min((frame_w - ofx).max(0) as u32);
+        dst_h = dst_h.min((frame_h - ofy).max(0) as u32);
+        if dst_w == 0 || dst_h == 0 {
+            continue;
+        }
+
+        // Native mask resolution — colorize 1:1, leaving scaling to the GPU.
+        let Some(mask_meta) = mask.meta::<gst_video::VideoMeta>() else {
+            continue;
+        };
+        let (native_w, native_h) = (mask_meta.width(), mask_meta.height());
+
+        let cls_mtd = related_classification(&meta, &seg_mtd);
+        let mask_filter = cached_mask_filter(state, cls_mtd.as_ref(), selected_types.as_deref());
+        let Some(canvas) =
+            render_mask_canvas(mask, native_w, native_h, mask_filter.as_deref(), |v| {
+                color_for_segment(state, v, settings.hint_maximum_segment_type)
+            })
+        else {
+            continue;
+        };
+
+        layers.push(MaskLayer {
+            canvas,
+            width: native_w,
+            height: native_h,
+            dst_x: ofx,
+            dst_y: ofy,
+            dst_w,
+            dst_h,
+        });
+    }
+
+    layers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
