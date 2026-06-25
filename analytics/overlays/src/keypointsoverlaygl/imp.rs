@@ -15,6 +15,7 @@
 use gst::glib;
 use gst::subclass::prelude::*;
 use gst_base::subclass::BaseTransformMode;
+use gst_base::subclass::base_transform::{InputBuffer, PrepareOutputBufferSuccess};
 use gst_base::subclass::prelude::*;
 use gst_gl::prelude::*;
 use gst_gl::subclass::GLFilterMode;
@@ -193,6 +194,24 @@ impl BaseTransformImpl for KeypointsOverlayGl {
         };
         *self.pending.lock().unwrap() = commands;
         self.parent_before_transform(inbuf);
+    }
+
+    // `before_transform` (above) runs first and fills `pending`; this runs next
+    // and yields the output buffer, so we publish what we drew as claims here
+    // (mirroring the CPU element) for downstream overlays to avoid.
+    fn prepare_output_buffer(
+        &self,
+        inbuf: InputBuffer,
+    ) -> Result<PrepareOutputBufferSuccess, gst::FlowError> {
+        let success = self.parent_prepare_output_buffer(inbuf)?;
+        if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
+            let commands = self.pending.lock().unwrap().clone();
+            if let (false, Some(buffer)) = (commands.is_empty(), outbuf.get_mut()) {
+                crate::coordination::claim_commands(buffer, &commands, kp::OVERLAY_OWNER);
+            }
+            return Ok(PrepareOutputBufferSuccess::Buffer(outbuf));
+        }
+        Ok(success)
     }
 }
 

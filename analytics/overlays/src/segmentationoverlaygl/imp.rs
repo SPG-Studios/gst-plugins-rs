@@ -16,6 +16,7 @@
 use gst::glib;
 use gst::subclass::prelude::*;
 use gst_base::subclass::BaseTransformMode;
+use gst_base::subclass::base_transform::{InputBuffer, PrepareOutputBufferSuccess};
 use gst_base::subclass::prelude::*;
 use gst_gl::prelude::*;
 use gst_gl::subclass::GLFilterMode;
@@ -26,6 +27,8 @@ use std::sync::{LazyLock, Mutex};
 
 use skia::gpu;
 
+use crate::coordination::{ClaimedRegion, add_claimed_regions};
+use crate::geometry::Rect;
 use crate::segmentationoverlay::masks as seg;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -39,10 +42,12 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 const GL_TEXTURE_2D: u32 = 0x0DE1;
 const GL_RGBA8: u32 = 0x8058;
 
-/// A colorized mask uploaded as a skia image, with its destination rect.
+/// A colorized mask uploaded as a skia image, with its destination rect (in skia
+/// coordinates for compositing, and in frame coordinates for claiming).
 struct PendingLayer {
     image: skia::Image,
     dst: skia::Rect,
+    claim: Rect,
 }
 
 struct GpuState {
@@ -166,12 +171,37 @@ impl BaseTransformImpl for SegmentationOverlayGl {
                             m.dst_w as f32,
                             m.dst_h as f32,
                         ),
+                        claim: Rect::from_xywh(m.dst_x, m.dst_y, m.dst_w as i32, m.dst_h as i32),
                     });
                 }
             }
         }
         *self.pending.lock().unwrap() = layers;
         self.parent_before_transform(inbuf);
+    }
+
+    // `before_transform` (above) runs first and fills `pending`; this runs next
+    // and yields the output buffer, so we publish the mask regions as soft Avoid
+    // claims here (mirroring the CPU element) for downstream overlays to avoid.
+    fn prepare_output_buffer(
+        &self,
+        inbuf: InputBuffer,
+    ) -> Result<PrepareOutputBufferSuccess, gst::FlowError> {
+        let success = self.parent_prepare_output_buffer(inbuf)?;
+        if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
+            let regions: Vec<ClaimedRegion> = self
+                .pending
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|layer| ClaimedRegion::avoid(layer.claim, seg::OVERLAY_OWNER))
+                .collect();
+            if let (false, Some(buffer)) = (regions.is_empty(), outbuf.get_mut()) {
+                add_claimed_regions(buffer, &regions);
+            }
+            return Ok(PrepareOutputBufferSuccess::Buffer(outbuf));
+        }
+        Ok(success)
     }
 }
 

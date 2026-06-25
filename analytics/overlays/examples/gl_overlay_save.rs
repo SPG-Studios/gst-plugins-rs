@@ -119,6 +119,41 @@ fn attach_meta(factory: &str, buffer: &mut gst::BufferRef) {
     }
 }
 
+/// Print the claimed regions an element published on a buffer, read via the
+/// meta's public registered name (so no crate-internal access is needed).
+fn print_claimed_regions(buffer: &gst::BufferRef) {
+    let Ok(meta) = gst::meta::CustomMeta::from_buffer(buffer, "GstAnalyticsClaimedRegions") else {
+        println!("claims: none");
+        return;
+    };
+    let structure = meta.structure();
+    let Ok(coords) = structure.get::<gst::Array>("coords") else {
+        println!("claims: none");
+        return;
+    };
+    let owners = structure.get::<gst::Array>("owners").ok();
+    let coords = coords.as_slice();
+    let owners = owners.as_ref().map(gst::Array::as_slice).unwrap_or(&[]);
+
+    let count = coords.len() / 5;
+    println!("claims: {count}");
+    for i in 0..count {
+        let coord = |j: usize| coords[i * 5 + j].get::<i32>().unwrap_or(0);
+        let owner = owners
+            .get(i)
+            .and_then(|v| v.get::<String>().ok())
+            .unwrap_or_default();
+        let kind = if coord(4) == 1 { "Avoid" } else { "Occlude" };
+        println!(
+            "  [{owner}] {kind} ({}, {}, {}, {})",
+            coord(0),
+            coord(1),
+            coord(2),
+            coord(3)
+        );
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let factory = args.get(1).map(|s| s.as_str()).unwrap_or("odoverlaygl");
@@ -188,6 +223,16 @@ fn main() {
     pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
         if let Some(gst::PadProbeData::Buffer(ref mut buffer)) = info.data {
             attach_meta(&f, buffer.make_mut());
+        }
+        gst::PadProbeReturn::Ok
+    });
+
+    // Report the claimed regions the overlay publishes on its output, so we can
+    // confirm the GL element produces them (read via the meta's public name).
+    let srcpad = overlay.static_pad("src").unwrap();
+    srcpad.add_probe(gst::PadProbeType::BUFFER, |_pad, info| {
+        if let Some(gst::PadProbeData::Buffer(ref buffer)) = info.data {
+            print_claimed_regions(buffer);
         }
         gst::PadProbeReturn::Ok
     });
