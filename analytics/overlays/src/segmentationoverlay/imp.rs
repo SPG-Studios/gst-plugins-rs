@@ -202,6 +202,7 @@ impl ObjectImpl for SegmentationOverlay {
                     .default_value(None)
                     .mutable_playing()
                     .build(),
+                crate::coordination::priority_param_spec(),
             ]
         });
 
@@ -239,6 +240,10 @@ impl ObjectImpl for SegmentationOverlay {
                 let mut state = self.state.lock().unwrap();
                 update_selected_type_cache(&mut state, settings.selected_types.as_deref());
             }
+            "priority" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.priority = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -256,6 +261,10 @@ impl ObjectImpl for SegmentationOverlay {
             "selected-types" => {
                 let settings = self.settings.lock().unwrap();
                 settings.selected_types.to_value()
+            }
+            "priority" => {
+                let settings = self.settings.lock().unwrap();
+                settings.priority.to_value()
             }
             _ => unimplemented!(),
         }
@@ -456,7 +465,7 @@ impl VideoFilterImpl for SegmentationOverlay {
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
             let regions: Vec<ClaimedRegion> = claimed_rects
                 .iter()
-                .map(|rect| ClaimedRegion::avoid(*rect, OVERLAY_OWNER))
+                .map(|rect| ClaimedRegion::avoid(*rect, OVERLAY_OWNER, settings.priority))
                 .collect();
             add_claimed_regions(buffer, &regions);
         }

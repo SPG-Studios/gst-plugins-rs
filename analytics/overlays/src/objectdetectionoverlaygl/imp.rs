@@ -109,6 +109,7 @@ impl ObjectImpl for ObjectDetectionOverlayGl {
                     .default_value(d.tracking_outline_colors)
                     .mutable_playing()
                     .build(),
+                crate::coordination::priority_param_spec(),
             ]
         });
         PROPERTIES.as_ref()
@@ -126,6 +127,7 @@ impl ObjectImpl for ObjectDetectionOverlayGl {
             "labels-color" => settings.labels_color = value.get().expect(e),
             "filled-box" => settings.filled_box = value.get().expect(e),
             "tracking-outline-colors" => settings.tracking_outline_colors = value.get().expect(e),
+            "priority" => settings.priority = value.get().expect(e),
             _ => unimplemented!(),
         }
     }
@@ -139,6 +141,7 @@ impl ObjectImpl for ObjectDetectionOverlayGl {
             "labels-color" => settings.labels_color.to_value(),
             "filled-box" => settings.filled_box.to_value(),
             "tracking-outline-colors" => settings.tracking_outline_colors.to_value(),
+            "priority" => settings.priority.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -191,8 +194,9 @@ impl BaseTransformImpl for ObjectDetectionOverlayGl {
         let success = self.parent_prepare_output_buffer(inbuf)?;
         if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
             let commands = self.pending.lock().unwrap().clone();
+            let priority = self.settings.lock().unwrap().priority;
             if let (false, Some(buffer)) = (commands.is_empty(), outbuf.get_mut()) {
-                crate::coordination::claim_commands(buffer, &commands, od::OVERLAY_OWNER);
+                crate::coordination::claim_commands(buffer, &commands, od::OVERLAY_OWNER, priority);
             }
             return Ok(PrepareOutputBufferSuccess::Buffer(outbuf));
         }

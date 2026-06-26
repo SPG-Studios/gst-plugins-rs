@@ -125,6 +125,7 @@ impl ObjectImpl for KeypointsOverlayGl {
                     .default_value(d.semantic_tag.as_deref())
                     .mutable_playing()
                     .build(),
+                crate::coordination::priority_param_spec(),
             ]
         });
         PROPERTIES.as_ref()
@@ -142,6 +143,7 @@ impl ObjectImpl for KeypointsOverlayGl {
             "skeleton-color" => settings.skeleton_color = value.get().expect(e),
             "skeleton-line-width" => settings.skeleton_line_width = value.get().expect(e),
             "semantic-tag" => settings.semantic_tag = value.get().expect(e),
+            "priority" => settings.priority = value.get().expect(e),
             _ => unimplemented!(),
         }
     }
@@ -157,6 +159,7 @@ impl ObjectImpl for KeypointsOverlayGl {
             "skeleton-color" => settings.skeleton_color.to_value(),
             "skeleton-line-width" => settings.skeleton_line_width.to_value(),
             "semantic-tag" => settings.semantic_tag.to_value(),
+            "priority" => settings.priority.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -206,8 +209,9 @@ impl BaseTransformImpl for KeypointsOverlayGl {
         let success = self.parent_prepare_output_buffer(inbuf)?;
         if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
             let commands = self.pending.lock().unwrap().clone();
+            let priority = self.settings.lock().unwrap().priority;
             if let (false, Some(buffer)) = (commands.is_empty(), outbuf.get_mut()) {
-                crate::coordination::claim_commands(buffer, &commands, kp::OVERLAY_OWNER);
+                crate::coordination::claim_commands(buffer, &commands, kp::OVERLAY_OWNER, priority);
             }
             return Ok(PrepareOutputBufferSuccess::Buffer(outbuf));
         }

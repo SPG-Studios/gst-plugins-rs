@@ -53,6 +53,8 @@ pub(crate) struct Settings {
     pub(crate) expire_overlay: u64,
     pub(crate) tracking_outline_colors: bool,
     pub(crate) suppress_builtin_rendering: bool,
+    /// Cross-element priority (see [`crate::coordination`]).
+    pub(crate) priority: i32,
 }
 
 impl Default for Settings {
@@ -67,6 +69,7 @@ impl Default for Settings {
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         }
     }
 }
@@ -218,8 +221,14 @@ pub(crate) fn analytics_to_draw_commands(
     let mut object_count = 0;
     let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
 
-    // Avoid regions other elements upstream have already claimed.
-    crate::coordination::seed_registry_from_claims(&mut occupied, buffer, OVERLAY_OWNER);
+    // Avoid regions other elements claimed at our priority or higher; lower-
+    // priority claims are left out so we draw over them.
+    crate::coordination::seed_registry_from_claims(
+        &mut occupied,
+        buffer,
+        OVERLAY_OWNER,
+        settings.priority,
+    );
 
     // A label deferred to the second pass.
     struct PendingLabel {
@@ -384,6 +393,7 @@ mod tests {
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         };
 
         let (analytics, commands) =
@@ -451,6 +461,7 @@ mod tests {
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         };
 
         let (analytics, commands) =
@@ -500,6 +511,7 @@ mod tests {
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: true,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         };
 
         let (_, commands) =
@@ -539,6 +551,7 @@ mod tests {
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         };
 
         let (_, commands) =
@@ -594,6 +607,7 @@ mod tests {
             expire_overlay: DEFAULT_EXPIRE_OVERLAY,
             tracking_outline_colors: false,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         };
 
         let (_, commands) =
@@ -871,6 +885,7 @@ mod tests {
             &[crate::coordination::ClaimedRegion::occlude(
                 estimate_label_rect(20, 40, label),
                 "hair-spikes",
+                0,
             )],
         );
 

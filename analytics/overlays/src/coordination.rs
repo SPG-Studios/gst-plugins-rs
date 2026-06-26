@@ -29,7 +29,9 @@
 //! for the design note, including the productionisation path (moving the meta
 //! to the shared analytics library and adding a scale-aware transform).
 
+use gst::glib;
 use gst::meta::CustomMeta;
+use gst::prelude::*;
 
 use crate::geometry::{OccupiedRegionRegistry, Rect};
 use crate::render::{DrawCommand, content_bounds};
@@ -37,6 +39,26 @@ use crate::render::{DrawCommand, content_bounds};
 /// Well-known name of the custom buffer meta used to share claimed regions
 /// between composable elements. Registered once at plugin init via [`register`].
 pub const CLAIMED_REGIONS_META: &str = "GstAnalyticsClaimedRegions";
+
+/// Default element priority. All overlays default to the same value, so out of
+/// the box every element respects every other (equal priorities mutually avoid).
+/// An application or auto-plugging bin raises priority on the elements whose
+/// content should win conflicts; downstream lower-priority content is overdrawn.
+pub(crate) const DEFAULT_PRIORITY: i32 = 0;
+
+/// The shared `priority` GObject property, installed by every overlay element so
+/// they expose one consistent priority knob.
+pub(crate) fn priority_param_spec() -> glib::ParamSpec {
+    glib::ParamSpecInt::builder("priority")
+        .nick("Priority")
+        .blurb(
+            "Cross-element priority: an overlay respects claimed regions of priority >= its own \
+             and overdraws lower-priority ones. Higher wins; equal priorities mutually avoid.",
+        )
+        .default_value(DEFAULT_PRIORITY)
+        .mutable_playing()
+        .build()
+}
 
 /// How strongly a claim should be honoured by downstream elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +88,19 @@ impl ClaimKind {
 }
 
 /// A region of the frame an element has claimed.
+///
+/// Three orthogonal properties describe a claim:
+///   * `kind` — how others must treat the space it occupies (hard [`ClaimKind::Occlude`]
+///     = don't draw over it; soft [`ClaimKind::Avoid`] = prefer not to). This is
+///     about how *others* treat *this* content.
+///   * `priority` — how important the content is. A consumer placing content of
+///     priority `P` honours claims with priority `>= P` and overdraws claims with
+///     priority `< P`. Higher wins.
+///
+/// Note `kind` (hard/soft) is *not* the same as movability (whether the producing
+/// content can itself relocate) — e.g. a keypoint and a label are both `Occlude`
+/// yet a keypoint is anchored and a label is free. Movability lives on the
+/// producer's placement path, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedRegion {
     pub rect: Rect,
@@ -73,24 +108,29 @@ pub struct ClaimedRegion {
     /// Identifier of the claiming element (factory or instance name). Lets a
     /// consumer skip its own claims and aids debugging.
     pub owner: String,
+    /// Importance of the claimed content; consumers overdraw claims of lower
+    /// priority than the content they are placing. Higher = more important.
+    pub priority: i32,
 }
 
 impl ClaimedRegion {
-    /// A hard [`ClaimKind::Occlude`] claim.
-    pub fn occlude(rect: Rect, owner: impl Into<String>) -> Self {
+    /// A hard [`ClaimKind::Occlude`] claim at the given priority.
+    pub fn occlude(rect: Rect, owner: impl Into<String>, priority: i32) -> Self {
         Self {
             rect,
             kind: ClaimKind::Occlude,
             owner: owner.into(),
+            priority,
         }
     }
 
-    /// A soft [`ClaimKind::Avoid`] claim.
-    pub fn avoid(rect: Rect, owner: impl Into<String>) -> Self {
+    /// A soft [`ClaimKind::Avoid`] claim at the given priority.
+    pub fn avoid(rect: Rect, owner: impl Into<String>, priority: i32) -> Self {
         Self {
             rect,
             kind: ClaimKind::Avoid,
             owner: owner.into(),
+            priority,
         }
     }
 }
@@ -118,15 +158,21 @@ pub fn register() {
 /// Publish the regions an element rendered (derived from its draw commands) as
 /// claims, so downstream elements avoid occluding them. Thin strokes (skeleton
 /// and leader lines) are not claimed — see [`content_bounds`]. The claim kind is
-/// derived per command by [`command_claim_kind`].
-pub fn claim_commands(buffer: &mut gst::BufferRef, commands: &[DrawCommand], owner: &str) {
+/// derived per command by [`command_claim_kind`]; all claims carry the element's
+/// `priority`.
+pub fn claim_commands(
+    buffer: &mut gst::BufferRef,
+    commands: &[DrawCommand],
+    owner: &str,
+    priority: i32,
+) {
     let regions: Vec<ClaimedRegion> = commands
         .iter()
         .filter_map(|command| {
             let rect = content_bounds(command)?;
             Some(match command_claim_kind(command) {
-                ClaimKind::Occlude => ClaimedRegion::occlude(rect, owner),
-                ClaimKind::Avoid => ClaimedRegion::avoid(rect, owner),
+                ClaimKind::Occlude => ClaimedRegion::occlude(rect, owner, priority),
+                ClaimKind::Avoid => ClaimedRegion::avoid(rect, owner, priority),
             })
         })
         .collect();
@@ -178,20 +224,27 @@ pub fn claimed_regions(buffer: &gst::BufferRef) -> Vec<ClaimedRegion> {
     }
 }
 
-/// Seed `registry` with every claimed region on `buffer` that was not claimed by
-/// `skip_owner`, so this element's placement steers around those areas.
+/// Seed `registry` with the claimed regions on `buffer` that this element must
+/// respect, so its placement steers around those areas.
 ///
-/// The claim kind maps to a placement priority: [`ClaimKind::Occlude`] becomes a
-/// hard highlight (labels must not overlap it), while [`ClaimKind::Avoid`]
-/// becomes a soft region (labels prefer not to overlap it — e.g. a segmentation
-/// mask — but may when no clear alternative exists).
+/// A region is respected when it was not claimed by `skip_owner` **and** its
+/// priority is `>= self_priority` — i.e. it belongs to content at least as
+/// important as what this element is placing. Lower-priority claims are dropped
+/// (not seeded), so the element places freely over them and, being downstream,
+/// overdraws them ("higher priority wins").
+///
+/// For respected claims the kind maps to a placement priority:
+/// [`ClaimKind::Occlude`] becomes a hard highlight (labels must not overlap it),
+/// while [`ClaimKind::Avoid`] becomes a soft region (labels prefer not to overlap
+/// it — e.g. a segmentation mask — but may when no clear alternative exists).
 pub fn seed_registry_from_claims(
     registry: &mut OccupiedRegionRegistry,
     buffer: &gst::BufferRef,
     skip_owner: &str,
+    self_priority: i32,
 ) {
     for region in claimed_regions(buffer) {
-        if region.owner == skip_owner {
+        if region.owner == skip_owner || region.priority < self_priority {
             continue;
         }
         match region.kind {
@@ -201,11 +254,16 @@ pub fn seed_registry_from_claims(
     }
 }
 
+/// Number of `i32` values packed per region in the meta's `coords` array, in
+/// order: x, y, w, h, kind, priority.
+const COORDS_PER_REGION: usize = 6;
+
 // The regions are stored in the meta's `gst::Structure` as two parallel arrays:
-// `coords` (5 i32 per region: x, y, w, h, kind) and `owners` (one string per
-// region). Homogeneous arrays keep the encoding trivially interoperable from C.
+// `coords` ([`COORDS_PER_REGION`] i32 per region: x, y, w, h, kind, priority)
+// and `owners` (one string per region). Homogeneous arrays keep the encoding
+// trivially interoperable from C.
 fn encode(structure: &mut gst::StructureRef, regions: &[ClaimedRegion]) {
-    let mut coords: Vec<i32> = Vec::with_capacity(regions.len() * 5);
+    let mut coords: Vec<i32> = Vec::with_capacity(regions.len() * COORDS_PER_REGION);
     let mut owners: Vec<String> = Vec::with_capacity(regions.len());
     for region in regions {
         coords.extend_from_slice(&[
@@ -214,6 +272,7 @@ fn encode(structure: &mut gst::StructureRef, regions: &[ClaimedRegion]) {
             region.rect.width(),
             region.rect.height(),
             region.kind.as_i32(),
+            region.priority,
         ]);
         owners.push(region.owner.clone());
     }
@@ -230,7 +289,7 @@ fn decode(structure: &gst::StructureRef) -> Vec<ClaimedRegion> {
     let owners = owners.as_ref().map(gst::Array::as_slice).unwrap_or(&[]);
 
     coords
-        .chunks_exact(5)
+        .chunks_exact(COORDS_PER_REGION)
         .enumerate()
         .map(|(index, chunk)| {
             let value = |i: usize| chunk[i].get::<i32>().unwrap_or(0);
@@ -242,6 +301,7 @@ fn decode(structure: &gst::StructureRef) -> Vec<ClaimedRegion> {
                 rect: Rect::from_xywh(value(0), value(1), value(2), value(3)),
                 kind: ClaimKind::from_i32(value(4)),
                 owner,
+                priority: value(5),
             }
         })
         .collect()
@@ -266,17 +326,19 @@ mod tests {
         init();
 
         let input = vec![
-            ClaimedRegion::occlude(Rect::from_xywh(10, 20, 30, 40), "hair-spikes"),
+            ClaimedRegion::occlude(Rect::from_xywh(10, 20, 30, 40), "hair-spikes", 5),
             ClaimedRegion {
                 rect: Rect::from_xywh(100, 5, 50, 12),
                 kind: ClaimKind::Avoid,
                 owner: "saliency".to_string(),
+                priority: 7,
             },
         ];
 
         let mut buffer = gst::Buffer::new();
         add_claimed_regions(buffer.make_mut(), &input);
 
+        // Round-trips rect, kind, owner and priority.
         assert_eq!(claimed_regions(buffer.as_ref()), input);
     }
 
@@ -287,11 +349,19 @@ mod tests {
         let mut buffer = gst::Buffer::new();
         add_claimed_regions(
             buffer.make_mut(),
-            &[ClaimedRegion::occlude(Rect::from_xywh(0, 0, 10, 10), "a")],
+            &[ClaimedRegion::occlude(
+                Rect::from_xywh(0, 0, 10, 10),
+                "a",
+                0,
+            )],
         );
         add_claimed_regions(
             buffer.make_mut(),
-            &[ClaimedRegion::occlude(Rect::from_xywh(20, 20, 10, 10), "b")],
+            &[ClaimedRegion::occlude(
+                Rect::from_xywh(20, 20, 10, 10),
+                "b",
+                0,
+            )],
         );
 
         let regions = claimed_regions(buffer.as_ref());
@@ -308,11 +378,11 @@ mod tests {
         let mut buffer = gst::Buffer::new();
         add_claimed_regions(
             buffer.make_mut(),
-            &[ClaimedRegion::occlude(claimed, "hair-spikes")],
+            &[ClaimedRegion::occlude(claimed, "hair-spikes", 0)],
         );
 
         let mut registry = OccupiedRegionRegistry::new(200, 200);
-        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay");
+        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay", 0);
 
         // The claimed area is now occupied, so a label cannot be reserved there.
         assert!(registry.is_occupied(RegionPriority::Label, claimed));
@@ -329,11 +399,11 @@ mod tests {
         let mut buffer = gst::Buffer::new();
         add_claimed_regions(
             buffer.make_mut(),
-            &[ClaimedRegion::avoid(claimed, "segoverlay")],
+            &[ClaimedRegion::avoid(claimed, "segoverlay", 0)],
         );
 
         let mut registry = OccupiedRegionRegistry::new(200, 200);
-        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay");
+        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay", 0);
 
         // Unlike an Occlude claim, an Avoid claim is soft: it does not block a
         // label (so the label may still be placed there when forced) ...
@@ -375,7 +445,7 @@ mod tests {
         ];
 
         let mut buffer = gst::Buffer::new();
-        claim_commands(buffer.make_mut(), &commands, "odoverlay");
+        claim_commands(buffer.make_mut(), &commands, "odoverlay", 0);
 
         let regions = claimed_regions(buffer.as_ref());
         // Rectangle + Text are claimed; the Line is not.
@@ -411,12 +481,14 @@ mod tests {
         }];
 
         let mut buffer = gst::Buffer::new();
-        claim_commands(buffer.make_mut(), &commands, "odoverlay");
+        claim_commands(buffer.make_mut(), &commands, "odoverlay", 3);
 
         let regions = claimed_regions(buffer.as_ref());
         assert_eq!(regions.len(), 1);
         // A filled box is opaque, so it is a hard Occlude.
         assert_eq!(regions[0].kind, ClaimKind::Occlude);
+        // All claims carry the element priority passed to claim_commands.
+        assert_eq!(regions[0].priority, 3);
     }
 
     #[test]
@@ -429,13 +501,44 @@ mod tests {
             &[ClaimedRegion::occlude(
                 Rect::from_xywh(10, 10, 40, 40),
                 "odoverlay",
+                0,
             )],
         );
 
         let mut registry = OccupiedRegionRegistry::new(200, 200);
-        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay");
+        seed_registry_from_claims(&mut registry, buffer.as_ref(), "odoverlay", 0);
 
         // Our own prior claim must not block our placement.
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn seeding_ignores_lower_priority_claims_but_honours_higher() {
+        init();
+
+        let low = Rect::from_xywh(10, 10, 40, 40);
+        let high = Rect::from_xywh(120, 120, 40, 40);
+        let mut buffer = gst::Buffer::new();
+        add_claimed_regions(
+            buffer.make_mut(),
+            &[
+                ClaimedRegion::occlude(low, "label-overlay", 1),
+                ClaimedRegion::occlude(high, "keypoint-overlay", 9),
+            ],
+        );
+
+        // We place content at priority 5: we must respect the priority-9 claim
+        // (avoid it) but overdraw the priority-1 claim (it is not seeded).
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        seed_registry_from_claims(&mut registry, buffer.as_ref(), "ours", 5);
+
+        assert!(
+            !registry.is_occupied(RegionPriority::Label, low),
+            "lower-priority claim should be overdrawn, not avoided"
+        );
+        assert!(
+            registry.is_occupied(RegionPriority::Label, high),
+            "higher-priority claim must still be avoided"
+        );
     }
 }
