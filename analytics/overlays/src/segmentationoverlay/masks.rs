@@ -35,6 +35,8 @@ pub(crate) struct Settings {
     pub(crate) render_enabled: bool,
     pub(crate) hint_maximum_segment_type: u32,
     pub(crate) selected_types: Option<String>,
+    /// Cross-element priority (see [`crate::coordination`]).
+    pub(crate) priority: i32,
 }
 
 impl Default for Settings {
@@ -43,6 +45,7 @@ impl Default for Settings {
             render_enabled: DEFAULT_RENDER_ENABLED,
             hint_maximum_segment_type: DEFAULT_HINT_MAXIMUM_SEGMENT_TYPE,
             selected_types: None,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         }
     }
 }

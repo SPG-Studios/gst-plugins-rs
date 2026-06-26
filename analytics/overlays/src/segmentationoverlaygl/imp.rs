@@ -93,6 +93,7 @@ impl ObjectImpl for SegmentationOverlayGl {
                     .default_value(d.selected_types.as_deref())
                     .mutable_playing()
                     .build(),
+                crate::coordination::priority_param_spec(),
             ]
         });
         PROPERTIES.as_ref()
@@ -106,6 +107,7 @@ impl ObjectImpl for SegmentationOverlayGl {
                 settings.hint_maximum_segment_type = value.get().expect(e)
             }
             "selected-types" => settings.selected_types = value.get().expect(e),
+            "priority" => settings.priority = value.get().expect(e),
             _ => unimplemented!(),
         }
     }
@@ -115,6 +117,7 @@ impl ObjectImpl for SegmentationOverlayGl {
         match pspec.name() {
             "hint-maximum-segment-type" => settings.hint_maximum_segment_type.to_value(),
             "selected-types" => settings.selected_types.to_value(),
+            "priority" => settings.priority.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -189,12 +192,13 @@ impl BaseTransformImpl for SegmentationOverlayGl {
     ) -> Result<PrepareOutputBufferSuccess, gst::FlowError> {
         let success = self.parent_prepare_output_buffer(inbuf)?;
         if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
+            let priority = self.settings.lock().unwrap().priority;
             let regions: Vec<ClaimedRegion> = self
                 .pending
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|layer| ClaimedRegion::avoid(layer.claim, seg::OVERLAY_OWNER))
+                .map(|layer| ClaimedRegion::avoid(layer.claim, seg::OVERLAY_OWNER, priority))
                 .collect();
             if let (false, Some(buffer)) = (regions.is_empty(), outbuf.get_mut()) {
                 add_claimed_regions(buffer, &regions);

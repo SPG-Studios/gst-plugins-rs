@@ -135,17 +135,20 @@ fn print_claimed_regions(buffer: &gst::BufferRef) {
     let coords = coords.as_slice();
     let owners = owners.as_ref().map(gst::Array::as_slice).unwrap_or(&[]);
 
-    let count = coords.len() / 5;
+    // The meta packs this many i32 per region: x, y, w, h, kind, priority.
+    const COORDS_PER_REGION: usize = 6;
+    let count = coords.len() / COORDS_PER_REGION;
     println!("claims: {count}");
     for i in 0..count {
-        let coord = |j: usize| coords[i * 5 + j].get::<i32>().unwrap_or(0);
+        let coord = |j: usize| coords[i * COORDS_PER_REGION + j].get::<i32>().unwrap_or(0);
         let owner = owners
             .get(i)
             .and_then(|v| v.get::<String>().ok())
             .unwrap_or_default();
         let kind = if coord(4) == 1 { "Avoid" } else { "Occlude" };
         println!(
-            "  [{owner}] {kind} ({}, {}, {}, {})",
+            "  [{owner}] {kind} prio={} ({}, {}, {}, {})",
+            coord(5),
             coord(0),
             coord(1),
             coord(2),

@@ -58,6 +58,8 @@ pub(crate) struct Settings {
     pub(crate) skeleton_line_width: f64,
     pub(crate) semantic_tag: Option<String>,
     pub(crate) suppress_builtin_rendering: bool,
+    /// Cross-element priority (see [`crate::coordination`]).
+    pub(crate) priority: i32,
 }
 
 impl Default for Settings {
@@ -73,6 +75,7 @@ impl Default for Settings {
             skeleton_line_width: DEFAULT_SKELETON_LINE_WIDTH,
             semantic_tag: None,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
+            priority: crate::coordination::DEFAULT_PRIORITY,
         }
     }
 }
@@ -427,8 +430,14 @@ pub(crate) fn analytics_to_draw_commands(
     let mut keypoint_count = 0usize;
     let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
 
-    // Avoid regions other elements upstream have already claimed.
-    crate::coordination::seed_registry_from_claims(&mut occupied, buffer, OVERLAY_OWNER);
+    // Avoid regions other elements claimed at our priority or higher; lower-
+    // priority claims are left out so we draw over them.
+    crate::coordination::seed_registry_from_claims(
+        &mut occupied,
+        buffer,
+        OVERLAY_OWNER,
+        settings.priority,
+    );
 
     if let Some(semantic_tag) = settings.semantic_tag.as_deref() {
         for group in meta.iter::<AnalyticsGroupMtd>() {

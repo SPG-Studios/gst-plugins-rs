@@ -154,6 +154,7 @@ impl ObjectImpl for KeypointsOverlay {
                     .default_value(DEFAULT_SUPPRESS_BUILTIN_RENDERING)
                     .mutable_playing()
                     .build(),
+                crate::coordination::priority_param_spec(),
             ]
         });
 
@@ -216,6 +217,10 @@ impl ObjectImpl for KeypointsOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.suppress_builtin_rendering = value.get().expect("type checked upstream");
             }
+            "priority" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.priority = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -261,6 +266,10 @@ impl ObjectImpl for KeypointsOverlay {
             "suppress-builtin-rendering" => {
                 let settings = self.settings.lock().unwrap();
                 settings.suppress_builtin_rendering.to_value()
+            }
+            "priority" => {
+                let settings = self.settings.lock().unwrap();
+                settings.priority.to_value()
             }
             _ => unimplemented!(),
         }
@@ -352,7 +361,12 @@ impl VideoFilterImpl for KeypointsOverlay {
         if !builtins_suppressed && !commands.is_empty() {
             // SAFETY: the frame is writable and uniquely borrowed here.
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
-            crate::coordination::claim_commands(buffer, &commands, OVERLAY_OWNER);
+            crate::coordination::claim_commands(
+                buffer,
+                &commands,
+                OVERLAY_OWNER,
+                settings.priority,
+            );
         }
 
         Ok(gst::FlowSuccess::Ok)

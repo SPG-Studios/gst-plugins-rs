@@ -345,20 +345,24 @@ fn publishes_avoid_claims_for_mask_regions() {
     let coords = coords.as_slice();
     let owners = owners.as_slice();
 
-    // Five ints per region: x, y, w, h, kind (0 = Occlude, 1 = Avoid).
-    assert_eq!(coords.len() % 5, 0);
-    let region_count = coords.len() / 5;
+    // The meta packs this many i32 per region: x, y, w, h, kind (0 = Occlude,
+    // 1 = Avoid), priority.
+    const COORDS_PER_REGION: usize = 6;
+    assert_eq!(coords.len() % COORDS_PER_REGION, 0);
+    let region_count = coords.len() / COORDS_PER_REGION;
     assert!(region_count >= 1, "expected at least one mask claim");
 
     let mut found = false;
     for i in 0..region_count {
-        let coord = |j: usize| coords[i * 5 + j].get::<i32>().unwrap();
+        let coord = |j: usize| coords[i * COORDS_PER_REGION + j].get::<i32>().unwrap();
         let owner = owners[i].get::<String>().unwrap();
         if owner == "segoverlay" {
             // Masks are claimed as soft Avoid (kind == 1), at the destination
-            // rect they were drawn into (clamped to the frame).
+            // rect they were drawn into (clamped to the frame), at the default
+            // priority.
             assert_eq!(coord(4), 1, "mask claim should be Avoid, not Occlude");
             assert_eq!((coord(0), coord(1), coord(2), coord(3)), (8, 8, 12, 12));
+            assert_eq!(coord(5), 0, "default element priority");
             found = true;
         }
     }
