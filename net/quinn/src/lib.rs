@@ -15,6 +15,8 @@
  */
 use gst::glib;
 mod common;
+mod moqdemux;
+mod moqmux;
 mod quinnconnection;
 mod quinnquicdemux;
 pub mod quinnquicmeta;
@@ -26,7 +28,9 @@ mod quinnroqdemux;
 mod quinnroqmux;
 mod quinnwtsink;
 mod quinnwtsrc;
+mod reader;
 mod utils;
+mod writer;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     env_logger::init();
@@ -38,6 +42,8 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     }
     quinnquicdemux::register(plugin)?;
     quinnquicmux::register(plugin)?;
+    moqdemux::register(plugin)?;
+    moqmux::register(plugin)?;
     quinnroqmux::register(plugin)?;
     quinnroqdemux::register(plugin)?;
     quinnquicsink::register(plugin)?;

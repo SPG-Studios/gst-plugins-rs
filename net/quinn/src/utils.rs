@@ -10,9 +10,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::common::*;
+use crate::quinnconnection::{QUINN_CONNECTION_CONTEXT, QuinnConnection, QuinnConnectionContext};
 use futures::future;
 use futures::prelude::*;
-use gst::ErrorMessage;
+use gst::{ErrorMessage, prelude::*};
 use quinn::{
     ClientConfig, Endpoint, EndpointConfig, MtuDiscoveryConfig, ServerConfig, TokioRuntime,
     TransportConfig, crypto::rustls::QuicClientConfig, crypto::rustls::QuicServerConfig,
@@ -478,5 +479,42 @@ pub fn get_stats(stats: Option<ConnectionStats>) -> gst::Structure {
                 .build()
         }
         None => gst::Structure::new_empty("stats"),
+    }
+}
+
+pub fn setup_shared_session(
+    element: gst::Element,
+    pad: &gst::Pad,
+) -> Result<QuinnConnection, gst::ErrorMessage> {
+    let mut q = gst::query::Context::new(QUINN_CONNECTION_CONTEXT);
+
+    if pad.peer_query(&mut q) {
+        if let Some(ref mut context) = q.context_owned() {
+            element.set_context(context);
+
+            let s = context.structure();
+            match s.get::<QuinnConnectionContext>("connection") {
+                Ok(context) => {
+                    let c = context.0.connection.clone();
+                    return Ok(c);
+                }
+                Err(err) => {
+                    return Err(gst::error_msg!(
+                        gst::ResourceError::Failed,
+                        ["Context query failed, no Connection, {err:?}"]
+                    ));
+                }
+            }
+        }
+
+        Err(gst::error_msg!(
+            gst::ResourceError::Failed,
+            ["Connection context query failed, missing context"]
+        ))
+    } else {
+        Err(gst::error_msg!(
+            gst::ResourceError::Failed,
+            ["Connection Context query failed"]
+        ))
     }
 }

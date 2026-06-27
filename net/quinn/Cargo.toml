@@ -13,7 +13,10 @@ rust-version.workspace = true
 [dependencies]
 glib.workspace = true
 gst.workspace = true
+gst-app.workspace = true
 gst-base = { workspace = true, features = ["v1_22"] }
+gst-audio = { workspace = true, features = ["v1_22"] }
+gst-video = { workspace = true, features = ["v1_22"] }
 tokio = { version = "1.36.0", default-features = false, features = ["time", "rt-multi-thread", "macros"] }
 futures = "0.3.30"
 quinn = { version = "0.11.6", default-features = false, features = ["runtime-tokio", "log", "bloom", "ring"] }
@@ -30,11 +33,19 @@ env_logger = "0.11"
 url = "2.5.2"
 rustls-platform-verifier = "0.7"
 http = "1"
+gst-pbutils = { workspace = true, features = ["v1_22"] }
+tokio-stream = "0.1.11"
+moq-transport = "0.14.2"
+moq-catalog = "0.2.3"
+serde_json = "1.0"
+anyhow = "1.0"
+base64 = "0.22"
 
 [dev-dependencies]
 gst-check = { workspace = true, features = ["v1_20"] }
 ctrlc = "3.4"
 clap = { version = "4", features = ["derive"] }
+gst-plugin-isobmff.workspace = true
 
 [lib]
 name = "gstquinn"
