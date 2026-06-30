@@ -728,6 +728,30 @@ pub(crate) enum ChunkMode {
     Keyframe,
 }
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, glib::Enum)]
+#[repr(i32)]
+#[enum_type(name = "GstFMP4MuxFragmentBoundaryMode")]
+pub(crate) enum FragmentBoundaryMode {
+    /**
+     * GstFMP4MuxFragmentBoundaryMode:before:
+     *
+     * End the fragment at the last GOP boundary before
+     * the target fragment duration.
+     */
+    #[default]
+    Before,
+    /**
+     * GstFMP4MuxFragmentBoundaryMode:closest:
+     *
+     * End the fragment at the GOP boundary closest to
+     * the target fragment duration.  This may produce
+     * fragments slightly longer than the configured
+     * duration but keeps the overall duration closer to
+     * the target.
+     */
+    Closest,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ChnlLayoutInfo {
     audio_info: gst_audio::AudioInfo,
