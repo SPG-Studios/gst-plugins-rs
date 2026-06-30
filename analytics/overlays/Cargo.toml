@@ -19,7 +19,7 @@ gst-base.workspace = true
 gst-video.workspace = true
 gst-analytics = { workspace = true, features = ["v1_30"] }
 glib.workspace = true
-skia = { package = "skia-safe", version = "0.97" }
+skia = { package = "skia-safe", version = "0.99" }
 # GL hardware-accelerated overlay elements (feature "gl").
 gst-gl = { workspace = true, optional = true }
 
