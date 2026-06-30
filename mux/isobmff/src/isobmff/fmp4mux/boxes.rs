@@ -144,9 +144,71 @@ pub(crate) fn create_fmp4_fragment_header(
         })?;
     }
 
+    let mut sidx_offsets: Option<Vec<(usize, usize)>> = None;
+
+    if cfg.write_sidx && !cfg.chunk {
+        let mut start_sidx_offset = v.len();
+        sidx_offsets = Some(
+            cfg.streams
+                .iter()
+                .enumerate()
+                .map(|(idx, stream)| {
+                    let timescale = stream.to_timescale();
+                    let earliest_presentation_time = stream
+                        .start_time
+                        .unwrap()
+                        .mul_div_floor(timescale as u64, gst::ClockTime::SECOND.nseconds())
+                        .expect("base time overflow");
+
+                    write_full_box(
+                        &mut v,
+                        b"sidx",
+                        FULL_BOX_VERSION_1,
+                        FULL_BOX_FLAGS_NONE,
+                        |v| {
+                            // reference ID / Track ID
+                            v.extend((idx as u32 + 1).to_be_bytes());
+                            // timescale
+                            v.extend((timescale as u32).to_be_bytes());
+                            // earliest_presentation_time
+                            v.extend(earliest_presentation_time.to_be_bytes());
+                            // first_offset, rewritten afterwards
+                            v.extend(0u64.to_be_bytes());
+                            // reserved
+                            v.extend(0u16.to_be_bytes());
+                            // ref count == 1, single reference for non-chunked mode
+                            v.extend(1u16.to_be_bytes());
+
+                            // filled afterwards
+                            // type + size
+                            v.extend(0u32.to_be_bytes());
+                            // duration
+                            v.extend(0u32.to_be_bytes());
+
+                            // starts_with_SAP=1, SAP_type=0, SAP_delta_time=0
+                            // The first buffer of a non-chunked fragment always starts
+                            // with a keyframe, so SAP is unconditionally set.
+                            let sap_byte: u32 = 1u32 << 31;
+                            v.extend(sap_byte.to_be_bytes());
+
+                            Ok(())
+                        },
+                    )
+                    .expect("written sidx");
+
+                    let end_sidx_offset = v.len();
+                    let ret = (start_sidx_offset, end_sidx_offset);
+                    start_sidx_offset = end_sidx_offset;
+                    ret
+                })
+                .collect(),
+        );
+    }
+
     let moof_pos = v.len();
 
-    let data_offset_offsets = write_box(&mut v, b"moof", |v| write_moof(v, &cfg))?;
+    let (data_offset_offsets, buffers_sizes, buffers_durations) =
+        write_box(&mut v, b"moof", |v| write_moof(v, &cfg))?;
 
     let size = cfg
         .buffers
@@ -168,6 +230,25 @@ pub(crate) fn create_fmp4_fragment_header(
             .checked_add(u32::try_from(data_offset)?)
             .ok_or_else(|| anyhow!("can't calculate track run data offset"))?;
         v[data_offset_offset..][..4].copy_from_slice(&val.to_be_bytes());
+    }
+
+    if cfg.write_sidx && !cfg.chunk {
+        for ((sidx_start, end), (buffers_size, buffers_duration)) in sidx_offsets
+            .unwrap()
+            .into_iter()
+            .zip(buffers_sizes.into_iter().zip(buffers_durations))
+        {
+            let first_offset = (moof_pos - end) as u64;
+            // first_offset
+            v[sidx_start + 28..][..8].copy_from_slice(&first_offset.to_be_bytes());
+            // (1b) reference_type + (31b) referenced_size
+            let reference = &mut buffers_size.to_be_bytes();
+            let ref_type_byte = reference.get_mut(0).unwrap();
+            *ref_type_byte &= !(1u8 << 7); // set reference_type to 0
+            v[sidx_start + 40..][..4].copy_from_slice(reference);
+            // subsegment duration
+            v[sidx_start + 44..][..4].copy_from_slice(&buffers_duration.to_be_bytes());
+        }
     }
 
     Ok((gst::Buffer::from_mut_slice(v), moof_pos as u64))
@@ -199,24 +280,44 @@ fn write_prft(
     Ok(())
 }
 
-fn write_moof(v: &mut Vec<u8>, cfg: &FragmentHeaderConfiguration) -> Result<Vec<usize>, Error> {
+fn write_moof(
+    v: &mut Vec<u8>,
+    cfg: &FragmentHeaderConfiguration,
+) -> Result<(Vec<usize>, Vec<u32>, Vec<u32>), Error> {
     write_full_box(v, b"mfhd", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
         write_mfhd(v, cfg)
     })?;
 
     let mut data_offset_offsets = vec![];
+    let mut buffers_total_sizes = vec![];
+    let mut buffers_total_durations = vec![];
+
     for (idx, stream) in cfg.streams.iter().enumerate() {
         // Skip tracks without any buffers for this fragment.
         if stream.start_time.is_none() {
+            buffers_total_sizes.push(0);
+            buffers_total_durations.push(0);
             continue;
         }
 
         write_box(v, b"traf", |v| {
-            write_traf(v, cfg, &mut data_offset_offsets, idx, stream)
+            write_traf(
+                v,
+                cfg,
+                &mut data_offset_offsets,
+                &mut buffers_total_sizes,
+                &mut buffers_total_durations,
+                idx,
+                stream,
+            )
         })?;
     }
 
-    Ok(data_offset_offsets)
+    Ok((
+        data_offset_offsets,
+        buffers_total_sizes,
+        buffers_total_durations,
+    ))
 }
 
 fn write_mfhd(v: &mut Vec<u8>, cfg: &FragmentHeaderConfiguration) -> Result<(), Error> {
@@ -257,6 +358,10 @@ fn analyze_buffers(
         Option<u32>,
         // negative composition time offsets
         bool,
+        // total size
+        u32,
+        // total duration
+        u32,
     ),
     Error,
 > {
@@ -267,6 +372,9 @@ fn analyze_buffers(
     let mut size = None;
     let mut first_buffer_flags = None;
     let mut flags = None;
+
+    let mut total_size = 0u32;
+    let mut total_duration = 0u32;
 
     let mut negative_composition_time_offsets = false;
 
@@ -284,6 +392,7 @@ fn analyze_buffers(
         if Some(buffer.size() as u32) != size {
             tr_flags |= SAMPLE_SIZE_PRESENT;
         }
+        total_size += buffer.size() as u32;
 
         let sample_duration = u32::try_from(
             sample_duration
@@ -299,6 +408,7 @@ fn analyze_buffers(
         if Some(sample_duration) != duration {
             tr_flags |= SAMPLE_DURATION_PRESENT;
         }
+        total_duration += sample_duration as u32;
 
         let f = sample_flags_from_buffer(stream, buffer);
         if first_buffer_flags.is_none() {
@@ -364,6 +474,8 @@ fn analyze_buffers(
         duration,
         flags,
         negative_composition_time_offsets,
+        total_size,
+        total_duration,
     ))
 }
 
@@ -372,6 +484,8 @@ fn write_traf(
     v: &mut Vec<u8>,
     cfg: &FragmentHeaderConfiguration,
     data_offset_offsets: &mut Vec<usize>,
+    buffers_total_sizes: &mut Vec<u32>,
+    buffers_total_durations: &mut Vec<u32>,
     idx: usize,
     stream: &FragmentHeaderStream,
 ) -> Result<(), Error> {
@@ -386,6 +500,8 @@ fn write_traf(
         default_duration,
         default_flags,
         negative_composition_time_offsets,
+        total_size,
+        total_duration,
     ) = analyze_buffers(cfg, idx, stream, timescale)?;
 
     assert!((tf_flags & DEFAULT_SAMPLE_SIZE_PRESENT == 0) ^ default_size.is_some());
@@ -463,6 +579,8 @@ fn write_traf(
 
     // TODO: saio, saiz, sbgp, sgpd, subs?
 
+    buffers_total_sizes.push(total_size);
+    buffers_total_durations.push(total_duration);
     Ok(())
 }
 

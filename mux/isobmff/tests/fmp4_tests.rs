@@ -11,7 +11,7 @@ use gst::prelude::*;
 use mp4_atom::{Atom, ReadAtom as _, ReadFrom as _};
 use tempfile::tempdir;
 
-use std::{fs::File, path::Path, thread};
+use std::{fs::File, io::Seek as _, path::Path, thread};
 
 pub mod support;
 use support::{ExpectedConfiguration, check_ftyp_output, check_mvhd_sanity};
@@ -5168,4 +5168,133 @@ fn test_large_gop_split_at_fragment_boundary_chunked() {
     assert_eq!(ev.type_(), gst::EventType::Segment);
     let ev = h.pull_event().unwrap();
     assert_eq!(ev.type_(), gst::EventType::Eos);
+}
+
+#[test]
+fn test_fmp4_sidx_boxes() {
+    init();
+
+    let video_enc = "x264enc";
+    let filename = format!("frag_sidx_{video_enc}.mp4").to_string();
+    let temp_dir = tempdir().unwrap();
+    let temp_file_path = temp_dir.path().join(filename);
+    let location = temp_file_path.as_path();
+    let pipeline_text = format!(
+        "videotestsrc num-buffers=10 ! {video_enc} ! isofmp4mux write-sidx=true ! filesink location={location:?}"
+    );
+
+    let Ok(pipeline) = gst::parse::launch(&pipeline_text) else {
+        panic!("could not build encoding pipeline")
+    };
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("Unable to set the pipeline to the `Playing` state");
+    for msg in pipeline.bus().unwrap().iter_timed(gst::ClockTime::NONE) {
+        use gst::MessageView;
+
+        match msg.view() {
+            MessageView::Eos(..) => break,
+            MessageView::Error(err) => {
+                panic!(
+                    "Error from {:?}: {} ({:?})",
+                    err.src().map(|s| s.path_string()),
+                    err.error(),
+                    err.debug()
+                );
+            }
+            _ => (),
+        }
+    }
+    pipeline
+        .set_state(gst::State::Null)
+        .expect("Unable to set the pipeline to the `Null` state");
+
+    let mut input = File::open(location).unwrap();
+    let mut sidx_count = 0u32;
+    while let Ok(header) = mp4_atom::Header::read_from(&mut input) {
+        if header.kind == mp4_atom::Sidx::KIND {
+            let sidx = mp4_atom::Sidx::read_atom(&header, &mut input).unwrap();
+            assert_eq!(sidx.reference_id, 1);
+            assert!(sidx.timescale > 0);
+            assert_eq!(sidx.references.len(), 1);
+            let reference = &sidx.references[0];
+            assert!(!reference.reference_type);
+            assert!(reference.reference_size > 0);
+            assert!(reference.subsegment_duration > 0);
+            assert!(reference.starts_with_sap);
+            sidx_count += 1;
+        } else {
+            input
+                .seek(std::io::SeekFrom::Current(header.size.unwrap() as i64))
+                .unwrap();
+        }
+    }
+    assert!(
+        sidx_count > 0,
+        "expected at least one sidx box in the output file"
+    );
+}
+
+#[test]
+fn test_fmp4_sidx_disabled_in_chunk_mode() {
+    init();
+
+    let video_enc = "x264enc";
+    let filename = format!("frag_sidx_chunk_{video_enc}.mp4").to_string();
+    let temp_dir = tempdir().unwrap();
+    let temp_file_path = temp_dir.path().join(filename);
+    let location = temp_file_path.as_path();
+    let pipeline_text = format!(
+        "videotestsrc num-buffers=10 ! {video_enc} ! isofmp4mux name=mux write-sidx=true chunk-duration=1000000000 ! filesink location={location:?}"
+    );
+
+    let Ok(pipeline) = gst::parse::launch(&pipeline_text) else {
+        panic!("could not build encoding pipeline")
+    };
+    pipeline
+        .set_state(gst::State::Playing)
+        .expect("Unable to set the pipeline to the `Playing` state");
+    let mut got_warning = false;
+    for msg in pipeline.bus().unwrap().iter_timed(gst::ClockTime::NONE) {
+        use gst::MessageView;
+
+        match msg.view() {
+            MessageView::Eos(..) => break,
+            MessageView::Warning(w) => {
+                let debug = w.debug().unwrap_or_default();
+                if debug.contains("sidx") {
+                    got_warning = true;
+                }
+            }
+            MessageView::Error(err) => {
+                panic!(
+                    "Error from {:?}: {} ({:?})",
+                    err.src().map(|s| s.path_string()),
+                    err.error(),
+                    err.debug()
+                );
+            }
+            _ => (),
+        }
+    }
+    pipeline
+        .set_state(gst::State::Null)
+        .expect("Unable to set the pipeline to the `Null` state");
+
+    assert!(
+        got_warning,
+        "expected a warning about sidx not being supported in chunked mode"
+    );
+
+    let mut input = File::open(location).unwrap();
+    while let Ok(header) = mp4_atom::Header::read_from(&mut input) {
+        assert_ne!(
+            header.kind,
+            mp4_atom::Sidx::KIND,
+            "sidx box should not be present when chunk mode is active"
+        );
+        input
+            .seek(std::io::SeekFrom::Current(header.size.unwrap() as i64))
+            .unwrap();
+    }
 }
