@@ -94,6 +94,88 @@ fn test_audio_nonsinglesegment() {
     test_audio(false);
 }
 
+#[test]
+fn test_video_negotiate_framerate_fixed() {
+    init();
+
+    let mut h = gst_check::Harness::new("livesync");
+
+    let src_caps = gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(25, 1))
+        .build();
+    h.set_src_caps(src_caps.clone());
+
+    h.play();
+
+    let buffer = gst::Buffer::new();
+    assert!(h.push_and_pull(buffer).is_ok());
+
+    let current_caps = h
+        .sinkpad()
+        .expect("harness has no sinkpad")
+        .current_caps()
+        .expect("current caps missing");
+
+    assert_eq!(current_caps, src_caps);
+}
+
+#[test]
+fn test_video_negotiate_framerate_variable() {
+    init();
+
+    let mut h = gst_check::Harness::new("livesync");
+
+    let src_caps = gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(0, 1))
+        .field("max-framerate", gst::Fraction::new(30, 1))
+        .build();
+    h.set_src_caps(src_caps.clone());
+
+    h.play();
+
+    let buffer = gst::Buffer::new();
+    assert!(h.push_and_pull(buffer).is_ok());
+
+    let current_caps = h
+        .sinkpad()
+        .expect("harness has no sinkpad")
+        .current_caps()
+        .expect("current caps missing");
+
+    assert_eq!(current_caps, src_caps);
+}
+
+#[test]
+fn test_video_negotiate_framerate_downstream() {
+    init();
+
+    let mut h = gst_check::Harness::new("livesync");
+
+    let sink_caps = gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(60, 1))
+        .build();
+    h.set_sink_caps(sink_caps.clone());
+
+    let src_caps = gst::Caps::builder("video/x-raw")
+        .field("framerate", gst::Fraction::new(0, 1))
+        .field("max-framerate", gst::Fraction::new(60, 1))
+        .build();
+    h.set_src_caps(src_caps.clone());
+
+    h.play();
+
+    let buffer = gst::Buffer::new();
+    assert!(h.push_and_pull(buffer).is_ok());
+
+    let current_caps = h
+        .sinkpad()
+        .expect("harness has no sinkpad")
+        .current_caps()
+        .expect("current caps missing");
+
+    assert_eq!(current_caps, sink_caps);
+}
+
 fn test_video(singlesegment: bool) {
     init();
 
