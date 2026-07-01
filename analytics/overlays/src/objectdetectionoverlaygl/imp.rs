@@ -23,12 +23,11 @@ use gst_gl::prelude::*;
 use gst_gl::subclass::GLFilterMode;
 use gst_gl::subclass::prelude::*;
 
-use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex};
 
-use skia::gpu;
-
+use crate::glsupport::GpuState;
 use crate::objectdetectionoverlay::commands as od;
+use crate::overlay_intent::{LabelIntent, add_label_intents};
 use crate::render::{DrawCommand, replay_commands};
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -39,16 +38,6 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-const GL_TEXTURE_2D: u32 = 0x0DE1;
-const GL_RGBA8: u32 = 0x8058;
-
-/// skia's `DirectContext` is not `Send`/`Sync`, but it is only touched on the
-/// single GstGL streaming thread, so we assert it is safe to hold it.
-struct GpuState {
-    context: gpu::DirectContext,
-}
-unsafe impl Send for GpuState {}
-
 #[derive(Default)]
 pub struct ObjectDetectionOverlayGl {
     gpu: Mutex<Option<GpuState>>,
@@ -56,6 +45,9 @@ pub struct ObjectDetectionOverlayGl {
     dims: Mutex<(i32, i32)>,
     /// Draw commands for the current buffer, produced in `before_transform`.
     pending: Mutex<Vec<DrawCommand>>,
+    /// Deferred label intents for the current buffer (defer mode), emitted onto
+    /// the output buffer in `prepare_output_buffer`.
+    pending_labels: Mutex<Vec<LabelIntent>>,
     /// Rendering settings (the CPU element's `Settings`, reused), driven by the
     /// element's GObject properties.
     settings: Mutex<od::Settings>,
@@ -109,6 +101,16 @@ impl ObjectImpl for ObjectDetectionOverlayGl {
                     .default_value(d.tracking_outline_colors)
                     .mutable_playing()
                     .build(),
+                glib::ParamSpecBoolean::builder("defer-labels")
+                    .nick("Defer labels")
+                    .blurb(
+                        "Emit labels as deferred intents for a downstream overlaycompositorgl \
+                         instead of placing them here. Requires a compositor downstream, or the \
+                         labels are not drawn.",
+                    )
+                    .default_value(d.defer_labels)
+                    .mutable_playing()
+                    .build(),
                 crate::coordination::priority_param_spec(),
             ]
         });
@@ -127,6 +129,7 @@ impl ObjectImpl for ObjectDetectionOverlayGl {
             "labels-color" => settings.labels_color = value.get().expect(e),
             "filled-box" => settings.filled_box = value.get().expect(e),
             "tracking-outline-colors" => settings.tracking_outline_colors = value.get().expect(e),
+            "defer-labels" => settings.defer_labels = value.get().expect(e),
             "priority" => settings.priority = value.get().expect(e),
             _ => unimplemented!(),
         }
@@ -141,6 +144,7 @@ impl ObjectImpl for ObjectDetectionOverlayGl {
             "labels-color" => settings.labels_color.to_value(),
             "filled-box" => settings.filled_box.to_value(),
             "tracking-outline-colors" => settings.tracking_outline_colors.to_value(),
+            "defer-labels" => settings.defer_labels.to_value(),
             "priority" => settings.priority.to_value(),
             _ => unimplemented!(),
         }
@@ -172,21 +176,24 @@ impl BaseTransformImpl for ObjectDetectionOverlayGl {
     // draw commands here, then replay them on the GPU in `filter_texture`.
     fn before_transform(&self, inbuf: &gst::BufferRef) {
         let (width, height) = *self.dims.lock().unwrap();
-        let commands = if width > 0 && height > 0 {
+        let (commands, deferred) = if width > 0 && height > 0 {
             let bounds = od::FrameBounds { width, height };
             let settings = *self.settings.lock().unwrap();
-            let (_frame, commands) = od::analytics_to_draw_commands(inbuf, settings, bounds);
-            commands
+            // In defer mode `analytics_to_overlay` returns anchored commands plus
+            // label intents; otherwise the labels are placed into `commands`.
+            let (_frame, commands, deferred) = od::analytics_to_overlay(inbuf, settings, bounds);
+            (commands, deferred)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         *self.pending.lock().unwrap() = commands;
+        *self.pending_labels.lock().unwrap() = deferred;
         self.parent_before_transform(inbuf);
     }
 
-    // `before_transform` (above) runs first and fills `pending`; this runs next
-    // and yields the output buffer, so we publish what we drew as claims here
-    // (mirroring the CPU element) for downstream overlays to avoid.
+    // `before_transform` (above) runs first and fills `pending`/`pending_labels`;
+    // this runs next and yields the output buffer, so we publish our claims and
+    // (in defer mode) our label intents here for the downstream compositor.
     fn prepare_output_buffer(
         &self,
         inbuf: InputBuffer,
@@ -194,9 +201,20 @@ impl BaseTransformImpl for ObjectDetectionOverlayGl {
         let success = self.parent_prepare_output_buffer(inbuf)?;
         if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
             let commands = self.pending.lock().unwrap().clone();
+            let deferred = self.pending_labels.lock().unwrap().clone();
             let priority = self.settings.lock().unwrap().priority;
-            if let (false, Some(buffer)) = (commands.is_empty(), outbuf.get_mut()) {
-                crate::coordination::claim_commands(buffer, &commands, od::OVERLAY_OWNER, priority);
+            if let Some(buffer) = outbuf.get_mut() {
+                if !commands.is_empty() {
+                    crate::coordination::claim_commands(
+                        buffer,
+                        &commands,
+                        od::OVERLAY_OWNER,
+                        priority,
+                    );
+                }
+                if !deferred.is_empty() {
+                    add_label_intents(buffer, &deferred);
+                }
             }
             return Ok(PrepareOutputBufferSuccess::Buffer(outbuf));
         }
@@ -217,18 +235,13 @@ impl GLBaseFilterImpl for ObjectDetectionOverlayGl {
     }
 
     fn gl_start(&self) -> Result<(), gst::LoggableError> {
-        let filter = self.obj();
-        let context = GLBaseFilterExt::context(&*filter)
+        let context = GLBaseFilterExt::context(&*self.obj())
             .ok_or_else(|| gst::loggable_error!(CAT, "no GL context"))?;
-
-        let interface =
-            gpu::gl::Interface::new_load_with(|name| context.proc_address(name) as *const c_void)
-                .ok_or_else(|| gst::loggable_error!(CAT, "failed to create skia GL interface"))?;
-        let gr = gpu::direct_contexts::make_gl(interface, None)
+        let gpu = GpuState::new(&context)
             .ok_or_else(|| gst::loggable_error!(CAT, "failed to create skia GL context"))?;
 
         gst::info!(CAT, imp = self, "skia GPU context created");
-        *self.gpu.lock().unwrap() = Some(GpuState { context: gr });
+        *self.gpu.lock().unwrap() = Some(gpu);
         self.parent_gl_start()
     }
 
@@ -249,61 +262,15 @@ impl GLFilterImpl for ObjectDetectionOverlayGl {
         let commands = self.pending.lock().unwrap().clone();
 
         let mut guard = self.gpu.lock().unwrap();
-        let Some(state) = guard.as_mut() else {
+        let Some(gpu) = guard.as_mut() else {
             return Err(gst::loggable_error!(CAT, "no GPU context"));
         };
-        let ctx = &mut state.context;
-
-        let width = output.texture_width();
-        let height = output.texture_height();
-
-        ctx.reset(None);
-
-        let out_info = gpu::gl::TextureInfo {
-            target: GL_TEXTURE_2D,
-            id: output.texture_id(),
-            format: GL_RGBA8,
-            protected: gpu::Protected::No,
-        };
-        let out_bt = unsafe {
-            gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, out_info, "od-out")
-        };
-        let Some(mut surface) = gpu::surfaces::wrap_backend_texture(
-            ctx,
-            &out_bt,
-            gpu::SurfaceOrigin::TopLeft,
-            None,
-            skia::ColorType::RGBA8888,
-            None,
-            None,
-        ) else {
-            return Err(gst::loggable_error!(CAT, "wrap_backend_texture failed"));
-        };
-
-        let in_info = gpu::gl::TextureInfo {
-            target: GL_TEXTURE_2D,
-            id: input.texture_id(),
-            format: GL_RGBA8,
-            protected: gpu::Protected::No,
-        };
-        let in_bt = unsafe {
-            gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, in_info, "od-in")
-        };
-        let canvas = surface.canvas();
-        if let Some(image) = gpu::images::borrow_texture_from(
-            ctx,
-            &in_bt,
-            gpu::SurfaceOrigin::TopLeft,
-            skia::ColorType::RGBA8888,
-            skia::AlphaType::Premul,
-            None,
-        ) {
-            canvas.draw_image(&image, (0, 0), None);
+        if gpu.render_to_texture(input, output, "od", |canvas| {
+            replay_commands(canvas, &commands);
+        }) {
+            Ok(())
+        } else {
+            Err(gst::loggable_error!(CAT, "wrap_backend_texture failed"))
         }
-
-        replay_commands(canvas, &commands);
-
-        ctx.flush_and_submit();
-        Ok(())
     }
 }

@@ -22,13 +22,11 @@ use gst_gl::prelude::*;
 use gst_gl::subclass::GLFilterMode;
 use gst_gl::subclass::prelude::*;
 
-use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex};
-
-use skia::gpu;
 
 use crate::coordination::{ClaimedRegion, add_claimed_regions};
 use crate::geometry::Rect;
+use crate::glsupport::GpuState;
 use crate::segmentationoverlay::masks as seg;
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -39,9 +37,6 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
-const GL_TEXTURE_2D: u32 = 0x0DE1;
-const GL_RGBA8: u32 = 0x8058;
-
 /// A colorized mask uploaded as a skia image, with its destination rect (in skia
 /// coordinates for compositing, and in frame coordinates for claiming).
 struct PendingLayer {
@@ -49,11 +44,6 @@ struct PendingLayer {
     dst: skia::Rect,
     claim: Rect,
 }
-
-struct GpuState {
-    context: gpu::DirectContext,
-}
-unsafe impl Send for GpuState {}
 
 #[derive(Default)]
 pub struct SegmentationOverlayGl {
@@ -222,18 +212,13 @@ impl GLBaseFilterImpl for SegmentationOverlayGl {
     }
 
     fn gl_start(&self) -> Result<(), gst::LoggableError> {
-        let filter = self.obj();
-        let context = GLBaseFilterExt::context(&*filter)
+        let context = GLBaseFilterExt::context(&*self.obj())
             .ok_or_else(|| gst::loggable_error!(CAT, "no GL context"))?;
-
-        let interface =
-            gpu::gl::Interface::new_load_with(|name| context.proc_address(name) as *const c_void)
-                .ok_or_else(|| gst::loggable_error!(CAT, "failed to create skia GL interface"))?;
-        let gr = gpu::direct_contexts::make_gl(interface, None)
+        let gpu = GpuState::new(&context)
             .ok_or_else(|| gst::loggable_error!(CAT, "failed to create skia GL context"))?;
 
         gst::info!(CAT, imp = self, "skia GPU context created");
-        *self.gpu.lock().unwrap() = Some(GpuState { context: gr });
+        *self.gpu.lock().unwrap() = Some(gpu);
         self.parent_gl_start()
     }
 
@@ -254,65 +239,20 @@ impl GLFilterImpl for SegmentationOverlayGl {
         let layers = std::mem::take(&mut *self.pending.lock().unwrap());
 
         let mut guard = self.gpu.lock().unwrap();
-        let Some(state) = guard.as_mut() else {
+        let Some(gpu) = guard.as_mut() else {
             return Err(gst::loggable_error!(CAT, "no GPU context"));
         };
-        let ctx = &mut state.context;
-
-        let width = output.texture_width();
-        let height = output.texture_height();
-
-        ctx.reset(None);
-
-        let out_info = gpu::gl::TextureInfo {
-            target: GL_TEXTURE_2D,
-            id: output.texture_id(),
-            format: GL_RGBA8,
-            protected: gpu::Protected::No,
-        };
-        let out_bt = unsafe {
-            gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, out_info, "seg-out")
-        };
-        let Some(mut surface) = gpu::surfaces::wrap_backend_texture(
-            ctx,
-            &out_bt,
-            gpu::SurfaceOrigin::TopLeft,
-            None,
-            skia::ColorType::RGBA8888,
-            None,
-            None,
-        ) else {
-            return Err(gst::loggable_error!(CAT, "wrap_backend_texture failed"));
-        };
-
-        let in_info = gpu::gl::TextureInfo {
-            target: GL_TEXTURE_2D,
-            id: input.texture_id(),
-            format: GL_RGBA8,
-            protected: gpu::Protected::No,
-        };
-        let in_bt = unsafe {
-            gpu::backend_textures::make_gl((width, height), gpu::Mipmapped::No, in_info, "seg-in")
-        };
-        let canvas = surface.canvas();
-        if let Some(image) = gpu::images::borrow_texture_from(
-            ctx,
-            &in_bt,
-            gpu::SurfaceOrigin::TopLeft,
-            skia::ColorType::RGBA8888,
-            skia::AlphaType::Premul,
-            None,
-        ) {
-            canvas.draw_image(&image, (0, 0), None);
+        let drawn = gpu.render_to_texture(input, output, "seg", |canvas| {
+            // Composite each colorized mask, GPU-scaling it to its dst rect.
+            let paint = skia::Paint::default();
+            for layer in &layers {
+                canvas.draw_image_rect(&layer.image, None, layer.dst, &paint);
+            }
+        });
+        if drawn {
+            Ok(())
+        } else {
+            Err(gst::loggable_error!(CAT, "wrap_backend_texture failed"))
         }
-
-        // Composite each colorized mask, GPU-scaling it to its destination rect.
-        let paint = skia::Paint::default();
-        for layer in &layers {
-            canvas.draw_image_rect(&layer.image, None, layer.dst, &paint);
-        }
-
-        ctx.flush_and_submit();
-        Ok(())
     }
 }

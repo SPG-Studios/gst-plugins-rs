@@ -243,7 +243,24 @@ pub fn seed_registry_from_claims(
     skip_owner: &str,
     self_priority: i32,
 ) {
-    for region in claimed_regions(buffer) {
+    seed_registry_from_regions(
+        registry,
+        &claimed_regions(buffer),
+        skip_owner,
+        self_priority,
+    );
+}
+
+/// Like [`seed_registry_from_claims`] but seeds from an already-read slice of
+/// regions. Used by the compositor, which reads the claims once and then seeds a
+/// fresh registry per label (at that label's priority).
+pub fn seed_registry_from_regions(
+    registry: &mut OccupiedRegionRegistry,
+    regions: &[ClaimedRegion],
+    skip_owner: &str,
+    self_priority: i32,
+) {
+    for region in regions {
         if region.owner == skip_owner || region.priority < self_priority {
             continue;
         }

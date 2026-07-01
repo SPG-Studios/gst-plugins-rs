@@ -17,6 +17,8 @@ use gst::glib;
 mod color;
 mod coordination;
 mod geometry;
+#[cfg(feature = "gl")]
+mod glsupport;
 pub mod hooks;
 mod keypointsoverlay;
 #[cfg(feature = "gl")]
@@ -25,6 +27,10 @@ mod lifecycle;
 mod objectdetectionoverlay;
 #[cfg(feature = "gl")]
 mod objectdetectionoverlaygl;
+mod overlay_intent;
+mod overlaycompositor;
+#[cfg(feature = "gl")]
+mod overlaycompositorgl;
 mod placement;
 mod render;
 mod segmentationoverlay;
@@ -38,16 +44,22 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     // Register the cross-element claimed-region meta so overlay elements can
     // coordinate placement (see the `coordination` module).
     coordination::register();
+    // Register the deferred label-intent meta used by the compositor (deferred
+    // label rendering).
+    overlay_intent::register();
 
     objectdetectionoverlay::register(plugin)?;
     segmentationoverlay::register(plugin)?;
     keypointsoverlay::register(plugin)?;
+    overlaycompositor::register(plugin)?;
     #[cfg(feature = "gl")]
     objectdetectionoverlaygl::register(plugin)?;
     #[cfg(feature = "gl")]
     segmentationoverlaygl::register(plugin)?;
     #[cfg(feature = "gl")]
     keypointsoverlaygl::register(plugin)?;
+    #[cfg(feature = "gl")]
+    overlaycompositorgl::register(plugin)?;
     Ok(())
 }
 

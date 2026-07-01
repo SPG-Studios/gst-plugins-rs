@@ -181,6 +181,10 @@ fn main() {
         )
         .build()
         .unwrap();
+    // A third arg "defer" exercises deferred rendering: the overlay emits label
+    // intents and a GL compositor places + renders them.
+    let defer = args.get(3).map(|s| s == "defer").unwrap_or(false);
+
     let glupload = gst::ElementFactory::make("glupload").build().unwrap();
     let overlay = gst::ElementFactory::make(factory).build().unwrap();
     if factory.contains("keypoint") {
@@ -188,6 +192,14 @@ fn main() {
         overlay.set_property("draw-skeleton", true);
         overlay.set_property("semantic-tag", HAND_KP_21_TAG);
     }
+    if defer {
+        overlay.set_property("defer-labels", true);
+    }
+    let compositor = defer.then(|| {
+        gst::ElementFactory::make("overlaycompositorgl")
+            .build()
+            .unwrap()
+    });
     let gldownload = gst::ElementFactory::make("gldownload").build().unwrap();
     let convert = gst::ElementFactory::make("videoconvert").build().unwrap();
     let pngenc = gst::ElementFactory::make("pngenc").build().unwrap();
@@ -196,29 +208,14 @@ fn main() {
         .build()
         .unwrap();
 
-    pipeline
-        .add_many([
-            &src,
-            &capsfilter,
-            &glupload,
-            &overlay,
-            &gldownload,
-            &convert,
-            &pngenc,
-            &sink,
-        ])
-        .unwrap();
-    gst::Element::link_many([
-        &src,
-        &capsfilter,
-        &glupload,
-        &overlay,
-        &gldownload,
-        &convert,
-        &pngenc,
-        &sink,
-    ])
-    .unwrap();
+    let mut elements: Vec<&gst::Element> = vec![&src, &capsfilter, &glupload, &overlay];
+    if let Some(compositor) = &compositor {
+        elements.push(compositor);
+    }
+    elements.extend([&gldownload, &convert, &pngenc, &sink]);
+
+    pipeline.add_many(elements.iter().copied()).unwrap();
+    gst::Element::link_many(elements).unwrap();
 
     // Attach detection metadata to the buffer entering the overlay.
     let pad = overlay.static_pad("sink").unwrap();

@@ -20,10 +20,11 @@ use crate::lifecycle::{LifecycleEventKind, OverlayLifecycle, lifecycle_event_kin
 use crate::render::{AnalyticsFrame, DrawCommand, RenderContext};
 
 use super::commands::{
-    DEFAULT_DRAW_LABELS, DEFAULT_DRAW_TRACKING_LABELS, DEFAULT_EXPIRE_OVERLAY, DEFAULT_FILLED_BOX,
-    DEFAULT_LABELS_COLOR, DEFAULT_OBJECT_DETECTION_OUTLINE_COLOR, DEFAULT_RENDER_ENABLED,
+    DEFAULT_DEFER_LABELS, DEFAULT_DRAW_LABELS, DEFAULT_DRAW_TRACKING_LABELS,
+    DEFAULT_EXPIRE_OVERLAY, DEFAULT_FILLED_BOX, DEFAULT_LABELS_COLOR,
+    DEFAULT_OBJECT_DETECTION_OUTLINE_COLOR, DEFAULT_RENDER_ENABLED,
     DEFAULT_SUPPRESS_BUILTIN_RENDERING, DEFAULT_TRACKING_OUTLINE_COLORS, FrameBounds,
-    OVERLAY_OWNER, Settings, analytics_to_draw_commands,
+    OVERLAY_OWNER, Settings, analytics_to_overlay,
 };
 
 use std::sync::{LazyLock, Mutex};
@@ -397,6 +398,16 @@ impl ObjectImpl for ObjectDetectionOverlay {
                     .default_value(DEFAULT_SUPPRESS_BUILTIN_RENDERING)
                     .mutable_playing()
                     .build(),
+                glib::ParamSpecBoolean::builder("defer-labels")
+                    .nick("Defer labels")
+                    .blurb(
+                        "Emit labels as deferred intents for a downstream overlaycompositor \
+                         (which relocates them globally by priority) instead of placing them \
+                         here. Requires a compositor downstream, or the labels are not drawn.",
+                    )
+                    .default_value(DEFAULT_DEFER_LABELS)
+                    .mutable_playing()
+                    .build(),
                 crate::coordination::priority_param_spec(),
             ]
         });
@@ -461,6 +472,10 @@ impl ObjectImpl for ObjectDetectionOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.priority = value.get().expect("type checked upstream");
             }
+            "defer-labels" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.defer_labels = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -506,6 +521,10 @@ impl ObjectImpl for ObjectDetectionOverlay {
             "priority" => {
                 let settings = self.settings.lock().unwrap();
                 settings.priority.to_value()
+            }
+            "defer-labels" => {
+                let settings = self.settings.lock().unwrap();
+                settings.defer_labels.to_value()
             }
             _ => unimplemented!(),
         }
@@ -626,8 +645,8 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
         let running_time = self.buffer_running_time(buffer);
         let has_meta = buffer.meta::<AnalyticsRelationMeta>().is_some();
 
-        let (analytics, commands) = if has_meta {
-            let (analytics, commands) = analytics_to_draw_commands(
+        let (analytics, commands, deferred_labels) = if has_meta {
+            let (analytics, commands, deferred_labels) = analytics_to_overlay(
                 buffer,
                 settings,
                 FrameBounds {
@@ -639,7 +658,7 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
             cache.analytics = analytics.clone();
             cache.commands = commands.clone();
             cache.last_update_running_time = running_time;
-            (analytics, commands)
+            (analytics, commands, deferred_labels)
         } else {
             let mut cache = self.overlay_cache.lock().unwrap();
             if should_reuse_cached_overlay(
@@ -647,12 +666,12 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
                 cache.last_update_running_time,
                 settings.expire_overlay,
             ) {
-                (cache.analytics.clone(), cache.commands.clone())
+                (cache.analytics.clone(), cache.commands.clone(), Vec::new())
             } else {
                 cache.analytics = AnalyticsFrame::default();
                 cache.commands.clear();
                 cache.last_update_running_time = None;
-                (AnalyticsFrame::default(), Vec::new())
+                (AnalyticsFrame::default(), Vec::new(), Vec::new())
             }
         };
 
@@ -700,6 +719,14 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
                 OVERLAY_OWNER,
                 settings.priority,
             );
+        }
+
+        // In defer mode, hand our labels to a downstream compositor to place and
+        // render (we drew only the anchored content above).
+        if !deferred_labels.is_empty() {
+            // SAFETY: the frame is writable and uniquely borrowed here.
+            let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
+            crate::overlay_intent::add_label_intents(buffer, &deferred_labels);
         }
 
         Ok(gst::FlowSuccess::Ok)
