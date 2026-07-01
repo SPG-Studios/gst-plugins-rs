@@ -17,7 +17,10 @@ use gst_analytics::{
 
 use crate::color::generate_track_color_argb;
 use crate::geometry::{OccupiedRegionRegistry, Rect};
-use crate::placement::{LabelPlacement, leader_endpoints, place_label, push_leader_line};
+use crate::overlay_intent::{CandidateKind, LabelIntent};
+use crate::placement::{
+    LabelPlacement, box_label_candidates, leader_endpoints, place_label, push_leader_line,
+};
 use crate::render::{
     AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, measure_label_text_width,
 };
@@ -34,6 +37,7 @@ pub(crate) const DEFAULT_FILLED_BOX: bool = false;
 pub(crate) const DEFAULT_EXPIRE_OVERLAY: u64 = 1_000_000_000;
 pub(crate) const DEFAULT_TRACKING_OUTLINE_COLORS: bool = true;
 pub(crate) const DEFAULT_SUPPRESS_BUILTIN_RENDERING: bool = false;
+pub(crate) const DEFAULT_DEFER_LABELS: bool = false;
 // Color generation constants for track coloring (HSV space)
 const TRACK_COLOR_SATURATION: f32 = 0.85;
 const TRACK_COLOR_VALUE: f32 = 0.95;
@@ -55,6 +59,9 @@ pub(crate) struct Settings {
     pub(crate) suppress_builtin_rendering: bool,
     /// Cross-element priority (see [`crate::coordination`]).
     pub(crate) priority: i32,
+    /// When set, emit labels as deferred intents for a downstream compositor
+    /// (see [`crate::overlay_intent`]) instead of placing/rendering them here.
+    pub(crate) defer_labels: bool,
 }
 
 impl Default for Settings {
@@ -70,6 +77,7 @@ impl Default for Settings {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         }
     }
 }
@@ -128,10 +136,6 @@ struct BBox {
     h: i32,
 }
 
-/// Offset of the far (extended) ring of label candidates from the box, added on
-/// top of [`LABEL_LAYOUT_GAP`].
-const LABEL_CANDIDATE_EXT: i32 = 12;
-
 fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
     let text_width = measure_label_text_width(text);
     Rect::from_xywh(
@@ -142,37 +146,6 @@ fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
     )
 }
 
-/// Fallback label regions around a detection box, ordered near ring then far
-/// ring (above, below, right, left in each). Object labels are drawn at the
-/// bottom-left of their rectangle, so the baseline anchor `y` maps to the
-/// rectangle bottom.
-fn box_label_candidates(bbox: BBox, label_w: i32) -> Vec<Rect> {
-    let h = LABEL_LAYOUT_HEIGHT;
-    let rect_at =
-        |x: i32, baseline_y: i32| Rect::from_xywh(x, baseline_y.saturating_sub(h), label_w, h);
-
-    let right_x = bbox.x.saturating_add(bbox.w);
-    let left_x = bbox.x.saturating_sub(label_w);
-    // Side labels sit one line below the box top so they don't overhang it.
-    let side_y = bbox.y.saturating_add(h);
-    let box_bottom = bbox.y.saturating_add(bbox.h);
-
-    [
-        LABEL_LAYOUT_GAP,
-        LABEL_LAYOUT_GAP.saturating_add(LABEL_CANDIDATE_EXT),
-    ]
-    .into_iter()
-    .flat_map(|off| {
-        [
-            rect_at(bbox.x, bbox.y.saturating_sub(off).max(h)), // above
-            rect_at(bbox.x, box_bottom.saturating_add(h).saturating_add(off)), // below
-            rect_at(right_x.saturating_add(off), side_y),       // right
-            rect_at(left_x.saturating_sub(off), side_y),        // left
-        ]
-    })
-    .collect()
-}
-
 fn place_od_label(
     registry: &mut OccupiedRegionRegistry,
     bbox: BBox,
@@ -181,7 +154,8 @@ fn place_od_label(
     preferred_y: i32,
 ) -> Option<LabelPlacement> {
     let default = estimate_label_rect(preferred_x, preferred_y, text);
-    let candidates = box_label_candidates(bbox, measure_label_text_width(text));
+    let box_rect = Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h);
+    let candidates = box_label_candidates(box_rect, measure_label_text_width(text));
 
     place_label(registry, default, &candidates)
 }
@@ -208,13 +182,17 @@ fn push_od_label(
     });
 }
 
-pub(crate) fn analytics_to_draw_commands(
+/// Build the object-detection overlay for `buffer`: the anchored draw commands
+/// (boxes) plus, depending on [`Settings::defer_labels`], either placed label
+/// commands (local mode) or a list of deferred [`LabelIntent`]s for a downstream
+/// compositor (defer mode; the returned commands then contain only boxes).
+pub(crate) fn analytics_to_overlay(
     buffer: &gst::BufferRef,
     settings: Settings,
     bounds: FrameBounds,
-) -> (AnalyticsFrame<'static>, Vec<DrawCommand>) {
+) -> (AnalyticsFrame<'static>, Vec<DrawCommand>, Vec<LabelIntent>) {
     let Some(meta) = buffer.meta::<AnalyticsRelationMeta>() else {
-        return (AnalyticsFrame::default(), Vec::new());
+        return (AnalyticsFrame::default(), Vec::new(), Vec::new());
     };
 
     let mut commands = Vec::new();
@@ -325,23 +303,38 @@ pub(crate) fn analytics_to_draw_commands(
         }
     }
 
-    // Pass 2: place labels now that every box is registered, so they avoid all
-    // boxes and render on top of them.
-    for job in pending_labels {
-        if let Some(placement) = place_od_label(
-            &mut occupied,
-            job.bbox,
-            &job.text,
-            job.preferred_x,
-            job.preferred_y,
-        ) {
-            push_od_label(
-                &mut commands,
-                placement,
-                job.text,
-                job.box_rect,
-                settings.labels_color,
-            );
+    // Pass 2: either place the labels locally now that every box is registered
+    // (so they avoid all boxes), or defer them as intents for the compositor.
+    let mut deferred = Vec::new();
+    if settings.defer_labels {
+        for job in pending_labels {
+            deferred.push(LabelIntent {
+                preferred: estimate_label_rect(job.preferred_x, job.preferred_y, &job.text),
+                anchor: job.box_rect,
+                text: job.text,
+                color: settings.labels_color,
+                kind: CandidateKind::Box,
+                priority: settings.priority,
+                owner: OVERLAY_OWNER.to_string(),
+            });
+        }
+    } else {
+        for job in pending_labels {
+            if let Some(placement) = place_od_label(
+                &mut occupied,
+                job.bbox,
+                &job.text,
+                job.preferred_x,
+                job.preferred_y,
+            ) {
+                push_od_label(
+                    &mut commands,
+                    placement,
+                    job.text,
+                    job.box_rect,
+                    settings.labels_color,
+                );
+            }
         }
     }
 
@@ -351,7 +344,20 @@ pub(crate) fn analytics_to_draw_commands(
             ..Default::default()
         },
         commands,
+        deferred,
     )
+}
+
+/// Local-mode convenience used by the unit tests: the placed overlay commands
+/// only (deferred intents dropped). Production code calls [`analytics_to_overlay`].
+#[cfg(test)]
+fn analytics_to_draw_commands(
+    buffer: &gst::BufferRef,
+    settings: Settings,
+    bounds: FrameBounds,
+) -> (AnalyticsFrame<'static>, Vec<DrawCommand>) {
+    let (frame, commands, _deferred) = analytics_to_overlay(buffer, settings, bounds);
+    (frame, commands)
 }
 
 #[cfg(test)]
@@ -394,6 +400,7 @@ mod tests {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         };
 
         let (analytics, commands) =
@@ -462,6 +469,7 @@ mod tests {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         };
 
         let (analytics, commands) =
@@ -512,6 +520,7 @@ mod tests {
             tracking_outline_colors: true,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         };
 
         let (_, commands) =
@@ -552,6 +561,7 @@ mod tests {
             tracking_outline_colors: DEFAULT_TRACKING_OUTLINE_COLORS,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         };
 
         let (_, commands) =
@@ -575,6 +585,43 @@ mod tests {
 
         assert_eq!(analytics.object_count, 0);
         assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn defer_labels_emits_intents_instead_of_drawing_text() {
+        gst::init().unwrap();
+
+        let mut buffer = gst::Buffer::new();
+        {
+            let mut relation = AnalyticsRelationMeta::add(buffer.make_mut());
+            relation
+                .add_od_mtd(glib::Quark::from_str("person"), 12, 24, 48, 64, 0.85)
+                .unwrap();
+        }
+
+        let settings = Settings {
+            render_enabled: true,
+            draw_labels: true,
+            defer_labels: true,
+            ..Settings::default()
+        };
+        let (_, commands, deferred) =
+            analytics_to_overlay(buffer.as_ref(), settings, test_frame_bounds());
+
+        // The box is still drawn, but the label is deferred rather than placed.
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, DrawCommand::Rectangle { .. }))
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| matches!(c, DrawCommand::Text { .. }))
+        );
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].kind, CandidateKind::Box);
+        assert_eq!(deferred[0].text, "person (c=0.85)");
     }
 
     #[test]
@@ -608,6 +655,7 @@ mod tests {
             tracking_outline_colors: false,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         };
 
         let (_, commands) =

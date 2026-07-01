@@ -15,6 +15,7 @@ use gst_analytics::{
 };
 
 use crate::geometry::{OccupiedRegionRegistry, Rect};
+use crate::overlay_intent::{CandidateKind, LabelIntent};
 use crate::placement::{
     LabelPlacement, leader_endpoints, place_label, point_label_candidates, push_leader_line,
 };
@@ -37,6 +38,7 @@ pub(crate) const DEFAULT_DRAW_SKELETON: bool = false;
 pub(crate) const DEFAULT_SKELETON_COLOR: u32 = 0xFF00_FF00;
 pub(crate) const DEFAULT_SKELETON_LINE_WIDTH: f64 = 2.0;
 pub(crate) const DEFAULT_SUPPRESS_BUILTIN_RENDERING: bool = false;
+pub(crate) const DEFAULT_DEFER_LABELS: bool = false;
 
 pub(crate) static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
@@ -60,6 +62,9 @@ pub(crate) struct Settings {
     pub(crate) suppress_builtin_rendering: bool,
     /// Cross-element priority (see [`crate::coordination`]).
     pub(crate) priority: i32,
+    /// When set, emit labels as deferred intents for a downstream compositor
+    /// (see [`crate::overlay_intent`]) instead of placing/rendering them here.
+    pub(crate) defer_labels: bool,
 }
 
 impl Default for Settings {
@@ -76,6 +81,7 @@ impl Default for Settings {
             semantic_tag: None,
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            defer_labels: DEFAULT_DEFER_LABELS,
         }
     }
 }
@@ -120,6 +126,20 @@ fn confidence_label(confidence: f32) -> String {
     format!("{confidence:.2}")
 }
 
+/// A keypoint label's preferred (default) rect: centered horizontally, sitting
+/// just above the keypoint.
+fn keypoint_label_default(sample: KeypointSample, label_w: i32) -> Rect {
+    Rect::from_xywh(
+        sample.x.saturating_sub(label_w / 2),
+        sample
+            .y
+            .saturating_sub(LABEL_LAYOUT_HEIGHT)
+            .saturating_sub(LABEL_LAYOUT_GAP),
+        label_w,
+        LABEL_LAYOUT_HEIGHT,
+    )
+}
+
 /// Place a keypoint's confidence label: preferred just above the keypoint, with
 /// the shared candidate ring as fallbacks.
 fn place_keypoint_label(
@@ -128,22 +148,25 @@ fn place_keypoint_label(
     text: &str,
 ) -> Option<LabelPlacement> {
     let label_w = measure_centered_label_text_width(text);
-    let label_h = LABEL_LAYOUT_HEIGHT;
-
-    // Default: centered horizontally, sitting just above the keypoint.
-    let default = Rect::from_xywh(
-        sample.x.saturating_sub(label_w / 2),
-        sample
-            .y
-            .saturating_sub(label_h)
-            .saturating_sub(LABEL_LAYOUT_GAP),
-        label_w,
-        label_h,
-    );
-
-    let candidates = point_label_candidates(sample.x, sample.y, label_w, label_h);
+    let default = keypoint_label_default(sample, label_w);
+    let candidates = point_label_candidates(sample.x, sample.y, label_w, LABEL_LAYOUT_HEIGHT);
 
     place_label(registry, default, &candidates)
+}
+
+/// Build a deferred intent for a keypoint label, with the same preferred rect
+/// `place_keypoint_label` would use, so a compositor reproduces its placement.
+fn keypoint_label_intent(sample: KeypointSample, text: String, settings: &Settings) -> LabelIntent {
+    let label_w = measure_centered_label_text_width(&text);
+    LabelIntent {
+        preferred: keypoint_label_default(sample, label_w),
+        anchor: Rect::from_xywh(sample.x, sample.y, 0, 0),
+        text,
+        color: settings.labels_color,
+        kind: CandidateKind::Point,
+        priority: settings.priority,
+        owner: OVERLAY_OWNER.to_string(),
+    }
 }
 
 /// Draw a keypoint's label at its placed position, with a leader line back to
@@ -179,6 +202,8 @@ struct KeypointCommandContext<'a> {
     meta: &'a gst::MetaRef<'a, AnalyticsRelationMeta>,
     bounds: FrameBounds,
     occupied: &'a mut OccupiedRegionRegistry,
+    /// In defer mode, labels are collected here as intents instead of placed.
+    deferred: &'a mut Vec<LabelIntent>,
 }
 
 fn push_keypoint_commands(
@@ -230,35 +255,34 @@ fn push_keypoints(
         return;
     }
 
-    // Pass 2: labels, now avoiding every marker registered above.
+    // Pass 2: labels, now avoiding every marker registered above. In defer mode
+    // collect them as intents for a downstream compositor instead of placing.
+    let mut emit_label = |ctx: &mut KeypointCommandContext<'_>, sample: KeypointSample| {
+        let label = confidence_label(sample.confidence);
+        if ctx.settings.defer_labels {
+            ctx.deferred
+                .push(keypoint_label_intent(sample, label, ctx.settings));
+        } else if let Some(placement) = place_keypoint_label(ctx.occupied, sample, &label) {
+            push_keypoint_label(
+                commands,
+                placement,
+                sample,
+                label,
+                ctx.settings.labels_color,
+            );
+        }
+    };
+
     if ctx.draw_group_label_once {
         if let Some(sample) = first_in_frame {
-            let label = confidence_label(sample.confidence);
-            if let Some(placement) = place_keypoint_label(ctx.occupied, sample, &label) {
-                push_keypoint_label(
-                    commands,
-                    placement,
-                    sample,
-                    label,
-                    ctx.settings.labels_color,
-                );
-            }
+            emit_label(ctx, sample);
         }
     } else {
         for sample in samples {
             if !keypoint_in_frame(ctx.bounds, sample.x, sample.y) {
                 continue;
             }
-            let label = confidence_label(sample.confidence);
-            if let Some(placement) = place_keypoint_label(ctx.occupied, *sample, &label) {
-                push_keypoint_label(
-                    commands,
-                    placement,
-                    *sample,
-                    label,
-                    ctx.settings.labels_color,
-                );
-            }
+            emit_label(ctx, *sample);
         }
     }
 }
@@ -417,16 +441,21 @@ fn renderer_for_tag(semantic_tag: Option<&str>) -> &'static dyn GroupRenderer {
     }
 }
 
-pub(crate) fn analytics_to_draw_commands(
+/// Build the keypoints overlay for `buffer`: anchored draw commands (markers and
+/// skeleton) plus, depending on [`Settings::defer_labels`], either placed label
+/// commands (local mode) or a list of deferred [`LabelIntent`]s for a downstream
+/// compositor (defer mode; the returned commands then contain no labels).
+pub(crate) fn analytics_to_overlay(
     buffer: &gst::BufferRef,
     settings: &Settings,
     bounds: FrameBounds,
-) -> (AnalyticsFrame<'static>, Vec<DrawCommand>) {
+) -> (AnalyticsFrame<'static>, Vec<DrawCommand>, Vec<LabelIntent>) {
     let Some(meta) = buffer.meta::<AnalyticsRelationMeta>() else {
-        return (AnalyticsFrame::default(), Vec::new());
+        return (AnalyticsFrame::default(), Vec::new(), Vec::new());
     };
 
     let mut commands = Vec::new();
+    let mut deferred = Vec::new();
     let mut keypoint_count = 0usize;
     let mut occupied = OccupiedRegionRegistry::new(bounds.width, bounds.height);
 
@@ -467,6 +496,7 @@ pub(crate) fn analytics_to_draw_commands(
                 meta: &meta,
                 bounds,
                 occupied: &mut occupied,
+                deferred: &mut deferred,
             };
 
             // Route the group to a specialized renderer by its semantic tag,
@@ -504,6 +534,7 @@ pub(crate) fn analytics_to_draw_commands(
             meta: &meta,
             bounds,
             occupied: &mut occupied,
+            deferred: &mut deferred,
         };
         push_keypoint_commands(&mut commands, &samples, &mut ctx);
     }
@@ -515,7 +546,20 @@ pub(crate) fn analytics_to_draw_commands(
             ..Default::default()
         },
         commands,
+        deferred,
     )
+}
+
+/// Local-mode convenience used by the unit tests: the placed overlay commands
+/// only (deferred intents dropped). Production code calls [`analytics_to_overlay`].
+#[cfg(test)]
+fn analytics_to_draw_commands(
+    buffer: &gst::BufferRef,
+    settings: &Settings,
+    bounds: FrameBounds,
+) -> (AnalyticsFrame<'static>, Vec<DrawCommand>) {
+    let (frame, commands, _deferred) = analytics_to_overlay(buffer, settings, bounds);
+    (frame, commands)
 }
 
 #[cfg(test)]
@@ -653,6 +697,55 @@ mod tests {
 
         assert_eq!(count_circles(&commands), 2);
         assert_eq!(count_centered_labels(&commands), 2);
+    }
+
+    #[test]
+    fn defer_labels_emits_intents_instead_of_drawing_text() {
+        init();
+
+        let mut buffer = gst::Buffer::from_mut_slice(vec![0_u8; 64 * 64 * 4]);
+        {
+            let buffer_ref = buffer.get_mut().unwrap();
+            let mut relation = gst_analytics::AnalyticsRelationMeta::add(buffer_ref);
+            relation
+                .add_keypoint_mtd(
+                    AnalyticsKeypointDimensions::_2d,
+                    16,
+                    16,
+                    0,
+                    AnalyticsKeypointVisibility::VISIBLE,
+                    0.9,
+                )
+                .unwrap();
+            relation
+                .add_keypoint_mtd(
+                    AnalyticsKeypointDimensions::_2d,
+                    24,
+                    24,
+                    0,
+                    AnalyticsKeypointVisibility::VISIBLE,
+                    0.8,
+                )
+                .unwrap();
+        }
+
+        let settings = Settings {
+            draw_labels: true,
+            semantic_tag: None,
+            defer_labels: true,
+            ..Default::default()
+        };
+        let bounds = FrameBounds {
+            width: 64,
+            height: 64,
+        };
+        let (_, commands, deferred) = analytics_to_overlay(buffer.as_ref(), &settings, bounds);
+
+        // Markers still drawn; the labels are deferred rather than placed.
+        assert_eq!(count_circles(&commands), 2);
+        assert_eq!(count_centered_labels(&commands), 0);
+        assert_eq!(deferred.len(), 2);
+        assert!(deferred.iter().all(|d| d.kind == CandidateKind::Point));
     }
 
     #[test]

@@ -15,13 +15,18 @@
 //! ends up away from its default position it is reported as *displaced*, so the
 //! caller can draw a leader line back to the labelled feature.
 
+use crate::coordination::{ClaimedRegion, seed_registry_from_regions};
 use crate::geometry::{OccupiedRegionRegistry, Rect};
-use crate::render::{DrawCommand, LEADER_LINE_WIDTH};
+use crate::overlay_intent::{CandidateKind, LabelIntent};
+use crate::render::{DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, LEADER_LINE_WIDTH};
 
 /// Offset of the near (primary) ring of candidates from the feature, in pixels.
 const CANDIDATE_GAP: i32 = 4;
 /// Offset of the far (extended) ring of candidates from the feature, in pixels.
 const CANDIDATE_EXT: i32 = 12;
+/// Offset of the far (extended) ring of box-label candidates, on top of
+/// [`LABEL_LAYOUT_GAP`].
+const BOX_CANDIDATE_EXT: i32 = 12;
 
 /// Outcome of [`place_label`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +145,120 @@ pub fn point_label_candidates(
             ]
         })
         .collect()
+}
+
+/// Fallback label regions around a bounding box `bbox`, ordered near ring then
+/// far ring (above, below, right, left in each). Box labels are drawn at the
+/// bottom-left of their rectangle, so the baseline `y` maps to the rectangle
+/// bottom. Shared by the object-detection overlay and the compositor.
+pub fn box_label_candidates(bbox: Rect, label_w: i32) -> Vec<Rect> {
+    let h = LABEL_LAYOUT_HEIGHT;
+    let rect_at =
+        |x: i32, baseline_y: i32| Rect::from_xywh(x, baseline_y.saturating_sub(h), label_w, h);
+
+    let right_x = bbox.left.saturating_add(bbox.width());
+    let left_x = bbox.left.saturating_sub(label_w);
+    // Side labels sit one line below the box top so they don't overhang it.
+    let side_y = bbox.top.saturating_add(h);
+    let box_bottom = bbox.top.saturating_add(bbox.height());
+
+    [
+        LABEL_LAYOUT_GAP,
+        LABEL_LAYOUT_GAP.saturating_add(BOX_CANDIDATE_EXT),
+    ]
+    .into_iter()
+    .flat_map(|off| {
+        [
+            rect_at(bbox.left, bbox.top.saturating_sub(off).max(h)), // above
+            rect_at(bbox.left, box_bottom.saturating_add(h).saturating_add(off)), // below
+            rect_at(right_x.saturating_add(off), side_y),            // right
+            rect_at(left_x.saturating_sub(off), side_y),             // left
+        ]
+    })
+    .collect()
+}
+
+/// Fallback candidate positions for a deferred label, matching how the producing
+/// element would have generated them: box-anchored labels ring the box,
+/// point-anchored labels (keypoints) ring the point. `label` supplies the size.
+pub fn candidates_for(kind: CandidateKind, anchor: Rect, label: Rect) -> Vec<Rect> {
+    match kind {
+        CandidateKind::Box => box_label_candidates(anchor, label.width()),
+        CandidateKind::Point => {
+            // The anchor is a zero-sized rect at the point.
+            let (x, y) = anchor.center();
+            point_label_candidates(x, y, label.width(), label.height())
+        }
+    }
+}
+
+/// Place all deferred labels globally and return the draw commands (label text
+/// plus leader lines for displaced labels). Used by the overlay compositors.
+///
+/// Labels are placed highest-priority-first. Each label avoids claimed regions of
+/// priority `>= its own` (reusing the coordination priority filter) and every
+/// already-placed (higher- or equal-priority) label; lower-priority claims are
+/// ignored, so an important label is never pushed aside by less important
+/// content. A pure function, so it is unit-tested without GStreamer.
+pub(crate) fn place_labels(
+    width: i32,
+    height: i32,
+    claims: &[ClaimedRegion],
+    intents: &[LabelIntent],
+) -> Vec<DrawCommand> {
+    // Stable sort, highest priority first; ties keep input order (deterministic).
+    let mut order: Vec<usize> = (0..intents.len()).collect();
+    order.sort_by(|&a, &b| intents[b].priority.cmp(&intents[a].priority));
+
+    let mut placed: Vec<Rect> = Vec::new();
+    let mut commands = Vec::new();
+    for &i in &order {
+        let intent = &intents[i];
+
+        let mut registry = OccupiedRegionRegistry::new(width, height);
+        // Avoid anchored content at this label's priority or higher.
+        seed_registry_from_regions(&mut registry, claims, "", intent.priority);
+        // Avoid labels already placed (all of priority >= this one).
+        for rect in &placed {
+            registry.reserve_highlight(*rect);
+        }
+
+        let candidates = candidates_for(intent.kind, intent.anchor, intent.preferred);
+        let Some(placement) = place_label(&mut registry, intent.preferred, &candidates) else {
+            continue; // entirely off-frame
+        };
+        placed.push(placement.rect);
+
+        if placement.displaced {
+            let (from, to) = leader_endpoints(intent.anchor, placement.rect);
+            push_leader_line(&mut commands, from, to, intent.color);
+        }
+        commands.push(label_text_command(intent, placement.rect));
+    }
+    commands
+}
+
+/// The text draw command for a placed label, reproducing the producing element's
+/// alignment: box-anchored labels are drawn bottom-left, point-anchored
+/// (keypoint) labels centered.
+fn label_text_command(intent: &LabelIntent, rect: Rect) -> DrawCommand {
+    match intent.kind {
+        CandidateKind::Box => DrawCommand::Text {
+            x: rect.left as f32,
+            y: rect.bottom as f32,
+            text: intent.text.clone(),
+            argb: intent.color,
+        },
+        CandidateKind::Point => {
+            let (cx, cy) = rect.center();
+            DrawCommand::TextCentered {
+                x: cx as f32,
+                y: cy as f32,
+                text: intent.text.clone(),
+                argb: intent.color,
+            }
+        }
+    }
 }
 
 /// Endpoints of a leader line connecting a labelled feature to its label: the

@@ -18,10 +18,10 @@ use gst_video::subclass::prelude::*;
 use crate::render::{DrawCommand, RenderContext};
 
 use super::commands::{
-    CAT, DEFAULT_DRAW_LABELS, DEFAULT_DRAW_SKELETON, DEFAULT_KEYPOINT_COLOR,
+    CAT, DEFAULT_DEFER_LABELS, DEFAULT_DRAW_LABELS, DEFAULT_DRAW_SKELETON, DEFAULT_KEYPOINT_COLOR,
     DEFAULT_KEYPOINT_RADIUS, DEFAULT_LABELS_COLOR, DEFAULT_RENDER_ENABLED, DEFAULT_SKELETON_COLOR,
     DEFAULT_SKELETON_LINE_WIDTH, DEFAULT_SUPPRESS_BUILTIN_RENDERING, FrameBounds, OVERLAY_OWNER,
-    Settings, analytics_to_draw_commands,
+    Settings, analytics_to_overlay,
 };
 
 use std::sync::{LazyLock, Mutex};
@@ -154,6 +154,16 @@ impl ObjectImpl for KeypointsOverlay {
                     .default_value(DEFAULT_SUPPRESS_BUILTIN_RENDERING)
                     .mutable_playing()
                     .build(),
+                glib::ParamSpecBoolean::builder("defer-labels")
+                    .nick("Defer labels")
+                    .blurb(
+                        "Emit labels as deferred intents for a downstream overlaycompositor \
+                         (which relocates them globally by priority) instead of placing them \
+                         here. Requires a compositor downstream, or the labels are not drawn.",
+                    )
+                    .default_value(DEFAULT_DEFER_LABELS)
+                    .mutable_playing()
+                    .build(),
                 crate::coordination::priority_param_spec(),
             ]
         });
@@ -221,6 +231,10 @@ impl ObjectImpl for KeypointsOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.priority = value.get().expect("type checked upstream");
             }
+            "defer-labels" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.defer_labels = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -270,6 +284,10 @@ impl ObjectImpl for KeypointsOverlay {
             "priority" => {
                 let settings = self.settings.lock().unwrap();
                 settings.priority.to_value()
+            }
+            "defer-labels" => {
+                let settings = self.settings.lock().unwrap();
+                settings.defer_labels.to_value()
             }
             _ => unimplemented!(),
         }
@@ -343,7 +361,8 @@ impl VideoFilterImpl for KeypointsOverlay {
             width: frame.width() as i32,
             height: frame.height() as i32,
         };
-        let (analytics, commands) = analytics_to_draw_commands(frame.buffer(), &settings, bounds);
+        let (analytics, commands, deferred_labels) =
+            analytics_to_overlay(frame.buffer(), &settings, bounds);
 
         // Wrap the built-ins with any host-supplied pre/post draw hooks.
         let render_commands = self.compose_with_hooks(&commands, bounds.width, bounds.height);
@@ -367,6 +386,14 @@ impl VideoFilterImpl for KeypointsOverlay {
                 OVERLAY_OWNER,
                 settings.priority,
             );
+        }
+
+        // In defer mode, hand our labels to a downstream compositor (we drew only
+        // the anchored markers/skeleton above).
+        if !deferred_labels.is_empty() {
+            // SAFETY: the frame is writable and uniquely borrowed here.
+            let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
+            crate::overlay_intent::add_label_intents(buffer, &deferred_labels);
         }
 
         Ok(gst::FlowSuccess::Ok)
