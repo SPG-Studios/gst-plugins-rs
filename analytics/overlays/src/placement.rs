@@ -365,6 +365,48 @@ mod tests {
     }
 
     #[test]
+    fn occlude_forbids_outright_even_when_the_only_alternative_is_on_an_avoid() {
+        // Hard (Occlude) and soft (Avoid) regions in one scene: a hard-free spot
+        // that sits entirely on an Avoid must still beat any spot overlapping the
+        // Occlude — the hard region forbids outright, the soft one never does.
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        registry.reserve_highlight(rect(0, 0, 60, 60)); // hard: covers the default
+        registry.reserve_avoid(rect(100, 0, 100, 200)); // soft: covers a candidate
+
+        let default = rect(10, 10, 40, 20); // overlaps the hard region
+        let candidates = [
+            rect(120, 10, 40, 20), // hard-free, but fully on the Avoid mask
+            rect(20, 20, 40, 20),  // overlaps the hard region
+        ];
+        let placement =
+            place_label(&mut registry, default, &candidates).expect("expected a placement");
+
+        // The mask-covered but hard-free candidate wins; the Occlude is never used.
+        assert_eq!(placement.rect, candidates[0]);
+        assert!(placement.displaced);
+    }
+
+    #[test]
+    fn prefers_the_spot_clear_of_both_hard_and_soft_regions() {
+        // Both kinds again: the label skips the Occlude-covered default and, among
+        // hard-free positions, prefers the one also clear of the Avoid mask.
+        let mut registry = OccupiedRegionRegistry::new(200, 200);
+        registry.reserve_highlight(rect(0, 0, 60, 60)); // hard: covers the default
+        registry.reserve_avoid(rect(60, 0, 60, 60)); // soft: covers one candidate
+
+        let default = rect(10, 10, 40, 20); // overlaps the hard region
+        let candidates = [
+            rect(70, 10, 40, 20),   // hard-free but on the Avoid mask
+            rect(140, 140, 40, 20), // fully clear of both
+        ];
+        let placement =
+            place_label(&mut registry, default, &candidates).expect("expected a placement");
+
+        assert_eq!(placement.rect, candidates[1]);
+        assert!(placement.displaced);
+    }
+
+    #[test]
     fn first_free_fallback_is_used_when_default_is_occupied() {
         let mut registry = OccupiedRegionRegistry::new(200, 200);
 
