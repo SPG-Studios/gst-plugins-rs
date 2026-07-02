@@ -294,11 +294,14 @@ impl Translate {
         }
     }
 
-    async fn send(&self, to_translate: InputItems) -> Result<Vec<TranslateOutput>, Error> {
-        let (input_lang, output_lang, latency_ms, tokenization_method, lateness, brevity_on) = {
+    async fn send(
+        &self,
+        to_translate: InputItems,
+        input_lang: String,
+    ) -> Result<Vec<TranslateOutput>, Error> {
+        let (output_lang, latency_ms, tokenization_method, lateness, brevity_on) = {
             let settings = self.settings.lock().unwrap();
             (
-                settings.input_language_code.clone(),
                 settings.output_language_code.clone(),
                 settings.latency_ms,
                 settings.tokenization_method,
@@ -625,8 +628,9 @@ impl Translate {
         &self,
         mut state: MutexGuard<State>,
         to_translate: InputItems,
+        input_lang: String,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
-        let (future, abort_handle) = abortable(self.send(to_translate));
+        let (future, abort_handle) = abortable(self.send(to_translate, input_lang));
 
         state.send_abort_handle = Some(abort_handle);
 
@@ -669,12 +673,17 @@ impl Translate {
         pad: &gst::Pad,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
+        let detected_language_code =
+            gst::meta::CustomMeta::from_buffer(&buffer, "AWSComprehendMeta")
+                .ok()
+                .and_then(|m| m.structure().get::<String>("speaker-language").ok());
+
         if let Some(words_list) =
             gst::meta::CustomMeta::from_buffer(&buffer, "TextAccumulateSentenceMeta")
                 .ok()
                 .and_then(|m| m.structure().get::<gst::BufferList>("words").ok())
         {
-            return self.sink_chain_list(pad, words_list);
+            return self.sink_chain_list(pad, words_list, detected_language_code);
         }
 
         self.ensure_connection().map_err(|err| {
@@ -688,12 +697,21 @@ impl Translate {
             gst::FlowError::Error
         })?;
 
-        let is_french = self
-            .settings
-            .lock()
-            .unwrap()
-            .input_language_code
-            .starts_with("fr-");
+        let input_lang = detected_language_code
+            .unwrap_or_else(|| self.settings.lock().unwrap().input_language_code.clone());
+
+        let output_lang = self.settings.lock().unwrap().output_language_code.clone();
+
+        if input_lang == output_lang {
+            gst::debug!(
+                CAT,
+                imp = self,
+                "not running translation as input language is already the target"
+            );
+            return self.srcpad.push(buffer);
+        }
+
+        let is_french = input_lang.starts_with("fr-");
 
         let mut state = self.state.lock().unwrap();
 
@@ -704,13 +722,14 @@ impl Translate {
                 return Ok(gst::FlowSuccess::Ok);
             };
 
-        self.do_send(state, InputItems(to_translate))
+        self.do_send(state, InputItems(to_translate), input_lang)
     }
 
     fn sink_chain_list(
         &self,
         _pad: &gst::Pad,
         bufferlist: gst::BufferList,
+        detected_language_code: Option<String>,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         self.ensure_connection().map_err(|err| {
             gst::error!(CAT, "Failed to connect to AWS: {err:?}");
@@ -723,12 +742,21 @@ impl Translate {
             gst::FlowError::Error
         })?;
 
-        let is_french = self
-            .settings
-            .lock()
-            .unwrap()
-            .input_language_code
-            .starts_with("fr-");
+        let input_lang = detected_language_code
+            .unwrap_or_else(|| self.settings.lock().unwrap().input_language_code.clone());
+
+        let output_lang = self.settings.lock().unwrap().output_language_code.clone();
+
+        if input_lang == output_lang {
+            gst::debug!(
+                CAT,
+                imp = self,
+                "not running translation as input language is already the target"
+            );
+            return self.srcpad.push_list(bufferlist);
+        }
+
+        let is_french = input_lang.starts_with("fr-");
 
         let mut state = self.state.lock().unwrap();
 
@@ -739,7 +767,7 @@ impl Translate {
             }
         }
 
-        self.do_send(state, InputItems(to_translate))
+        self.do_send(state, InputItems(to_translate), input_lang)
     }
 
     fn prepare(&self) -> Result<(), gst::ErrorMessage> {
@@ -843,11 +871,11 @@ impl ObjectSubclass for Translate {
                     |translate| translate.sink_chain(pad, buffer),
                 )
             })
-            .chain_list_function(|pad, parent, buffer| {
+            .chain_list_function(|pad, parent, buffer_list| {
                 Translate::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |translate| translate.sink_chain_list(pad, buffer),
+                    |translate| translate.sink_chain_list(pad, buffer_list, None),
                 )
             })
             .event_function(|pad, parent, event| {
