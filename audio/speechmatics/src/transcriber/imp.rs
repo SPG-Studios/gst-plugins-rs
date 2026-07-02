@@ -167,6 +167,8 @@ struct TranscriptFilteringConfig {
 #[derive(serde::Serialize, Debug)]
 struct TranscriptionConfig {
     language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domain: Option<String>,
     enable_partials: bool,
     max_delay: f32,
     additional_vocab: Vec<Vocable>,
@@ -273,6 +275,7 @@ struct Settings {
     max_delay_ms: u32,
     lateness_ms: u32,
     language_code: Option<String>,
+    domain: Option<String>,
     url: Option<String>,
     api_key: Option<String>,
     join_punctuation: bool,
@@ -292,6 +295,7 @@ impl Default for Settings {
             max_delay_ms: DEFAULT_MAX_DELAY_MS,
             lateness_ms: DEFAULT_LATENESS_MS,
             language_code: Some("en".to_string()),
+            domain: None,
             url: Some("ws://0.0.0.0:9000".to_string()),
             api_key: None,
             join_punctuation: DEFAULT_JOIN_PUNCTUATION,
@@ -1624,6 +1628,7 @@ impl Transcriber {
                         .language_code
                         .clone()
                         .unwrap_or_else(|| "en".to_string()),
+                    domain: settings.domain.clone(),
                     enable_partials: false,
                     max_delay,
                     additional_vocab: state.additional_vocabulary.clone(),
@@ -2119,6 +2124,11 @@ impl ObjectImpl for Transcriber {
                     .blurb("Audio Event Types")
                     .mutable_ready()
                     .build(),
+                glib::ParamSpecString::builder("domain")
+                    .nick("Domain")
+                    .blurb("Request a specialized model based on 'language' but optimized for a particular field, e.g. finance or medical or bilingual-en.")
+                    .default_value(None)
+                    .build(),
             ]
         });
 
@@ -2166,6 +2176,10 @@ impl ObjectImpl for Transcriber {
             "language-code" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.language_code = value.get().expect("type checked upstream");
+            }
+            "domain" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.domain = value.get().expect("type checked upstream");
             }
             "latency" => {
                 let mut settings = self.settings.lock().unwrap();
@@ -2326,6 +2340,10 @@ impl ObjectImpl for Transcriber {
             "language-code" => {
                 let settings = self.settings.lock().unwrap();
                 settings.language_code.to_value()
+            }
+            "domain" => {
+                let settings = self.settings.lock().unwrap();
+                settings.domain.to_value()
             }
             "latency" => {
                 let settings = self.settings.lock().unwrap();
