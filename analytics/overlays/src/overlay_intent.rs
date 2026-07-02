@@ -19,13 +19,16 @@
 //! in place and published as a claim (see [`crate::coordination`]); the
 //! compositor only needs those claims to know what to steer labels around.
 //!
-//! Like the claimed-regions meta this is an in-process prototype carried in the
-//! negotiated frame's pixel coordinate space (no scale-aware transform yet), so
-//! coordinating elements must share one coordinate space.
+//! Like the claimed-regions meta the intents are carried in the negotiated
+//! frame's pixel coordinate space and share the same coordinate-aware transform
+//! (see [`crate::meta_transform`]): a scale/crop/letterbox transform between an
+//! overlay element and the compositor maps each intent's anchor and preferred
+//! rects into the new space automatically.
 
 use gst::meta::CustomMeta;
 
 use crate::geometry::Rect;
+use crate::meta_transform::register_rect_transform;
 
 /// Well-known name of the custom buffer meta carrying deferred label intents.
 /// Registered once at plugin init via [`register`].
@@ -84,20 +87,30 @@ const COORDS_PER_LABEL: usize = 11;
 
 /// Register the overlay-labels meta. Idempotent; call once at plugin init.
 pub fn register() {
-    if CustomMeta::is_registered(OVERLAY_LABELS_META) {
-        return;
-    }
-
-    // Carry intents verbatim across buffer copies (e.g. a `videoconvert` between
-    // an overlay element and the compositor). Coordinates are not scaled — see
-    // the module note.
-    CustomMeta::register_with_transform(OVERLAY_LABELS_META, &[], |dest, meta, _src, _type| {
-        let labels = decode(meta.structure());
-        if let Ok(mut dest_meta) = CustomMeta::add(dest, OVERLAY_LABELS_META) {
-            encode(dest_meta.mut_structure(), &labels);
-        }
-        true
-    });
+    // Tagged `video`+`size` so a scaler/cropper maps the deferred labels' anchor
+    // and preferred rects into its output coordinate space; on a plain copy (e.g.
+    // a same-size `videoconvert` before the compositor) they are carried verbatim.
+    // A label whose anchor is cropped out of frame is dropped; if only its
+    // preferred rect clips out it falls back to the anchor (the compositor
+    // re-places labels from the anchor anyway).
+    register_rect_transform(
+        OVERLAY_LABELS_META,
+        &["video", "size"],
+        |src_meta, dest, map| {
+            let labels: Vec<LabelIntent> = decode(src_meta.structure())
+                .into_iter()
+                .filter_map(|mut label| {
+                    label.anchor = map(label.anchor)?;
+                    label.preferred = map(label.preferred).unwrap_or(label.anchor);
+                    Some(label)
+                })
+                .collect();
+            if let Ok(mut dest_meta) = CustomMeta::add(dest, OVERLAY_LABELS_META) {
+                encode(dest_meta.mut_structure(), &labels);
+            }
+            true
+        },
+    );
 }
 
 /// Append deferred label intents to `buffer`, merging with any already present
@@ -239,6 +252,57 @@ mod tests {
         add_label_intents(buffer.make_mut(), &input);
 
         assert_eq!(label_intents(buffer.as_ref()), input);
+    }
+
+    // Deferred labels also cross scalers (element ! videoscale ! compositor), so
+    // their anchor and preferred rects rescale into the output space.
+    #[test]
+    fn label_intents_rescale_across_videoscale() {
+        init();
+
+        let mut h = gst_check::Harness::new("videoscale");
+        h.set_caps_str(
+            "video/x-raw,format=RGBA,width=100,height=100,framerate=30/1",
+            "video/x-raw,format=RGBA,width=200,height=200,framerate=30/1",
+        );
+
+        let input = vec![LabelIntent {
+            text: "person".to_string(),
+            color: 0xFFFF_FFFF,
+            anchor: Rect::from_xywh(10, 20, 40, 30),
+            preferred: Rect::from_xywh(10, 8, 80, 12),
+            kind: CandidateKind::Box,
+            priority: 5,
+            owner: "odoverlay".to_string(),
+        }];
+
+        let mut buffer = gst::Buffer::with_size(100 * 100 * 4).unwrap();
+        add_label_intents(buffer.make_mut(), &input);
+
+        let out = h
+            .push_and_pull(buffer)
+            .expect("videoscale should output a scaled buffer");
+
+        let labels = label_intents(out.as_ref());
+        assert_eq!(labels.len(), 1);
+        // 100x100 -> 200x200 doubles both rects; text/color/kind/priority survive.
+        assert_eq!(labels[0].anchor, Rect::from_xywh(20, 40, 80, 60));
+        assert_eq!(labels[0].preferred, Rect::from_xywh(20, 16, 160, 24));
+        assert_eq!(labels[0].text, "person");
+        assert_eq!(labels[0].priority, 5);
+    }
+
+    // A plain copy carries the label intents verbatim.
+    #[test]
+    fn label_intents_copy_verbatim_on_deep_copy() {
+        init();
+
+        let input = sample();
+        let mut buffer = gst::Buffer::new();
+        add_label_intents(buffer.make_mut(), &input);
+
+        let copied = buffer.copy_deep().unwrap();
+        assert_eq!(label_intents(copied.as_ref()), input);
     }
 
     #[test]

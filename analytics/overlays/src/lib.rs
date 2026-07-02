@@ -24,6 +24,7 @@ mod keypointsoverlay;
 #[cfg(feature = "gl")]
 mod keypointsoverlaygl;
 mod lifecycle;
+mod meta_transform;
 mod objectdetectionoverlay;
 #[cfg(feature = "gl")]
 mod objectdetectionoverlaygl;
