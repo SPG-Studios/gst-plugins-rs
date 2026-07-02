@@ -14768,6 +14768,74 @@
                 },
                 "rank": "primary"
             },
+            "rtpmp4vdepay2": {
+                "author": "Tim-Philipp Müller <tim centricular com>",
+                "description": "Depayload an MPEG-4 part 2 Elementary Stream from RTP packets (RFC 3016)",
+                "hierarchy": [
+                    "GstRtpMpeg4VideoDepay2",
+                    "GstRtpBaseDepay2",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Codec/Depayloader/Network/RTP",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "application/x-rtp:\n          media: video\n  encoding-name: MP4V-ES\n     clock-rate: 90000\napplication/x-rtp:\n          media: video\n  encoding-name: MP4V-ES\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "video/mpeg:\n   systemstream: false\n    mpegversion: 4\n         parsed: false\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "rank": "primary"
+            },
+            "rtpmp4vpay2": {
+                "author": "Tim-Philipp Müller <tim centricular com>",
+                "description": "Payload an MPEG-4 part 2 Elementary Stream into RTP packets (RFC 3016)",
+                "hierarchy": [
+                    "GstRtpMpeg4VideoPay2",
+                    "GstRtpBasePay2",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Codec/Payloader/Network/RTP",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "video/mpeg:\n   systemstream: false\n    mpegversion: 4\n         parsed: true\nvideo/x-divx:\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "application/x-rtp:\n          media: video\n  encoding-name: MP4V-ES\n     clock-rate: [ 1, 2147483647 ]\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "properties": {
+                    "config-interval": {
+                        "blurb": "Regularly send config headers in-band instead of relying on external signalling (0 = disabled, -1 = on keyframes)",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "0",
+                        "max": "3600",
+                        "min": "-1",
+                        "mutable": "null",
+                        "readable": true,
+                        "type": "gint",
+                        "writable": true
+                    }
+                },
+                "rank": "primary + 1"
+            },
             "rtpmpadepay2": {
                 "author": "Tim-Philipp Müller <tim centricular com>",
                 "description": "Depayload an MPEG Audio Elementary Stream from RTP packets (RFC 2038, RFC 2250)",
