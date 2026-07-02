@@ -100,11 +100,14 @@ arrays keep it trivially readable from C, so the schema is interop-friendly.
    should live in `gstreamer-analytics` (or a small shared crate) so elements in
    other plugins depend on a stable definition rather than re-deriving the
    structure layout.
-2. **Scale-aware transform.** The prototype's meta transform copies regions
-   verbatim across buffer copies (e.g. `videoconvert`) but does **not** rescale
-   on `videoscale`. A production transform must scale `rect` using the
-   meta-transform scale params. Until then, place coordinating elements in a
-   single coordinate space (after any scaler).
+2. **Coordinate-aware transform.** *(Done — see `src/meta_transform.rs`.)*
+   Modelled on `GstVideoRegionOfInterestMeta`, the meta transform maps each
+   `rect` into the output coordinate space on the video **matrix** transform
+   (scale + crop + letterbox border offsets, clipping rects to the frame and
+   dropping any that fall entirely outside) and on the simpler **scale**
+   transform (used by e.g. `glcolorscale`); a plain copy carries rects verbatim.
+   So `ours ! videoscale ! ours` coordinates across resolution, aspect and crop
+   changes.
 3. **Soft (`Avoid`) handling.** Both kinds are currently reserved as hard
    highlights. `Avoid` could instead bias placement (a weighted/penalty term in
    the least-overlap step) rather than forbidding the area outright.

@@ -25,15 +25,20 @@
 //!   * the meta is registered by a well-known name so *any* plugin can produce
 //!     or consume it without a compile-time dependency on this crate.
 //!
-//! This is an in-process prototype. See `docs/cross-element-region-coordination.md`
-//! for the design note, including the productionisation path (moving the meta
-//! to the shared analytics library and adding a scale-aware transform).
+//! The meta carries a coordinate-aware transform (see [`crate::meta_transform`]),
+//! modelled on `GstVideoRegionOfInterestMeta`: a scale/crop/letterbox transform
+//! between coordinating elements (`ours ! videoscale ! ours`) maps the claims
+//! into the downstream coordinate space automatically; plain copies carry them
+//! verbatim. See `docs/cross-element-region-coordination.md` for the design note
+//! and the remaining productionisation path (moving the meta to the shared
+//! analytics library).
 
 use gst::glib;
 use gst::meta::CustomMeta;
 use gst::prelude::*;
 
 use crate::geometry::{OccupiedRegionRegistry, Rect};
+use crate::meta_transform::register_rect_transform;
 use crate::render::{DrawCommand, content_bounds};
 
 /// Well-known name of the custom buffer meta used to share claimed regions
@@ -137,22 +142,28 @@ impl ClaimedRegion {
 
 /// Register the claimed-regions meta. Idempotent; call once at plugin init.
 pub fn register() {
-    if CustomMeta::is_registered(CLAIMED_REGIONS_META) {
-        return;
-    }
-
-    // Carry regions verbatim across buffer copies (e.g. a `videoconvert`
-    // between two overlay elements). NOTE: scaling transforms are *not* yet
-    // adjusted — a scale-aware transform is part of the productionisation work
-    // described in the design note. Until then, place coordinating elements
-    // after any scaler, in a single coordinate space.
-    CustomMeta::register_with_transform(CLAIMED_REGIONS_META, &[], |dest, meta, _src, _type| {
-        let regions = decode(meta.structure());
-        if let Ok(mut dest_meta) = CustomMeta::add(dest, CLAIMED_REGIONS_META) {
-            encode(dest_meta.mut_structure(), &regions);
-        }
-        true
-    });
+    // Tagged `video`+`size` so a scaler/cropper (`videoconvertscale`,
+    // `glcolorscale`, …) invokes our transform to map the claims into its output
+    // coordinate space; on a plain copy (e.g. a same-size `videoconvert`) they
+    // are carried verbatim. A region cropped entirely out of frame is dropped.
+    // This lets coordinating elements sit on either side of such a transform.
+    register_rect_transform(
+        CLAIMED_REGIONS_META,
+        &["video", "size"],
+        |src_meta, dest, map| {
+            let regions: Vec<ClaimedRegion> = decode(src_meta.structure())
+                .into_iter()
+                .filter_map(|mut region| {
+                    region.rect = map(region.rect)?;
+                    Some(region)
+                })
+                .collect();
+            if let Ok(mut dest_meta) = CustomMeta::add(dest, CLAIMED_REGIONS_META) {
+                encode(dest_meta.mut_structure(), &regions);
+            }
+            true
+        },
+    );
 }
 
 /// Publish the regions an element rendered (derived from its draw commands) as
@@ -357,6 +368,97 @@ mod tests {
 
         // Round-trips rect, kind, owner and priority.
         assert_eq!(claimed_regions(buffer.as_ref()), input);
+    }
+
+    // A `videoscale` between two coordinating elements rescales the claims into
+    // its output coordinate space, so downstream reads them in its own space.
+    #[test]
+    fn claims_rescale_across_videoscale() {
+        init();
+
+        let mut h = gst_check::Harness::new("videoscale");
+        h.set_caps_str(
+            "video/x-raw,format=RGBA,width=100,height=100,framerate=30/1",
+            "video/x-raw,format=RGBA,width=200,height=200,framerate=30/1",
+        );
+
+        let mut buffer = gst::Buffer::with_size(100 * 100 * 4).unwrap();
+        add_claimed_regions(
+            buffer.make_mut(),
+            &[ClaimedRegion::occlude(
+                Rect::from_xywh(10, 20, 30, 40),
+                "od",
+                4,
+            )],
+        );
+
+        let out = h
+            .push_and_pull(buffer)
+            .expect("videoscale should output a scaled buffer");
+
+        let regions = claimed_regions(out.as_ref());
+        assert_eq!(regions.len(), 1);
+        // 100x100 -> 200x200 doubles every coordinate; kind/owner/priority survive.
+        assert_eq!(regions[0].rect, Rect::from_xywh(20, 40, 60, 80));
+        assert_eq!(regions[0].kind, ClaimKind::Occlude);
+        assert_eq!(regions[0].owner, "od");
+        assert_eq!(regions[0].priority, 4);
+    }
+
+    // With letterbox borders (aspect change + add-borders), the matrix transform
+    // offsets the claims by the border, not just a stretch — like the ROI meta.
+    #[test]
+    fn claims_offset_by_letterbox_borders() {
+        init();
+
+        let mut h = gst_check::Harness::new("videoscale");
+        // Keep DAR and pad: a 100x100 (1:1) frame fitted into 300x100 stays
+        // 100 wide, centred, leaving a 100px pillarbox each side.
+        // Pin PAR=1/1 on both sides so videoscale must letterbox (it can't keep
+        // DAR by choosing an output pixel-aspect-ratio).
+        h.element().unwrap().set_property("add-borders", true);
+        h.set_caps_str(
+            "video/x-raw,format=RGBA,width=100,height=100,framerate=30/1,pixel-aspect-ratio=1/1",
+            "video/x-raw,format=RGBA,width=300,height=100,framerate=30/1,pixel-aspect-ratio=1/1",
+        );
+
+        let mut buffer = gst::Buffer::with_size(100 * 100 * 4).unwrap();
+        add_claimed_regions(
+            buffer.make_mut(),
+            &[ClaimedRegion::occlude(
+                Rect::from_xywh(10, 20, 30, 40),
+                "od",
+                0,
+            )],
+        );
+
+        let out = h
+            .push_and_pull(buffer)
+            .expect("videoscale should output a letterboxed buffer");
+
+        let regions = claimed_regions(out.as_ref());
+        assert_eq!(regions.len(), 1);
+        // No vertical scale (100->100), shifted right by the 100px border; a plain
+        // stretch would instead give x=30, w=90.
+        assert_eq!(regions[0].rect, Rect::from_xywh(110, 20, 30, 40));
+    }
+
+    // A plain copy (no scaling) carries the claims verbatim, as before.
+    #[test]
+    fn claims_copy_verbatim_on_deep_copy() {
+        init();
+
+        let input = vec![ClaimedRegion::occlude(
+            Rect::from_xywh(10, 20, 30, 40),
+            "od",
+            4,
+        )];
+        let mut buffer = gst::Buffer::new();
+        add_claimed_regions(buffer.make_mut(), &input);
+
+        // A deep copy invokes the meta transform with the copy quark → verbatim.
+        let copied = buffer.copy_deep().unwrap();
+        assert_eq!(claimed_regions(copied.as_ref()), input);
     }
 
     #[test]

@@ -16,7 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 gst.workspace = true
 gst-base.workspace = true
-gst-video.workspace = true
+# v1_28 for the matrix meta-transform clipper used by meta_transform.rs.
+gst-video = { workspace = true, features = ["v1_28"] }
 gst-analytics = { workspace = true, features = ["v1_30"] }
 glib.workspace = true
 skia = { package = "skia-safe", version = "0.99" }
