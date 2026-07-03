@@ -28,6 +28,7 @@ members = [
     "generic/inter",
     "generic/streamgrouper",
     "generic/gopbuffer",
+    "generic/timeshift",
 
     "mux/flavors",
     "mux/isobmff",
@@ -105,6 +106,7 @@ default-members = [
     "generic/inter",
     "generic/gopbuffer",
     "generic/streamgrouper",
+    "generic/timeshift",
 
     "mux/isobmff",
 

@@ -201,6 +201,7 @@ plugins = {
     'library': 'libgstviuer',
   },
   'gopbuffer': {'library': 'libgstgopbuffer'},
+  'timeshift': {'library': 'libgsttimeshift'},
   'quinn': {
     'library': 'libgstquinn',
     'examples': [

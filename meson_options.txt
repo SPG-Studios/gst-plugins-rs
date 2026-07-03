@@ -22,6 +22,7 @@ option('file', type: 'feature', value: 'auto', description: 'Build file plugin')
 option('compress', type: 'feature', value: 'auto', description: 'Build compress plugin')
 option('originalbuffer', type: 'feature', value: 'auto', description: 'Build originalbuffer plugin')
 option('gopbuffer', type: 'feature', value: 'auto', description: 'Build gopbuffer plugin')
+option('timeshift', type: 'feature', value: 'auto', description: 'Build timeshift plugin')
 option('sodium', type: 'feature', value: 'auto', description: 'Build sodium plugin')
 option('sodium-source', type: 'combo',
        choices: ['system', 'built-in'], value: 'built-in',
