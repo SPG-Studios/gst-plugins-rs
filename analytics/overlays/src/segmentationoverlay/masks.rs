@@ -37,6 +37,8 @@ pub(crate) struct Settings {
     pub(crate) selected_types: Option<String>,
     /// Cross-element priority (see [`crate::coordination`]).
     pub(crate) priority: i32,
+    /// Publish drawn mask regions as claimed regions for downstream coordination.
+    pub(crate) publish_claimed_regions: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +48,7 @@ impl Default for Settings {
             hint_maximum_segment_type: DEFAULT_HINT_MAXIMUM_SEGMENT_TYPE,
             selected_types: None,
             priority: crate::coordination::DEFAULT_PRIORITY,
+            publish_claimed_regions: crate::coordination::DEFAULT_PUBLISH_CLAIMED_REGIONS,
         }
     }
 }

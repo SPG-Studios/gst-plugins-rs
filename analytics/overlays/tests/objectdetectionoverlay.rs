@@ -440,6 +440,35 @@ fn pipeline_oriented_metadata_renders_overlay() {
 }
 
 #[test]
+fn publish_claimed_regions_property_gates_the_meta() {
+    init();
+
+    // Default: the element publishes what it drew as a claimed-regions meta.
+    let mut harness = make_harness();
+    let out = harness
+        .push_and_pull(make_buffer(gst::ClockTime::ZERO, true))
+        .expect("pull output buffer");
+    assert!(
+        gst::meta::CustomMeta::from_buffer(&out, "GstAnalyticsClaimedRegions").is_ok(),
+        "claims should be published by default"
+    );
+
+    // With publishing disabled, no claimed-regions meta is attached.
+    let mut harness = make_harness();
+    harness
+        .element()
+        .unwrap()
+        .set_property("publish-claimed-regions", false);
+    let out = harness
+        .push_and_pull(make_buffer(gst::ClockTime::ZERO, true))
+        .expect("pull output buffer");
+    assert!(
+        gst::meta::CustomMeta::from_buffer(&out, "GstAnalyticsClaimedRegions").is_err(),
+        "claims must be suppressed when publish-claimed-regions is false"
+    );
+}
+
+#[test]
 fn drawing_location_correctness() {
     init();
 

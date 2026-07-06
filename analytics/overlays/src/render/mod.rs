@@ -55,6 +55,7 @@ pub enum DrawCommand {
         y1: f32,
         argb: u32,
         width: f32,
+        role: LineRole,
     },
     Text {
         x: f32,
@@ -68,6 +69,18 @@ pub enum DrawCommand {
         text: String,
         argb: u32,
     },
+}
+
+/// Why a [`DrawCommand::Line`] exists — determines whether it is published as a
+/// claim. Skeleton bones are claimed (as a soft [`Avoid`](crate::geometry::RegionPriority::Avoid)
+/// region so labels prefer not to cross them); leader lines are the overlay's own
+/// connectors to displaced labels and are not claimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineRole {
+    /// A skeleton bone between two keypoints.
+    Skeleton,
+    /// A leader line from a displaced label back to its feature.
+    Leader,
 }
 
 trait RenderBackend {
@@ -260,6 +273,7 @@ pub(crate) fn replay_commands(canvas: &skia::Canvas, commands: &[DrawCommand]) {
                 y1,
                 argb,
                 width,
+                role: _,
             } => {
                 let mut paint = skia::Paint::default();
                 paint.set_anti_alias(true);
@@ -302,10 +316,11 @@ pub(crate) fn replay_commands(canvas: &skia::Canvas, commands: &[DrawCommand]) {
     }
 }
 
-/// Bounding box of a command's visible, "solid" content, used to publish claimed
-/// regions for cross-element coordination. Thin strokes (skeleton and leader
-/// lines) and no-ops return `None`. Box rotation is ignored — the axis-aligned
-/// extent is claimed.
+/// Bounding box of a command's visible content, used to publish claimed regions
+/// for cross-element coordination. A rotated box claims the axis-aligned bounding
+/// box of its rotated corners (over-claiming the empty corners, but never
+/// under-claiming a drawn pixel). Skeleton bones claim a thin box around the
+/// stroke; leader lines (the overlay's own connectors) and no-ops return `None`.
 pub(crate) fn content_bounds(command: &DrawCommand) -> Option<Rect> {
     match command {
         DrawCommand::Rectangle {
@@ -313,13 +328,38 @@ pub(crate) fn content_bounds(command: &DrawCommand) -> Option<Rect> {
             y,
             width,
             height,
+            rotation,
             ..
-        } => Some(Rect::from_xywh(
+        } if rotation.abs() < ROTATION_EPSILON => Some(Rect::from_xywh(
             x.floor() as i32,
             y.floor() as i32,
             width.ceil() as i32,
             height.ceil() as i32,
         )),
+        DrawCommand::Rectangle {
+            x,
+            y,
+            width,
+            height,
+            rotation,
+            ..
+        } => {
+            // Axis-aligned bounding box of the rectangle rotated about its centre
+            // (matching the renderer). Half-extents of the rotated box:
+            //   ext_x = |hw·cos| + |hh·sin|,  ext_y = |hw·sin| + |hh·cos|.
+            let xc = x + width / 2.0;
+            let yc = y + height / 2.0;
+            let (hw, hh) = (width / 2.0, height / 2.0);
+            let (cos, sin) = (rotation.cos().abs(), rotation.sin().abs());
+            let ext_x = hw * cos + hh * sin;
+            let ext_y = hw * sin + hh * cos;
+            Some(Rect::from_xywh(
+                (xc - ext_x).floor() as i32,
+                (yc - ext_y).floor() as i32,
+                (2.0 * ext_x).ceil() as i32,
+                (2.0 * ext_y).ceil() as i32,
+            ))
+        }
         DrawCommand::Circle { cx, cy, radius, .. } => {
             let r = radius.ceil() as i32;
             Some(Rect::from_xywh(
@@ -349,7 +389,30 @@ pub(crate) fn content_bounds(command: &DrawCommand) -> Option<Rect> {
                 LABEL_LAYOUT_HEIGHT,
             ))
         }
-        DrawCommand::Line { .. } | DrawCommand::NoOp => None,
+        // A skeleton bone: the bounding box of the segment, inflated by half the
+        // stroke width. Claimed as a soft region (see `command_claim_kind`).
+        DrawCommand::Line {
+            x0,
+            y0,
+            x1,
+            y1,
+            width,
+            role: LineRole::Skeleton,
+            ..
+        } => {
+            let half = (width / 2.0).ceil() as i32;
+            let left = x0.min(*x1).floor() as i32 - half;
+            let top = y0.min(*y1).floor() as i32 - half;
+            let right = x0.max(*x1).ceil() as i32 + half;
+            let bottom = y0.max(*y1).ceil() as i32 + half;
+            Some(Rect::from_xywh(left, top, right - left, bottom - top))
+        }
+        // Leader lines (the overlay's own connectors) and no-ops are not claimed.
+        DrawCommand::Line {
+            role: LineRole::Leader,
+            ..
+        }
+        | DrawCommand::NoOp => None,
     }
 }
 
@@ -623,6 +686,7 @@ impl RenderBackend for SkiaBackend {
                     y1,
                     argb,
                     width,
+                    role: _,
                 } => draw_packed_line(&mut surface, *x0, *y0, *x1, *y1, *argb, *width),
                 DrawCommand::Text { x, y, text, argb } => {
                     draw_packed_text(&mut surface, *x, *y, text, *argb)
@@ -722,7 +786,7 @@ mod tests {
         assert_eq!(bounds.height(), LABEL_LAYOUT_HEIGHT);
         assert!(bounds.width() > 0);
 
-        // Thin strokes and no-ops are not claimed.
+        // Leader lines and no-ops are not claimed.
         assert_eq!(
             content_bounds(&DrawCommand::Line {
                 x0: 0.0,
@@ -731,10 +795,54 @@ mod tests {
                 y1: 9.0,
                 argb: 0,
                 width: 1.0,
+                role: LineRole::Leader,
             }),
             None
         );
         assert_eq!(content_bounds(&DrawCommand::NoOp), None);
+
+        // A skeleton bone is claimed: the segment box inflated by half the stroke.
+        assert_eq!(
+            content_bounds(&DrawCommand::Line {
+                x0: 2.0,
+                y0: 4.0,
+                x1: 12.0,
+                y1: 4.0,
+                argb: 0,
+                width: 4.0,
+                role: LineRole::Skeleton,
+            }),
+            Some(Rect::from_xywh(0, 2, 14, 4))
+        );
+    }
+
+    #[test]
+    fn rotated_box_claims_its_rotated_bounding_box() {
+        // A 40x20 box rotated 90° about its centre spans ~20 wide by ~40 tall,
+        // centred on the same point — not the unrotated 40x20 extent. (Exact 90°
+        // is off by <1px from float rounding, so allow a 1px tolerance.)
+        let bounds = content_bounds(&DrawCommand::Rectangle {
+            x: 100.0,
+            y: 100.0,
+            width: 40.0,
+            height: 20.0,
+            rotation: std::f32::consts::FRAC_PI_2,
+            argb: 0,
+            filled: false,
+        })
+        .expect("a rotated box has bounds");
+
+        let cx = bounds.left + bounds.width() / 2;
+        let cy = bounds.top + bounds.height() / 2;
+        assert!((bounds.width() - 20).abs() <= 1, "width {}", bounds.width());
+        assert!(
+            (bounds.height() - 40).abs() <= 1,
+            "height {}",
+            bounds.height()
+        );
+        assert!((cx - 120).abs() <= 1 && (cy - 110).abs() <= 1);
+        // The extent follows the rotation: taller than the unrotated 20px height.
+        assert!(bounds.height() > 20);
     }
 
     #[test]
@@ -773,6 +881,7 @@ mod tests {
                 y1: 10.0,
                 argb: 0xFF00_FF00,
                 width: 2.0,
+                role: LineRole::Skeleton,
             },
             DrawCommand::Text {
                 x: 8.0,

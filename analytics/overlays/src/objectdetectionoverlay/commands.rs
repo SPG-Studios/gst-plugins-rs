@@ -62,6 +62,8 @@ pub(crate) struct Settings {
     /// When set, emit labels as deferred intents for a downstream compositor
     /// (see [`crate::overlay_intent`]) instead of placing/rendering them here.
     pub(crate) defer_labels: bool,
+    /// Publish drawn content as claimed regions for downstream coordination.
+    pub(crate) publish_claimed_regions: bool,
 }
 
 impl Default for Settings {
@@ -78,6 +80,7 @@ impl Default for Settings {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: crate::coordination::DEFAULT_PUBLISH_CLAIMED_REGIONS,
         }
     }
 }
@@ -401,6 +404,7 @@ mod tests {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: true,
         };
 
         let (analytics, commands) =
@@ -470,6 +474,7 @@ mod tests {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: true,
         };
 
         let (analytics, commands) =
@@ -521,6 +526,7 @@ mod tests {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: true,
         };
 
         let (_, commands) =
@@ -562,6 +568,7 @@ mod tests {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: true,
         };
 
         let (_, commands) =
@@ -656,6 +663,7 @@ mod tests {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: true,
         };
 
         let (_, commands) =
