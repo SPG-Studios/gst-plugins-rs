@@ -84,6 +84,7 @@ impl ObjectImpl for SegmentationOverlayGl {
                     .mutable_playing()
                     .build(),
                 crate::coordination::priority_param_spec(),
+                crate::coordination::publish_claimed_regions_param_spec(),
             ]
         });
         PROPERTIES.as_ref()
@@ -98,6 +99,7 @@ impl ObjectImpl for SegmentationOverlayGl {
             }
             "selected-types" => settings.selected_types = value.get().expect(e),
             "priority" => settings.priority = value.get().expect(e),
+            "publish-claimed-regions" => settings.publish_claimed_regions = value.get().expect(e),
             _ => unimplemented!(),
         }
     }
@@ -108,6 +110,7 @@ impl ObjectImpl for SegmentationOverlayGl {
             "hint-maximum-segment-type" => settings.hint_maximum_segment_type.to_value(),
             "selected-types" => settings.selected_types.to_value(),
             "priority" => settings.priority.to_value(),
+            "publish-claimed-regions" => settings.publish_claimed_regions.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -182,7 +185,10 @@ impl BaseTransformImpl for SegmentationOverlayGl {
     ) -> Result<PrepareOutputBufferSuccess, gst::FlowError> {
         let success = self.parent_prepare_output_buffer(inbuf)?;
         if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
-            let priority = self.settings.lock().unwrap().priority;
+            let (priority, publish_claimed_regions) = {
+                let settings = self.settings.lock().unwrap();
+                (settings.priority, settings.publish_claimed_regions)
+            };
             let regions: Vec<ClaimedRegion> = self
                 .pending
                 .lock()
@@ -190,7 +196,11 @@ impl BaseTransformImpl for SegmentationOverlayGl {
                 .iter()
                 .map(|layer| ClaimedRegion::avoid(layer.claim, seg::OVERLAY_OWNER, priority))
                 .collect();
-            if let (false, Some(buffer)) = (regions.is_empty(), outbuf.get_mut()) {
+            if let (true, false, Some(buffer)) = (
+                publish_claimed_regions,
+                regions.is_empty(),
+                outbuf.get_mut(),
+            ) {
                 add_claimed_regions(buffer, &regions);
             }
             return Ok(PrepareOutputBufferSuccess::Buffer(outbuf));

@@ -113,10 +113,16 @@ arrays keep it trivially readable from C, so the schema is interop-friendly.
    the least-overlap step) rather than forbidding the area outright.
 4. **Schema versioning.** Add a version field to the structure so the encoding
    can evolve without breaking older producers/consumers.
-5. **Richer claim extents.** Producers currently claim the axis-aligned extent
-   of solid content (boxes, labels, keypoint dots) and skip thin strokes
-   (skeleton / leader lines). Rotated boxes claim their unrotated extent, and
-   there is no property to opt out of publishing. Refine as needed.
+5. **Richer claim extents.** *(Largely done — see `render::content_bounds`.)*
+   Rotated boxes now claim the axis-aligned bounding box of their rotated corners
+   (conservatively over-claiming the empty corners rather than under-claiming).
+   Skeleton bones are claimed as thin soft-`Avoid` regions; leader lines (the
+   overlay's own connectors) remain unclaimed. Publishing is controllable per
+   element via the `publish-claimed-regions` property (default on). Remaining
+   exploration: represent claims as **polygons** rather than axis-aligned rects
+   for exact rotated/irregular extents — this would touch the meta encoding, the
+   registry overlap math, placement scoring and the coordinate transform, so it
+   is deferred.
 
 ## Status
 

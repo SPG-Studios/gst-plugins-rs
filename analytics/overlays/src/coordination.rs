@@ -65,6 +65,25 @@ pub(crate) fn priority_param_spec() -> glib::ParamSpec {
         .build()
 }
 
+/// Default for the `publish-claimed-regions` property: producers publish their
+/// claims unless a pipeline opts out.
+pub(crate) const DEFAULT_PUBLISH_CLAIMED_REGIONS: bool = true;
+
+/// The shared `publish-claimed-regions` GObject property, installed by every
+/// producer so a pipeline that does not coordinate can turn off the overhead of
+/// attaching the claimed-regions meta.
+pub(crate) fn publish_claimed_regions_param_spec() -> glib::ParamSpec {
+    glib::ParamSpecBoolean::builder("publish-claimed-regions")
+        .nick("Publish claimed regions")
+        .blurb(
+            "Publish the regions this element drew as a buffer meta so downstream overlays can \
+             avoid occluding them. Disable to skip the overhead when nothing coordinates.",
+        )
+        .default_value(DEFAULT_PUBLISH_CLAIMED_REGIONS)
+        .mutable_playing()
+        .build()
+}
+
 /// How strongly a claim should be honoured by downstream elements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimKind {
@@ -191,12 +210,15 @@ pub fn claim_commands(
 }
 
 /// The claim kind a drawn command warrants. An outline-only box is mostly
-/// transparent inside, so it is a soft [`ClaimKind::Avoid`]; everything else
-/// solid (a filled box, a text label, a keypoint marker) is a hard
-/// [`ClaimKind::Occlude`] that downstream content must not draw over.
+/// transparent inside and a skeleton bone is a thin stroke, so both are soft
+/// [`ClaimKind::Avoid`]s (labels prefer to dodge them but may sit there); every
+/// other solid command (a filled box, a text label, a keypoint marker) is a hard
+/// [`ClaimKind::Occlude`] that downstream content must not draw over. Only
+/// skeleton bones reach here as lines — leader lines have no `content_bounds`.
 fn command_claim_kind(command: &DrawCommand) -> ClaimKind {
     match command {
         DrawCommand::Rectangle { filled: false, .. } => ClaimKind::Avoid,
+        DrawCommand::Line { .. } => ClaimKind::Avoid,
         _ => ClaimKind::Occlude,
     }
 }
@@ -339,6 +361,7 @@ fn decode(structure: &gst::StructureRef) -> Vec<ClaimedRegion> {
 mod tests {
     use super::*;
     use crate::geometry::RegionPriority;
+    use crate::render::LineRole;
     use std::sync::Once;
 
     fn init() {
@@ -560,6 +583,7 @@ mod tests {
                 y1: 9.0,
                 argb: 0,
                 width: 1.0,
+                role: LineRole::Leader,
             },
         ];
 
@@ -567,7 +591,7 @@ mod tests {
         claim_commands(buffer.make_mut(), &commands, "odoverlay", 0);
 
         let regions = claimed_regions(buffer.as_ref());
-        // Rectangle + Text are claimed; the Line is not.
+        // Rectangle + Text are claimed; the leader line is not.
         assert_eq!(regions.len(), 2);
         assert!(regions.iter().all(|r| r.owner == "odoverlay"));
 
@@ -583,6 +607,41 @@ mod tests {
             .find(|r| r.rect != Rect::from_xywh(10, 20, 40, 30))
             .expect("text region claimed");
         assert_eq!(text_region.kind, ClaimKind::Occlude);
+    }
+
+    #[test]
+    fn claim_commands_publishes_skeleton_bones_as_soft_avoid() {
+        init();
+
+        let commands = vec![
+            // A skeleton bone — claimed as a soft Avoid.
+            DrawCommand::Line {
+                x0: 10.0,
+                y0: 10.0,
+                x1: 30.0,
+                y1: 10.0,
+                argb: 0,
+                width: 2.0,
+                role: LineRole::Skeleton,
+            },
+            // A leader line — not claimed.
+            DrawCommand::Line {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 9.0,
+                y1: 9.0,
+                argb: 0,
+                width: 1.0,
+                role: LineRole::Leader,
+            },
+        ];
+
+        let mut buffer = gst::Buffer::new();
+        claim_commands(buffer.make_mut(), &commands, "keypointsoverlay", 0);
+
+        let regions = claimed_regions(buffer.as_ref());
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].kind, ClaimKind::Avoid);
     }
 
     #[test]

@@ -203,6 +203,7 @@ impl ObjectImpl for SegmentationOverlay {
                     .mutable_playing()
                     .build(),
                 crate::coordination::priority_param_spec(),
+                crate::coordination::publish_claimed_regions_param_spec(),
             ]
         });
 
@@ -244,6 +245,10 @@ impl ObjectImpl for SegmentationOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.priority = value.get().expect("type checked upstream");
             }
+            "publish-claimed-regions" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.publish_claimed_regions = value.get().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -265,6 +270,10 @@ impl ObjectImpl for SegmentationOverlay {
             "priority" => {
                 let settings = self.settings.lock().unwrap();
                 settings.priority.to_value()
+            }
+            "publish-claimed-regions" => {
+                let settings = self.settings.lock().unwrap();
+                settings.publish_claimed_regions.to_value()
             }
             _ => unimplemented!(),
         }
@@ -460,7 +469,7 @@ impl VideoFilterImpl for SegmentationOverlay {
         // Publish the mask regions we drew as soft Avoid claims, so a downstream
         // overlay's label placement prefers not to draw on top of them. Masks
         // are large and semi-transparent, hence Avoid rather than Occlude.
-        if !claimed_rects.is_empty() {
+        if !claimed_rects.is_empty() && settings.publish_claimed_regions {
             // SAFETY: the frame is writable and uniquely borrowed here.
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
             let regions: Vec<ClaimedRegion> = claimed_rects

@@ -108,16 +108,19 @@ mod tests {
         assert_eq!(e.property::<u64>("expire-overlay"), 1_000_000_000);
         assert!(e.property::<bool>("tracking-outline-colors"));
         assert!(!e.property::<bool>("suppress-builtin-rendering"));
+        assert!(e.property::<bool>("publish-claimed-regions"));
 
         e.set_property("draw-labels", false);
         e.set_property("filled-box", true);
         e.set_property("expire-overlay", 2_000_000_000u64);
         e.set_property("suppress-builtin-rendering", true);
+        e.set_property("publish-claimed-regions", false);
 
         assert!(!e.property::<bool>("draw-labels"));
         assert!(e.property::<bool>("filled-box"));
         assert_eq!(e.property::<u64>("expire-overlay"), 2_000_000_000);
         assert!(e.property::<bool>("suppress-builtin-rendering"));
+        assert!(!e.property::<bool>("publish-claimed-regions"));
     }
 
     #[test]
@@ -128,15 +131,18 @@ mod tests {
         assert!(!e.property::<bool>("render-enabled"));
         assert_eq!(e.property::<u32>("hint-maximum-segment-type"), 10);
         assert_eq!(e.property::<Option<String>>("selected-types"), None);
+        assert!(e.property::<bool>("publish-claimed-regions"));
 
         e.set_property("hint-maximum-segment-type", 64u32);
         e.set_property("selected-types", Some("person;car".to_string()));
+        e.set_property("publish-claimed-regions", false);
 
         assert_eq!(e.property::<u32>("hint-maximum-segment-type"), 64);
         assert_eq!(
             e.property::<Option<String>>("selected-types"),
             Some("person;car".to_string())
         );
+        assert!(!e.property::<bool>("publish-claimed-regions"));
     }
 
     #[test]
@@ -154,11 +160,13 @@ mod tests {
         assert_eq!(e.property::<f64>("skeleton-line-width"), 2.0);
         assert_eq!(e.property::<Option<String>>("semantic-tag"), None);
         assert!(!e.property::<bool>("suppress-builtin-rendering"));
+        assert!(e.property::<bool>("publish-claimed-regions"));
 
         e.set_property("draw-skeleton", true);
         e.set_property("skeleton-line-width", 6.0f64);
         e.set_property("semantic-tag", Some("pose/".to_string()));
         e.set_property("suppress-builtin-rendering", true);
+        e.set_property("publish-claimed-regions", false);
 
         assert!(e.property::<bool>("draw-skeleton"));
         assert_eq!(e.property::<f64>("skeleton-line-width"), 6.0);
@@ -167,6 +175,7 @@ mod tests {
             Some("pose/".to_string())
         );
         assert!(e.property::<bool>("suppress-builtin-rendering"));
+        assert!(!e.property::<bool>("publish-claimed-regions"));
     }
 
     #[test]

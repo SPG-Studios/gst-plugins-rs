@@ -18,7 +18,9 @@
 use crate::coordination::{ClaimedRegion, seed_registry_from_regions};
 use crate::geometry::{OccupiedRegionRegistry, Rect};
 use crate::overlay_intent::{CandidateKind, LabelIntent};
-use crate::render::{DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, LEADER_LINE_WIDTH};
+use crate::render::{
+    DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, LEADER_LINE_WIDTH, LineRole,
+};
 
 /// Offset of the near (primary) ring of candidates from the feature, in pixels.
 const CANDIDATE_GAP: i32 = 4;
@@ -288,6 +290,7 @@ pub fn push_leader_line(
         y1: to.1 as f32,
         argb,
         width: LEADER_LINE_WIDTH,
+        role: LineRole::Leader,
     });
 }
 

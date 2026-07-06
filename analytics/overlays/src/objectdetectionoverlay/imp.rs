@@ -409,6 +409,7 @@ impl ObjectImpl for ObjectDetectionOverlay {
                     .mutable_playing()
                     .build(),
                 crate::coordination::priority_param_spec(),
+                crate::coordination::publish_claimed_regions_param_spec(),
             ]
         });
 
@@ -472,6 +473,10 @@ impl ObjectImpl for ObjectDetectionOverlay {
                 let mut settings = self.settings.lock().unwrap();
                 settings.priority = value.get().expect("type checked upstream");
             }
+            "publish-claimed-regions" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.publish_claimed_regions = value.get().expect("type checked upstream");
+            }
             "defer-labels" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.defer_labels = value.get().expect("type checked upstream");
@@ -521,6 +526,10 @@ impl ObjectImpl for ObjectDetectionOverlay {
             "priority" => {
                 let settings = self.settings.lock().unwrap();
                 settings.priority.to_value()
+            }
+            "publish-claimed-regions" => {
+                let settings = self.settings.lock().unwrap();
+                settings.publish_claimed_regions.to_value()
             }
             "defer-labels" => {
                 let settings = self.settings.lock().unwrap();
@@ -710,7 +719,7 @@ impl VideoFilterImpl for ObjectDetectionOverlay {
         // claimed (suppression only applies when a hook replaces them).
         let builtins_suppressed =
             settings.suppress_builtin_rendering && self.draw_hooks.lock().unwrap().has_hooks();
-        if !builtins_suppressed && !commands.is_empty() {
+        if !builtins_suppressed && !commands.is_empty() && settings.publish_claimed_regions {
             // SAFETY: the frame is writable and uniquely borrowed here.
             let buffer = unsafe { gst::BufferRef::from_mut_ptr((*frame.as_mut_ptr()).buffer) };
             crate::coordination::claim_commands(

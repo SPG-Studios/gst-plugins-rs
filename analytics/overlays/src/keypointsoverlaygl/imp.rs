@@ -130,6 +130,7 @@ impl ObjectImpl for KeypointsOverlayGl {
                     .mutable_playing()
                     .build(),
                 crate::coordination::priority_param_spec(),
+                crate::coordination::publish_claimed_regions_param_spec(),
             ]
         });
         PROPERTIES.as_ref()
@@ -149,6 +150,7 @@ impl ObjectImpl for KeypointsOverlayGl {
             "semantic-tag" => settings.semantic_tag = value.get().expect(e),
             "defer-labels" => settings.defer_labels = value.get().expect(e),
             "priority" => settings.priority = value.get().expect(e),
+            "publish-claimed-regions" => settings.publish_claimed_regions = value.get().expect(e),
             _ => unimplemented!(),
         }
     }
@@ -166,6 +168,7 @@ impl ObjectImpl for KeypointsOverlayGl {
             "semantic-tag" => settings.semantic_tag.to_value(),
             "defer-labels" => settings.defer_labels.to_value(),
             "priority" => settings.priority.to_value(),
+            "publish-claimed-regions" => settings.publish_claimed_regions.to_value(),
             _ => unimplemented!(),
         }
     }
@@ -219,9 +222,12 @@ impl BaseTransformImpl for KeypointsOverlayGl {
         if let PrepareOutputBufferSuccess::Buffer(mut outbuf) = success {
             let commands = self.pending.lock().unwrap().clone();
             let deferred = self.pending_labels.lock().unwrap().clone();
-            let priority = self.settings.lock().unwrap().priority;
+            let (priority, publish_claimed_regions) = {
+                let settings = self.settings.lock().unwrap();
+                (settings.priority, settings.publish_claimed_regions)
+            };
             if let Some(buffer) = outbuf.get_mut() {
-                if !commands.is_empty() {
+                if publish_claimed_regions && !commands.is_empty() {
                     crate::coordination::claim_commands(
                         buffer,
                         &commands,

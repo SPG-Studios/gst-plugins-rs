@@ -20,7 +20,7 @@ use crate::placement::{
     LabelPlacement, leader_endpoints, place_label, point_label_candidates, push_leader_line,
 };
 use crate::render::{
-    AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT,
+    AnalyticsFrame, DrawCommand, LABEL_LAYOUT_GAP, LABEL_LAYOUT_HEIGHT, LineRole,
     measure_centered_label_text_width,
 };
 
@@ -65,6 +65,8 @@ pub(crate) struct Settings {
     /// When set, emit labels as deferred intents for a downstream compositor
     /// (see [`crate::overlay_intent`]) instead of placing/rendering them here.
     pub(crate) defer_labels: bool,
+    /// Publish drawn content as claimed regions for downstream coordination.
+    pub(crate) publish_claimed_regions: bool,
 }
 
 impl Default for Settings {
@@ -82,6 +84,7 @@ impl Default for Settings {
             suppress_builtin_rendering: DEFAULT_SUPPRESS_BUILTIN_RENDERING,
             priority: crate::coordination::DEFAULT_PRIORITY,
             defer_labels: DEFAULT_DEFER_LABELS,
+            publish_claimed_regions: crate::coordination::DEFAULT_PUBLISH_CLAIMED_REGIONS,
         }
     }
 }
@@ -317,6 +320,7 @@ fn push_relation_skeleton(
                     y1: y1 as f32,
                     argb: ctx.settings.skeleton_color,
                     width: ctx.settings.skeleton_line_width as f32,
+                    role: LineRole::Skeleton,
                 });
             }
         }
@@ -424,6 +428,7 @@ impl GroupRenderer for HandKp21Renderer {
                 y1: y1 as f32,
                 argb: ctx.settings.skeleton_color,
                 width: ctx.settings.skeleton_line_width as f32,
+                role: LineRole::Skeleton,
             });
         }
     }
