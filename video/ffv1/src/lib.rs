@@ -17,6 +17,12 @@
 mod ffv1dec;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), gst::glib::BoolError> {
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     ffv1dec::register(plugin)
 }
 

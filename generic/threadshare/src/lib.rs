@@ -39,6 +39,12 @@ use gst::glib;
 use gst::prelude::*;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     dataqueue::QueueLeakyMode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
     appsrc::register(plugin)?;
     audiotestsrc::register(plugin)?;

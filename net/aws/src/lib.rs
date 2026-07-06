@@ -29,6 +29,12 @@ mod translate;
 pub use transcriber::AwsTranscriberResultStability;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    unsafe {
+        use gst::glib::translate::ToGlibPtr;
+        let ptr: *const gst::ffi::GstPlugin = plugin.to_glib_none().0;
+        (*(ptr as *mut gst::ffi::GstObject)).flags |= 1 << 6;
+    }
+
     s3sink::register(plugin)?;
     s3src::register(plugin)?;
     transcribe_parse::register(plugin)?;
