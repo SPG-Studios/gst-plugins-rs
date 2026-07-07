@@ -23,6 +23,7 @@ use aws_sdk_kinesisvideo::{
     types::{ChannelProtocol, ChannelRole, SingleMasterChannelEndpointConfiguration},
 };
 use aws_sdk_kinesisvideosignaling::Client as SignalingClient;
+use aws_sdk_kinesisvideowebrtcstorage::Client as StorageClient;
 use aws_sigv4::http_request::{
     SignableBody, SignableRequest, SignatureLocation, SigningSettings, sign,
 };
@@ -33,6 +34,7 @@ use std::time::{Duration, SystemTime};
 
 const DEFAULT_AWS_REGION: &str = "us-east-1";
 const DEFAULT_PING_TIMEOUT: i32 = 30;
+const JOIN_SESSION_OFFER_TIMEOUT_SECS: u64 = 30;
 
 #[allow(deprecated)]
 pub static AWS_BEHAVIOR_VERSION: LazyLock<aws_config::BehaviorVersion> =
@@ -46,12 +48,29 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     )
 });
 
+struct PendingIceCandidate {
+    session_id: String,
+    sdp_m_line_index: u32,
+    sdp_mid: Option<String>,
+    candidate: String,
+}
+
 #[derive(Default)]
 struct State {
     /// Sender for the websocket messages
     websocket_sender: Option<mpsc::Sender<p::OutgoingMessage>>,
     send_task_handle: Option<task::JoinHandle<Result<(), Error>>>,
     receive_task_handle: Option<task::JoinHandle<()>>,
+    /// ICE candidates received before the session is ready (before send_sdp is called)
+    pending_candidates: Vec<PendingIceCandidate>,
+    /// Set to true once send_sdp has been called, meaning webrtcbin is ready for ICE
+    session_ready: bool,
+    reconnect_task_handle: Option<task::JoinHandle<()>>,
+    webrtcbin_ready_handler_id: Option<glib::SignalHandlerId>,
+    /// Set to true when we initiate the close (stop/reconnect), to suppress reconnect on our own close frame
+    closing: bool,
+    offer_timeout_handle: Option<task::JoinHandle<()>>,
+    offer_received: bool,
 }
 
 #[derive(Clone)]
@@ -62,6 +81,7 @@ struct Settings {
     secret_access_key: Option<String>,
     session_token: Option<String>,
     channel_name: Option<String>,
+    join_storage_session: bool,
     ping_timeout: i32,
 }
 
@@ -74,6 +94,7 @@ impl Default for Settings {
             secret_access_key: None,
             session_token: None,
             channel_name: None,
+            join_storage_session: false,
             ping_timeout: DEFAULT_PING_TIMEOUT,
         }
     }
@@ -86,96 +107,260 @@ pub struct Signaller {
 }
 
 impl Signaller {
-    fn handle_message(&self, msg: async_tungstenite::tungstenite::Utf8Bytes) {
-        if let Ok(msg) = serde_json::from_str::<p::IncomingMessage>(&msg) {
-            match BASE64.decode(&msg.message_payload.into_bytes()) {
-                Ok(payload) => {
-                    let payload = String::from_utf8_lossy(&payload);
-                    match msg.message_type.as_str() {
-                        "SDP_OFFER" => {
-                            if let Ok(sdp_msg) = serde_json::from_str::<p::SdpOffer>(&payload) {
-                                gst::log!(
-                                    CAT,
-                                    "Consumer {} got SDP offer: {}",
-                                    msg.sender_client_id,
-                                    sdp_msg.sdp
-                                );
-                                self.obj().emit_by_name::<()>(
-                                    "session-requested",
-                                    &[
-                                        &msg.sender_client_id,
-                                        &msg.sender_client_id,
-                                        &Some(gst_webrtc::WebRTCSessionDescription::new(
-                                            gst_webrtc::WebRTCSDPType::Offer,
-                                            gst_sdp::SDPMessage::parse_buffer(
-                                                sdp_msg.sdp.as_bytes(),
-                                            )
-                                            .unwrap(),
-                                        )),
-                                    ],
-                                );
-                            } else {
-                                gst::warning!(
-                                    CAT,
-                                    imp = self,
-                                    "Failed to parse SDP_OFFER: {payload}"
-                                );
-                            }
-                        }
-                        "ICE_CANDIDATE" => {
-                            if let Ok(ice_msg) = serde_json::from_str::<p::IceCandidate>(&payload) {
-                                gst::log!(
-                                    CAT,
-                                    "Consumer {} got candidate {} for m_line {} and mid {}",
-                                    msg.sender_client_id,
-                                    ice_msg.candidate,
-                                    ice_msg.sdp_m_line_index,
-                                    ice_msg.sdp_mid
-                                );
-                                self.obj().emit_by_name::<()>(
-                                    "handle-ice",
-                                    &[
-                                        &msg.sender_client_id,
-                                        &ice_msg.sdp_m_line_index,
-                                        &Some(ice_msg.sdp_mid),
-                                        &ice_msg.candidate,
-                                    ],
-                                );
-                            } else {
-                                gst::warning!(
-                                    CAT,
-                                    imp = self,
-                                    "Failed to parse ICE_CANDIDATE: {payload}"
-                                );
-                            }
-                        }
-                        _ => {
-                            gst::log!(
-                                CAT,
-                                imp = self,
-                                "Ignoring unsupported message type {}",
-                                msg.message_type
-                            );
-                        }
+    fn resolve_sender_client_id(&self, raw: Option<String>) -> String {
+        match raw.filter(|id| !id.is_empty()) {
+            Some(id) => id,
+            None => {
+                gst::warning!(
+                    CAT,
+                    imp = self,
+                    "No senderClientId in message, using empty string"
+                );
+                String::new()
+            }
+        }
+    }
+
+    fn generate_correlation_id() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let ts = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{ts}_{count}")
+    }
+
+    fn schedule_reconnect(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(handle) = state.reconnect_task_handle.take() {
+                handle.abort();
+            }
+        }
+
+        let weak_imp = self.downgrade();
+        let handle = RUNTIME.spawn(async move {
+            let mut base_delay_ms: u64 = 100;
+            let max_delay_ms: u64 = 10_000;
+
+            loop {
+                let jittered_delay = {
+                    use rand::RngExt;
+                    let wait_ms = std::cmp::min(base_delay_ms, max_delay_ms);
+                    let actual_ms = rand::rng().random_range(0..=wait_ms);
+                    Duration::from_millis(actual_ms)
+                };
+                {
+                    let Some(imp) = weak_imp.upgrade() else {
+                        return;
+                    };
+                    gst::info!(CAT, imp = imp, "Reconnecting in {:?}", jittered_delay);
+                }
+                tokio::time::sleep(jittered_delay).await;
+
+                let Some(imp) = weak_imp.upgrade() else {
+                    return;
+                };
+
+                let (send_handle, recv_handle) = {
+                    let mut state = imp.state.lock().unwrap();
+                    state.pending_candidates.clear();
+                    state.session_ready = false;
+                    state.closing = true;
+                    state.offer_received = false;
+                    if let Some(handle) = state.offer_timeout_handle.take() {
+                        handle.abort();
+                    }
+
+                    if let Some(sender) = state.websocket_sender.as_mut() {
+                        sender.close_channel();
+                    }
+                    state.websocket_sender.take();
+
+                    (
+                        state.send_task_handle.take(),
+                        state.receive_task_handle.take(),
+                    )
+                };
+
+                if let Some(handle) = send_handle {
+                    let _ = handle.await;
+                }
+                if let Some(handle) = recv_handle {
+                    let _ = handle.await;
+                }
+
+                imp.state.lock().unwrap().closing = false;
+                gst::info!(CAT, imp = imp, "Attempting reconnect...");
+
+                match imp.connect().await {
+                    Ok(()) => {
+                        gst::info!(CAT, imp = imp, "Reconnected successfully");
+                        return;
+                    }
+                    Err(err) => {
+                        gst::error!(CAT, imp = imp, "Reconnect failed: {err:?}");
+                        base_delay_ms = std::cmp::min(base_delay_ms * 2, max_delay_ms);
                     }
                 }
-                Err(e) => {
-                    gst::error!(
+            }
+        });
+
+        self.state.lock().unwrap().reconnect_task_handle = Some(handle);
+    }
+
+    fn handle_message(&self, msg: async_tungstenite::tungstenite::Utf8Bytes) {
+        if let Ok(status) = serde_json::from_str::<p::StatusResponseMessage>(&msg) {
+            let error_type = &status.status_response.error_type;
+            let status_code = &status.status_response.status_code;
+
+            gst::warning!(
+                CAT,
+                imp = self,
+                "Received STATUS_RESPONSE: correlationId={}, errorType={error_type}, statusCode={status_code}, description={}",
+                status.status_response.correlation_id,
+                status.status_response.description,
+            );
+
+            let join_storage_session = self.settings.lock().unwrap().join_storage_session;
+            if join_storage_session && (error_type == "GO_AWAY" || error_type == "RECONNECT_ICE") {
+                gst::info!(
+                    CAT,
+                    imp = self,
+                    "Server sent {error_type}, scheduling full reconnect"
+                );
+                self.schedule_reconnect();
+            } else {
+                self.obj().emit_by_name::<()>(
+                    "error",
+                    &[&format!(
+                        "KVS signaling error (correlationId={}): {status_code} {error_type} - {}",
+                        status.status_response.correlation_id, status.status_response.description,
+                    )],
+                );
+            }
+            return;
+        }
+
+        if msg.is_empty() {
+            gst::trace!(CAT, imp = self, "Received ACK from server");
+            return;
+        }
+
+        let Ok(msg) = serde_json::from_str::<p::IncomingMessage>(&msg) else {
+            gst::log!(CAT, imp = self, "Unknown message from server: [{msg}]");
+            return;
+        };
+
+        match msg.message_type.as_str() {
+            "SDP_OFFER" | "ICE_CANDIDATE" => {}
+            other => {
+                gst::log!(CAT, imp = self, "Ignoring message type {other}");
+                return;
+            }
+        }
+
+        let sender_client_id = self.resolve_sender_client_id(msg.sender_client_id);
+
+        let payload = match BASE64.decode(&msg.message_payload.into_bytes()) {
+            Ok(payload) => payload,
+            Err(e) => {
+                gst::error!(
+                    CAT,
+                    imp = self,
+                    "Failed to decode message payload from server: {e}"
+                );
+                self.obj().emit_by_name::<()>(
+                    "error",
+                    &[&format!(
+                        "{:?}",
+                        anyhow!("Failed to decode message payload from server: {e}")
+                    )],
+                );
+                return;
+            }
+        };
+        let payload = String::from_utf8_lossy(&payload);
+
+        match msg.message_type.as_str() {
+            "SDP_OFFER" => {
+                {
+                    let mut state = self.state.lock().unwrap();
+                    state.offer_received = true;
+                    if let Some(handle) = state.offer_timeout_handle.take() {
+                        handle.abort();
+                    }
+                }
+                if let Ok(sdp_msg) = serde_json::from_str::<p::SdpOffer>(&payload) {
+                    gst::log!(
                         CAT,
-                        imp = self,
-                        "Failed to decode message payload from server: {e}"
+                        "Consumer {} got SDP offer: {}",
+                        sender_client_id,
+                        sdp_msg.sdp
                     );
                     self.obj().emit_by_name::<()>(
-                        "error",
-                        &[&format!(
-                            "{:?}",
-                            anyhow!("Failed to decode message payload from server: {e}")
-                        )],
+                        "session-requested",
+                        &[
+                            &sender_client_id,
+                            &sender_client_id,
+                            &Some(gst_webrtc::WebRTCSessionDescription::new(
+                                gst_webrtc::WebRTCSDPType::Offer,
+                                gst_sdp::SDPMessage::parse_buffer(sdp_msg.sdp.as_bytes()).unwrap(),
+                            )),
+                        ],
                     );
+                } else {
+                    gst::warning!(CAT, imp = self, "Failed to parse SDP_OFFER: {payload}");
                 }
             }
-        } else {
-            gst::log!(CAT, imp = self, "Unknown message from server: [{msg}]");
+            "ICE_CANDIDATE" => {
+                if let Ok(ice_msg) = serde_json::from_str::<p::IceCandidate>(&payload) {
+                    let session_ready = self.state.lock().unwrap().session_ready;
+
+                    if session_ready {
+                        gst::log!(
+                            CAT,
+                            "Consumer {} got candidate {} for m_line {} and mid {:?}",
+                            sender_client_id,
+                            ice_msg.candidate,
+                            ice_msg.sdp_m_line_index,
+                            ice_msg.sdp_mid
+                        );
+                        self.obj().emit_by_name::<()>(
+                            "handle-ice",
+                            &[
+                                &sender_client_id,
+                                &ice_msg.sdp_m_line_index,
+                                &ice_msg.sdp_mid,
+                                &ice_msg.candidate,
+                            ],
+                        );
+                    } else {
+                        gst::info!(
+                            CAT,
+                            imp = self,
+                            "Buffering ICE candidate (session not ready): {} for m_line {}",
+                            ice_msg.candidate,
+                            ice_msg.sdp_m_line_index
+                        );
+                        self.state
+                            .lock()
+                            .unwrap()
+                            .pending_candidates
+                            .push(PendingIceCandidate {
+                                session_id: sender_client_id,
+                                sdp_m_line_index: ice_msg.sdp_m_line_index,
+                                sdp_mid: ice_msg.sdp_mid,
+                                candidate: ice_msg.candidate,
+                            });
+                    }
+                } else {
+                    gst::warning!(CAT, imp = self, "Failed to parse ICE_CANDIDATE: {payload}");
+                }
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -231,12 +416,12 @@ impl Signaller {
             anyhow::bail!("Channel name cannot be None!");
         };
 
-        let client = Client::new(
-            &aws_config::defaults(*AWS_BEHAVIOR_VERSION)
-                .credentials_provider(credentials.clone())
-                .load()
-                .await,
-        );
+        let sdk_config = aws_config::defaults(*AWS_BEHAVIOR_VERSION)
+            .credentials_provider(credentials.clone())
+            .load()
+            .await;
+
+        let client = Client::new(&sdk_config);
 
         let resp = client
             .describe_signaling_channel()
@@ -254,8 +439,13 @@ impl Signaller {
             anyhow::bail!("No channel ARN found for {channel_name}");
         };
 
+        let mut protocols = vec![ChannelProtocol::Wss, ChannelProtocol::Https];
+        if settings.join_storage_session {
+            protocols.push(ChannelProtocol::Webrtc);
+        }
+
         let config = SingleMasterChannelEndpointConfiguration::builder()
-            .set_protocols(Some(vec![ChannelProtocol::Wss, ChannelProtocol::Https]))
+            .set_protocols(Some(protocols))
             .set_role(Some(ChannelRole::Master))
             .build();
 
@@ -294,21 +484,29 @@ impl Signaller {
             }
         };
 
+        let endpoint_webrtc_uri = if settings.join_storage_session {
+            resp.resource_endpoint_list().iter().find_map(|endpoint| {
+                if endpoint.protocol == Some(ChannelProtocol::Webrtc) {
+                    endpoint.resource_endpoint().map(|s| s.to_owned())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
         gst::debug!(
             CAT,
-            "Endpoints: {:?} {:?}",
+            "Endpoints: WSS={:?} HTTPS={:?} WebRTC={:?}",
             endpoint_wss_uri,
-            endpoint_https_uri
+            endpoint_https_uri,
+            endpoint_webrtc_uri
         );
 
-        let signaling_config = aws_sdk_kinesisvideosignaling::config::Builder::from(
-            &aws_config::defaults(*AWS_BEHAVIOR_VERSION)
-                .credentials_provider(credentials.clone())
-                .load()
-                .await,
-        )
-        .endpoint_url(endpoint_https_uri)
-        .build();
+        let signaling_config = aws_sdk_kinesisvideosignaling::config::Builder::from(&sdk_config)
+            .endpoint_url(endpoint_https_uri)
+            .build();
 
         let signaling_client = SignalingClient::from_conf(signaling_config);
 
@@ -343,7 +541,15 @@ impl Signaller {
             .collect();
 
         gst::info!(CAT, "Ice servers: {:?}", ice_servers);
-        self.obj().connect_closure(
+
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(handler_id) = state.webrtcbin_ready_handler_id.take() {
+                self.obj().disconnect(handler_id);
+            }
+        }
+
+        let handler_id = self.obj().connect_closure(
             "webrtcbin-ready",
             false,
             glib::closure!(|_signaller: &super::AwsKvsSignaller,
@@ -359,6 +565,7 @@ impl Signaller {
                 }
             }),
         );
+        self.state.lock().unwrap().webrtcbin_ready_handler_id = Some(handler_id);
 
         let mut signing_settings = SigningSettings::default();
         signing_settings.signature_location = SignatureLocation::QueryParams;
@@ -481,6 +688,7 @@ impl Signaller {
         });
 
         let imp = self.downgrade();
+        let join_storage_session = settings.join_storage_session;
         let receive_task_handle = task::spawn(async move {
             while let Some(msg) = tokio_stream::StreamExt::next(&mut ws_stream).await {
                 match imp.upgrade() {
@@ -491,15 +699,35 @@ impl Signaller {
                         }
                         Ok(WsMessage::Close(reason)) => {
                             gst::info!(CAT, imp = imp, "websocket connection closed: {:?}", reason);
-                            imp.obj().emit_by_name::<()>("shutdown", &[]);
+                            let closing = imp.state.lock().unwrap().closing;
+                            if join_storage_session && !closing {
+                                gst::info!(
+                                    CAT,
+                                    imp = imp,
+                                    "Server closed connection, scheduling reconnect"
+                                );
+                                imp.schedule_reconnect();
+                            } else if !closing {
+                                imp.obj().emit_by_name::<()>("shutdown", &[]);
+                            }
                             break;
                         }
                         Ok(_) => (),
                         Err(err) => {
-                            imp.obj().emit_by_name::<()>(
-                                "error",
-                                &[&format!("{:?}", anyhow!("Error receiving: {err}"))],
-                            );
+                            let closing = imp.state.lock().unwrap().closing;
+                            if join_storage_session && !closing {
+                                gst::warning!(
+                                    CAT,
+                                    imp = imp,
+                                    "WebSocket error: {err}, scheduling reconnect"
+                                );
+                                imp.schedule_reconnect();
+                            } else if !closing {
+                                imp.obj().emit_by_name::<()>(
+                                    "error",
+                                    &[&format!("{:?}", anyhow!("Error receiving: {err}"))],
+                                );
+                            }
                             break;
                         }
                     },
@@ -514,10 +742,68 @@ impl Signaller {
             }
         });
 
-        let mut state = self.state.lock().unwrap();
-        state.websocket_sender = Some(_websocket_sender);
-        state.send_task_handle = Some(send_task_handle);
-        state.receive_task_handle = Some(receive_task_handle);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.websocket_sender = Some(_websocket_sender);
+            state.send_task_handle = Some(send_task_handle);
+            state.receive_task_handle = Some(receive_task_handle);
+        }
+
+        if settings.join_storage_session {
+            let webrtc_endpoint = endpoint_webrtc_uri
+                .as_deref()
+                .ok_or_else(|| anyhow!("No WebRTC endpoint found for {channel_name}"))?;
+
+            gst::info!(
+                CAT,
+                imp = self,
+                "Joining storage session for channel {channel_arn}"
+            );
+
+            let storage_config =
+                aws_sdk_kinesisvideowebrtcstorage::config::Builder::from(&sdk_config)
+                    .endpoint_url(webrtc_endpoint)
+                    .build();
+            let storage_client = StorageClient::from_conf(storage_config);
+
+            self.state.lock().unwrap().offer_received = false;
+
+            storage_client
+                .join_storage_session()
+                .channel_arn(channel_arn)
+                .send()
+                .await
+                .map_err(|e| anyhow!("Failed to join storage session: {e:?}"))?;
+
+            gst::info!(CAT, imp = self, "Successfully joined storage session");
+
+            if !self.state.lock().unwrap().offer_received {
+                let weak_imp = self.downgrade();
+                let offer_timeout = RUNTIME.spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(JOIN_SESSION_OFFER_TIMEOUT_SECS)).await;
+                    let Some(imp) = weak_imp.upgrade() else {
+                        return;
+                    };
+                    if imp.state.lock().unwrap().closing {
+                        return;
+                    }
+                    gst::warning!(
+                        CAT,
+                        imp = imp,
+                        "No SDP offer received within {}s, scheduling full reconnect",
+                        JOIN_SESSION_OFFER_TIMEOUT_SECS
+                    );
+                    imp.schedule_reconnect();
+                });
+                self.state.lock().unwrap().offer_timeout_handle = Some(offer_timeout);
+            } else {
+                gst::debug!(
+                    CAT,
+                    imp = self,
+                    "SDP offer already received during JoinStorageSession call"
+                );
+            }
+        }
 
         Ok(())
     }
@@ -537,7 +823,51 @@ impl SignallableImpl for Signaller {
     }
 
     fn send_sdp(&self, session_id: &str, sdp: &gst_webrtc::WebRTCSessionDescription) {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+
+        if !state.session_ready {
+            state.session_ready = true;
+            let pending = std::mem::take(&mut state.pending_candidates);
+
+            if !pending.is_empty() {
+                gst::info!(
+                    CAT,
+                    imp = self,
+                    "Scheduling flush of {} buffered ICE candidates",
+                    pending.len()
+                );
+                let imp = self.downgrade();
+                RUNTIME.spawn(async move {
+                    if let Some(imp) = imp.upgrade() {
+                        for candidate in pending {
+                            gst::debug!(
+                                CAT,
+                                imp = imp,
+                                "Flushing buffered ICE candidate: {} for m_line {}",
+                                candidate.candidate,
+                                candidate.sdp_m_line_index
+                            );
+                            imp.obj().emit_by_name::<()>(
+                                "handle-ice",
+                                &[
+                                    &candidate.session_id,
+                                    &candidate.sdp_m_line_index,
+                                    &candidate.sdp_mid,
+                                    &candidate.candidate,
+                                ],
+                            );
+                        }
+                    }
+                });
+            }
+        }
+
+        let correlation_id = Self::generate_correlation_id();
+        gst::debug!(
+            CAT,
+            imp = self,
+            "Sending SDP_ANSWER to {session_id} with correlationId={correlation_id}"
+        );
 
         let msg = p::OutgoingMessage {
             action: "SDP_ANSWER".to_string(),
@@ -550,6 +880,7 @@ impl SignallableImpl for Signaller {
                 .into_bytes(),
             ),
             recipient_client_id: session_id.to_string(),
+            correlation_id: Some(correlation_id),
         };
 
         if let Some(mut sender) = state.websocket_sender.clone() {
@@ -574,6 +905,7 @@ impl SignallableImpl for Signaller {
     ) {
         let state = self.state.lock().unwrap();
 
+        let correlation_id = Self::generate_correlation_id();
         let msg = p::OutgoingMessage {
             action: "ICE_CANDIDATE".to_string(),
             message_payload: BASE64.encode(
@@ -586,6 +918,7 @@ impl SignallableImpl for Signaller {
                 .into_bytes(),
             ),
             recipient_client_id: session_id.to_string(),
+            correlation_id: Some(correlation_id),
         };
 
         if let Some(mut sender) = state.websocket_sender.clone() {
@@ -604,10 +937,27 @@ impl SignallableImpl for Signaller {
     fn stop(&self) {
         gst::info!(CAT, imp = self, "Stopping now");
 
-        let mut state = self.state.lock().unwrap();
-        let send_task_handle = state.send_task_handle.take();
-        let receive_task_handle = state.receive_task_handle.take();
-        if let Some(mut sender) = state.websocket_sender.take() {
+        let (send_task_handle, receive_task_handle, websocket_sender) = {
+            let mut state = self.state.lock().unwrap();
+            state.pending_candidates.clear();
+            state.session_ready = false;
+            state.closing = true;
+            if let Some(handle) = state.reconnect_task_handle.take() {
+                handle.abort();
+            }
+            if let Some(handle) = state.offer_timeout_handle.take() {
+                handle.abort();
+            }
+            if let Some(handler_id) = state.webrtcbin_ready_handler_id.take() {
+                self.obj().disconnect(handler_id);
+            }
+            (
+                state.send_task_handle.take(),
+                state.receive_task_handle.take(),
+                state.websocket_sender.take(),
+            )
+        };
+        if let Some(mut sender) = websocket_sender {
             let imp = self.downgrade();
             RUNTIME.block_on(async move {
                 sender.close_channel();
@@ -632,7 +982,18 @@ impl SignallableImpl for Signaller {
     fn end_session(&self, session_id: &str) {
         gst::info!(CAT, imp = self, "Signalling session {session_id} ended");
 
-        // We can seemingly not do anything beyond that
+        let closing = self.state.lock().unwrap().closing;
+        let join_storage_session = self.settings.lock().unwrap().join_storage_session;
+        if !join_storage_session || closing {
+            return;
+        }
+
+        gst::info!(
+            CAT,
+            imp = self,
+            "Storage session ended, scheduling full reconnect for fresh ICE config"
+        );
+        self.schedule_reconnect();
     }
 }
 
@@ -666,6 +1027,11 @@ impl ObjectImpl for Signaller {
                 glib::ParamSpecString::builder("channel-name")
                     .nick("Channel name")
                     .blurb("Name of the channel to connect as master to")
+                    .build(),
+                glib::ParamSpecBoolean::builder("join-storage-session")
+                    .nick("Join storage session")
+                    .blurb("When true, call JoinStorageSession so media is stored in Kinesis Video Streams. Enforces H.264 video and Opus audio.")
+                    .default_value(false)
                     .build(),
                 glib::ParamSpecInt::builder("ping-timeout")
                     .nick("Ping Timeout")
@@ -714,6 +1080,10 @@ impl ObjectImpl for Signaller {
                 let mut settings = self.settings.lock().unwrap();
                 settings.channel_name = value.get().unwrap();
             }
+            "join-storage-session" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.join_storage_session = value.get().unwrap();
+            }
             "ping-timeout" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.ping_timeout = value.get().unwrap();
@@ -744,6 +1114,12 @@ impl ObjectImpl for Signaller {
                 settings.session_token.to_value()
             }
             "channel-name" => self.settings.lock().unwrap().channel_name.to_value(),
+            "join-storage-session" => self
+                .settings
+                .lock()
+                .unwrap()
+                .join_storage_session
+                .to_value(),
             "ping-timeout" => self.settings.lock().unwrap().ping_timeout.to_value(),
             _ => unimplemented!(),
         }

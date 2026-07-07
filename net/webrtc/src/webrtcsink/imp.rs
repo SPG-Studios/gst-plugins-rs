@@ -6781,6 +6781,71 @@ pub(super) mod aws {
 
             Some(&*ELEMENT_METADATA)
         }
+
+        fn change_state(
+            &self,
+            transition: gst::StateChange,
+        ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
+            if let gst::StateChange::ReadyToPaused = transition {
+                let element = self.obj();
+                let ws = element
+                    .upcast_ref::<crate::webrtcsink::BaseWebRTCSink>()
+                    .imp();
+                let (signaller, video_caps, audio_caps) = {
+                    let settings = ws.settings.lock().unwrap();
+                    (
+                        settings.signaller.clone(),
+                        settings.video_caps.clone(),
+                        settings.audio_caps.clone(),
+                    )
+                };
+
+                if signaller.property::<bool>("join-storage-session") {
+                    let h264_caps = gst::Caps::builder("video/x-h264").build();
+                    let opus_caps = gst::Caps::builder("audio/x-opus").build();
+
+                    let video_caps_h264 = video_caps.intersect(&h264_caps);
+                    if video_caps_h264.is_empty() {
+                        gst::element_error!(
+                            element,
+                            gst::StreamError::Format,
+                            [
+                                "join-storage-session requires H.264 video, but configured \
+                                 video-caps {} do not include video/x-h264",
+                                video_caps
+                            ]
+                        );
+                        return Err(gst::StateChangeError);
+                    }
+
+                    let audio_caps_opus = audio_caps.intersect(&opus_caps);
+                    if audio_caps_opus.is_empty() {
+                        gst::element_error!(
+                            element,
+                            gst::StreamError::Format,
+                            [
+                                "join-storage-session requires Opus audio, but configured \
+                                 audio-caps {} do not include audio/x-opus",
+                                audio_caps
+                            ]
+                        );
+                        return Err(gst::StateChangeError);
+                    }
+
+                    gst::info!(
+                        CAT,
+                        imp = self,
+                        "join-storage-session: narrowing caps to video={} audio={}",
+                        video_caps_h264,
+                        audio_caps_opus
+                    );
+                    element.set_property("video-caps", &video_caps_h264);
+                    element.set_property("audio-caps", &audio_caps_opus);
+                }
+            }
+
+            self.parent_change_state(transition)
+        }
     }
 
     impl BinImpl for AwsKvsWebRTCSink {}
