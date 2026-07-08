@@ -123,6 +123,7 @@ struct Settings {
     movie_timescale: u32,
     extra_brands: Vec<[u8; 4]>,
     with_precision_timestamps: bool,
+    is_gimi: bool,
 }
 
 impl Default for Settings {
@@ -133,6 +134,7 @@ impl Default for Settings {
             movie_timescale: 0,
             extra_brands: Vec::new(),
             with_precision_timestamps: false,
+            is_gimi: false,
         }
     }
 }
@@ -149,7 +151,7 @@ struct PendingBuffer {
 #[derive(Debug)]
 struct Stream {
     /// Sink pad for this stream.
-    sinkpad: crate::isobmff::MP4MuxPad,
+    sinkpad: crate::isobmff::BaseMP4MuxPad,
 
     /// Pre-queue for ONVIF variant to timestamp all buffers with their UTC time.
     pre_queue: VecDeque<(gst::FormattedSegment<gst::ClockTime>, gst::Buffer)>,
@@ -224,6 +226,14 @@ struct Stream {
     #[cfg(feature = "v1_28")]
     /// The last TAI timestamp value, in nanoseconds after epoch
     last_tai_timestamp: u64,
+
+    #[cfg(feature = "v1_28")]
+    /// Optional GIMI content id
+    gimi_content_id: Option<String>,
+
+    #[cfg(feature = "v1_28")]
+    /// Optional GIMI component content id
+    gimi_component_content_id: Vec<String>,
 }
 
 impl Stream {
@@ -396,6 +406,9 @@ struct State {
 
     /// Size of the `mdat` as written so far.
     mdat_size: u64,
+
+    /// Optional GIMI Security Markings XML and ContentID
+    gimi_security_markings_xml: Option<(String, String)>,
 }
 
 impl State {
@@ -419,7 +432,7 @@ impl MP4Mux {
     /// Checks if a buffer is valid according to the stream configuration.
     fn check_buffer(
         buffer: &gst::BufferRef,
-        sinkpad: &crate::isobmff::MP4MuxPad,
+        sinkpad: &crate::isobmff::BaseMP4MuxPad,
         delta_frames: DeltaFrames,
         discard_headers: bool,
     ) -> Result<(), gst::FlowError> {
@@ -516,7 +529,7 @@ impl MP4Mux {
 
     fn peek_buffer(
         &self,
-        sinkpad: &crate::isobmff::MP4MuxPad,
+        sinkpad: &crate::isobmff::BaseMP4MuxPad,
         delta_frames: DeltaFrames,
         discard_headers: bool,
         pre_queue: &mut VecDeque<(gst::FormattedSegment<gst::ClockTime>, gst::Buffer)>,
@@ -1380,6 +1393,47 @@ impl MP4Mux {
                         .push_back(timestamp_packet);
                 }
             }
+
+            #[cfg(feature = "v1_28")]
+            let gimi_content_id = gst::meta::CustomMeta::from_buffer(&buffer, "GimiContentID")
+                .ok()
+                .and_then(|meta| {
+                    meta.structure()
+                        .get_optional::<&str>("content-id")
+                        .ok()
+                        .flatten()
+                        .map(|s| s.to_owned())
+                })
+                .or_else(|| {
+                    if settings.is_gimi {
+                        Some(generate_gimi_content_id())
+                    } else {
+                        None
+                    }
+                });
+
+            #[cfg(feature = "v1_28")]
+            if let Some(gimi_content_id) = gimi_content_id {
+                gst::trace!(
+                    CAT,
+                    obj = stream.sinkpad,
+                    "Sample GIMI Content-ID is {}",
+                    gimi_content_id
+                );
+
+                let mut content_id: Vec<u8> = gimi_content_id.into_bytes();
+                content_id.extend([0]);
+
+                stream
+                    .pending_aux_info_data
+                    .entry(AuxiliaryInformation {
+                        aux_info_type: Some(*b"suid"),
+                        aux_info_type_parameter: 0,
+                    })
+                    .or_default()
+                    .push_back(content_id);
+            }
+
             stream.queued_chunk_time += duration;
             stream.queued_chunk_bytes += buffer.size() as u64;
 
@@ -1421,12 +1475,183 @@ impl MP4Mux {
     ) -> Result<(), gst::FlowError> {
         gst::info!(CAT, imp = self, "Creating streams");
 
+        state.gimi_security_markings_xml = None;
+
         for pad in self
             .obj()
             .sink_pads()
             .into_iter()
-            .map(|pad| pad.downcast::<crate::isobmff::MP4MuxPad>().unwrap())
+            .map(|pad| pad.downcast::<crate::isobmff::BaseMP4MuxPad>().unwrap())
         {
+            let caps = match pad.current_caps() {
+                Some(caps) => caps,
+                None => {
+                    gst::warning!(CAT, obj = pad, "Skipping pad without caps");
+                    continue;
+                }
+            };
+
+            gst::info!(CAT, obj = pad, "Configuring caps {caps:?}");
+
+            let s = caps.structure(0).unwrap();
+
+            let mut delta_frames = DeltaFrames::IntraOnly;
+            let mut discard_header_buffers = false;
+            let mut codec_specific_boxes = Vec::new();
+            let mut chnl_layout_info = None;
+            let mut _components: usize = 0;
+
+            if s.name().starts_with("video/") || s.name().starts_with("image/") {
+                _components = 3;
+            }
+
+            match s.name().as_str() {
+                "video/x-h264" | "video/x-h265" => {
+                    if !s.has_field_with_type("codec_data", gst::Buffer::static_type()) {
+                        gst::error!(CAT, obj = pad, "Received caps without codec_data");
+                        return Err(gst::FlowError::NotNegotiated);
+                    }
+                    delta_frames = DeltaFrames::Bidirectional;
+                }
+                "video/x-vp8" => {
+                    delta_frames = DeltaFrames::PredictiveOnly;
+                }
+                "video/x-vp9" => {
+                    if !s.has_field_with_type("colorimetry", str::static_type()) {
+                        gst::error!(CAT, obj = pad, "Received caps without colorimetry");
+                        return Err(gst::FlowError::NotNegotiated);
+                    }
+                    delta_frames = DeltaFrames::PredictiveOnly;
+                }
+                "video/x-av1" => {
+                    delta_frames = DeltaFrames::PredictiveOnly;
+                }
+                "image/jpeg" | "video/x-bayer" => (),
+                "application/x-zlib-compressed"
+                | "application/x-deflate-compressed"
+                | "application/x-brotli-compressed" => {
+                    if let Ok(ocaps) = s.get::<gst::Caps>("original-caps")
+                        && let Ok(vinfo) = gst_video::VideoInfo::from_caps(&ocaps)
+                    {
+                        _components = vinfo.format_info().n_components() as usize;
+                    }
+                }
+                "video/x-raw" => {
+                    if let Ok(vinfo) = gst_video::VideoInfo::from_caps(&caps) {
+                        _components = vinfo.format_info().n_components() as usize;
+                    }
+                }
+                "audio/mpeg" => {
+                    if !s.has_field_with_type("codec_data", gst::Buffer::static_type()) {
+                        gst::error!(CAT, obj = pad, "Received caps without codec_data");
+                        return Err(gst::FlowError::NotNegotiated);
+                    }
+                }
+                "audio/x-opus" => {
+                    match s
+                        .get::<gst::ArrayRef>("streamheader")
+                        .ok()
+                        .and_then(|a| a.first().and_then(|v| v.get::<gst::Buffer>().ok()))
+                    {
+                        Some(header) => {
+                            if gst_pbutils::codec_utils_opus_parse_header(&header, None).is_err() {
+                                gst::error!(CAT, obj = pad, "Received invalid Opus header");
+                                return Err(gst::FlowError::NotNegotiated);
+                            }
+                        }
+                        _ => {
+                            if gst_pbutils::codec_utils_opus_parse_caps(&caps, None).is_err() {
+                                gst::error!(CAT, obj = pad, "Received invalid Opus caps");
+                                return Err(gst::FlowError::NotNegotiated);
+                            }
+                        }
+                    }
+                }
+                "audio/x-flac" => {
+                    discard_header_buffers = true;
+                    if let Err(e) = s.get::<gst::ArrayRef>("streamheader") {
+                        gst::error!(
+                            CAT,
+                            obj = pad,
+                            "Muxing FLAC into MP4 needs streamheader: {}",
+                            e
+                        );
+                        return Err(gst::FlowError::NotNegotiated);
+                    };
+                }
+                "audio/x-ac3" | "audio/x-eac3" => {
+                    let Some(first_buffer) = pad.peek_buffer() else {
+                        gst::error!(
+                            CAT,
+                            obj = pad,
+                            "Need first buffer for AC-3 / EAC-3 when creating header"
+                        );
+                        return Err(gst::FlowError::NotNegotiated);
+                    };
+                    match s.name().as_str() {
+                        "audio/x-ac3" => {
+                            codec_specific_boxes = match create_dac3(&first_buffer) {
+                                Ok(boxes) => boxes,
+                                Err(err) => {
+                                    gst::error!(
+                                        CAT,
+                                        obj = pad,
+                                        "Failed to create AC-3 codec specific box: {err}"
+                                    );
+                                    return Err(gst::FlowError::NotNegotiated);
+                                }
+                            };
+                        }
+                        "audio/x-eac3" => {
+                            codec_specific_boxes = match create_dec3(&first_buffer) {
+                                Ok(boxes) => boxes,
+                                Err(err) => {
+                                    gst::error!(
+                                        CAT,
+                                        obj = pad,
+                                        "Failed to create EAC-3 codec specific box: {err}"
+                                    );
+                                    return Err(gst::FlowError::NotNegotiated);
+                                }
+                            };
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                "audio/x-alaw" | "audio/x-mulaw" => (),
+                "audio/x-adpcm" => (),
+                "audio/x-raw" => {
+                    let audio_info = gst_audio::AudioInfo::from_caps(&caps).map_err(|err| {
+                        gst::error!(CAT, obj = pad, "Failed to get audio info: {err}");
+
+                        gst::FlowError::NotNegotiated
+                    })?;
+                    codec_specific_boxes = match create_pcmc(&audio_info) {
+                        Ok(boxes) => boxes,
+                        Err(err) => {
+                            gst::error!(
+                                CAT,
+                                obj = pad,
+                                "Failed to create raw audio specific box: {err}"
+                            );
+                            return Err(gst::FlowError::NotNegotiated);
+                        }
+                    };
+                    chnl_layout_info =
+                        generate_audio_channel_layout_info(audio_info).map_err(|err| {
+                            gst::error!(
+                                CAT,
+                                obj = pad,
+                                "Failed to get audio channel layout info: {err}"
+                            );
+
+                            gst::FlowError::NotNegotiated
+                        })?;
+                }
+                "application/x-onvif-metadata" => (),
+                _ => unreachable!(),
+            }
+
             // Check if language or orientation tags have already been
             // received
             let mut stream_orientation = Default::default();
@@ -1440,6 +1665,12 @@ impl MP4Mux {
             let mut clock_type = TaicClockType::Unknown;
             #[cfg(feature = "v1_28")]
             let mut time_uncertainty = TAIC_TIME_UNCERTAINTY_UNKNOWN;
+            #[cfg(feature = "v1_28")]
+            let mut gimi_content_id: Option<String> = None;
+            #[cfg(feature = "v1_28")]
+            let mut gimi_component_content_id: Vec<String> = vec![];
+            #[cfg(feature = "v1_28")]
+
             pad.sticky_events_foreach(|ev| {
                 if let gst::EventView::Tag(ev) = ev.view() {
                     let tag = ev.tag();
@@ -1560,17 +1791,34 @@ impl MP4Mux {
                             );
                         }
                     }
+		    #[cfg(feature = "v1_28")]
+		    if let Some(tag_value) = ev.tag().get::<crate::isobmff::GimiTrackContentIDTag>() {
+			gimi_content_id = Some(tag_value.get().to_owned());
+		    }
+
+		    #[cfg(feature = "v1_28")]
+		    if let Some(gimi_component_content_id_s) = ev.tag().get::<crate::isobmff::GimiComponentContentIDTag>().map(|v| v.get()) {
+			for c in 0.._components {
+			    if let Ok(id) = gimi_component_content_id_s.get::<String>(c.to_string()) {
+				gimi_component_content_id.push(id)
+			    } else {
+				gimi_component_content_id.push(generate_gimi_content_id());
+			    }
+			}
+		    }
+
+		    if let Some(gimi_security_markings_xml) = ev.tag().get::<crate::isobmff::GimiSecurityMarkingsXMLTag>().map(|v| v.get().to_owned()) {
+			let gimi_security_markings_content_id =
+			    if let Some(gimi_security_markings_content_id) =  ev.tag().get::<crate::isobmff::GimiSecurityMarkingsContentIDTag>().map(|v| v.get().to_owned()) {
+				gimi_security_markings_content_id
+			    } else {
+				generate_gimi_content_id()
+			    };
+			state.gimi_security_markings_xml = Some((gimi_security_markings_xml, gimi_security_markings_content_id));
+		    }
                 }
                 std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
             });
-
-            let caps = match pad.current_caps() {
-                Some(caps) => caps,
-                None => {
-                    gst::warning!(CAT, obj = pad, "Skipping pad without caps");
-                    continue;
-                }
-            };
 
             #[cfg(feature = "v1_28")]
             if _settings.with_precision_timestamps {
@@ -1578,152 +1826,24 @@ impl MP4Mux {
                 tai_clock_info = Some(TaiClockInfo::new(clock_type, time_uncertainty));
             }
 
-            gst::info!(CAT, obj = pad, "Configuring caps {caps:?}");
+            #[cfg(feature = "v1_28")]
+            if _settings.is_gimi {
+                if gimi_content_id.is_none() {
+                    gimi_content_id = Some(generate_gimi_content_id());
+                }
 
-            let s = caps.structure(0).unwrap();
-
-            let mut delta_frames = DeltaFrames::IntraOnly;
-            let mut discard_header_buffers = false;
-            let mut codec_specific_boxes = Vec::new();
-            let mut chnl_layout_info = None;
-
-            match s.name().as_str() {
-                "video/x-h264" | "video/x-h265" => {
-                    if !s.has_field_with_type("codec_data", gst::Buffer::static_type()) {
-                        gst::error!(CAT, obj = pad, "Received caps without codec_data");
-                        return Err(gst::FlowError::NotNegotiated);
-                    }
-                    delta_frames = DeltaFrames::Bidirectional;
+                while gimi_component_content_id.len() < _components {
+                    gimi_component_content_id.push(generate_gimi_content_id());
                 }
-                "video/x-vp8" => {
-                    delta_frames = DeltaFrames::PredictiveOnly;
-                }
-                "video/x-vp9" => {
-                    if !s.has_field_with_type("colorimetry", str::static_type()) {
-                        gst::error!(CAT, obj = pad, "Received caps without colorimetry");
-                        return Err(gst::FlowError::NotNegotiated);
-                    }
-                    delta_frames = DeltaFrames::PredictiveOnly;
-                }
-                "video/x-av1" => {
-                    delta_frames = DeltaFrames::PredictiveOnly;
-                }
-                "image/jpeg"
-                | "video/x-raw"
-                | "video/x-bayer"
-                | "application/x-zlib-compressed"
-                | "application/x-deflate-compressed"
-                | "application/x-brotli-compressed" => (),
-                "audio/mpeg" => {
-                    if !s.has_field_with_type("codec_data", gst::Buffer::static_type()) {
-                        gst::error!(CAT, obj = pad, "Received caps without codec_data");
-                        return Err(gst::FlowError::NotNegotiated);
-                    }
-                }
-                "audio/x-opus" => {
-                    match s
-                        .get::<gst::ArrayRef>("streamheader")
-                        .ok()
-                        .and_then(|a| a.first().and_then(|v| v.get::<gst::Buffer>().ok()))
-                    {
-                        Some(header) => {
-                            if gst_pbutils::codec_utils_opus_parse_header(&header, None).is_err() {
-                                gst::error!(CAT, obj = pad, "Received invalid Opus header");
-                                return Err(gst::FlowError::NotNegotiated);
-                            }
-                        }
-                        _ => {
-                            if gst_pbutils::codec_utils_opus_parse_caps(&caps, None).is_err() {
-                                gst::error!(CAT, obj = pad, "Received invalid Opus caps");
-                                return Err(gst::FlowError::NotNegotiated);
-                            }
-                        }
-                    }
-                }
-                "audio/x-flac" => {
-                    discard_header_buffers = true;
-                    if let Err(e) = s.get::<gst::ArrayRef>("streamheader") {
-                        gst::error!(
-                            CAT,
-                            obj = pad,
-                            "Muxing FLAC into MP4 needs streamheader: {}",
-                            e
-                        );
-                        return Err(gst::FlowError::NotNegotiated);
-                    };
-                }
-                "audio/x-ac3" | "audio/x-eac3" => {
-                    let Some(first_buffer) = pad.peek_buffer() else {
-                        gst::error!(
-                            CAT,
-                            obj = pad,
-                            "Need first buffer for AC-3 / EAC-3 when creating header"
-                        );
-                        return Err(gst::FlowError::NotNegotiated);
-                    };
-                    match s.name().as_str() {
-                        "audio/x-ac3" => {
-                            codec_specific_boxes = match create_dac3(&first_buffer) {
-                                Ok(boxes) => boxes,
-                                Err(err) => {
-                                    gst::error!(
-                                        CAT,
-                                        obj = pad,
-                                        "Failed to create AC-3 codec specific box: {err}"
-                                    );
-                                    return Err(gst::FlowError::NotNegotiated);
-                                }
-                            };
-                        }
-                        "audio/x-eac3" => {
-                            codec_specific_boxes = match create_dec3(&first_buffer) {
-                                Ok(boxes) => boxes,
-                                Err(err) => {
-                                    gst::error!(
-                                        CAT,
-                                        obj = pad,
-                                        "Failed to create EAC-3 codec specific box: {err}"
-                                    );
-                                    return Err(gst::FlowError::NotNegotiated);
-                                }
-                            };
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                "audio/x-alaw" | "audio/x-mulaw" => (),
-                "audio/x-adpcm" => (),
-                "audio/x-raw" => {
-                    let audio_info = gst_audio::AudioInfo::from_caps(&caps).map_err(|err| {
-                        gst::error!(CAT, obj = pad, "Failed to get audio info: {err}");
-
-                        gst::FlowError::NotNegotiated
-                    })?;
-                    codec_specific_boxes = match create_pcmc(&audio_info) {
-                        Ok(boxes) => boxes,
-                        Err(err) => {
-                            gst::error!(
-                                CAT,
-                                obj = pad,
-                                "Failed to create raw audio specific box: {err}"
-                            );
-                            return Err(gst::FlowError::NotNegotiated);
-                        }
-                    };
-                    chnl_layout_info =
-                        generate_audio_channel_layout_info(audio_info).map_err(|err| {
-                            gst::error!(
-                                CAT,
-                                obj = pad,
-                                "Failed to get audio channel layout info: {err}"
-                            );
-
-                            gst::FlowError::NotNegotiated
-                        })?;
-                }
-                "application/x-onvif-metadata" => (),
-                _ => unreachable!(),
             }
+
+            #[cfg(feature = "v1_28")]
+            gst::debug!(
+                CAT,
+                obj = pad,
+                "Track GIMI Content-ID: {}",
+                gimi_content_id.as_deref().unwrap_or("None")
+            );
 
             state.streams.push(Stream {
                 sinkpad: pad,
@@ -1755,6 +1875,10 @@ impl MP4Mux {
                 chnl_layout_info,
                 #[cfg(feature = "v1_28")]
                 last_tai_timestamp: 0,
+                #[cfg(feature = "v1_28")]
+                gimi_content_id,
+                #[cfg(feature = "v1_28")]
+                gimi_component_content_id,
             });
         }
 
@@ -2473,6 +2597,8 @@ impl AggregatorImpl for MP4Mux {
                     stream.caps.iter(),
                     stream.image_sequence_mode(),
                     settings.with_precision_timestamps,
+                    settings.is_gimi,
+                    state.gimi_security_markings_xml.is_some(),
                     extra_brands,
                 );
 
@@ -2564,6 +2690,10 @@ impl AggregatorImpl for MP4Mux {
                     auxiliary_info: stream.aux_info,
                     codec_specific_boxes: stream.codec_specific_boxes.clone(),
                     chnl_layout_info: stream.chnl_layout_info.clone(),
+                    #[cfg(feature = "v1_28")]
+                    gimi_content_id: stream.gimi_content_id,
+                    #[cfg(feature = "v1_28")]
+                    gimi_component_content_id: stream.gimi_component_content_id,
                 });
             }
 
@@ -2577,6 +2707,10 @@ impl AggregatorImpl for MP4Mux {
                     write_mehd: false,
                     duration: None,
                     write_edts: false,
+                    gimi_security_markings_xml: state
+                        .gimi_security_markings_xml
+                        .as_ref()
+                        .map(|(a, b)| (a.as_ref(), b.as_ref())),
                 },
                 0,
                 None,
@@ -2947,6 +3081,344 @@ impl MP4MuxImpl for ONVIFMP4Mux {
     const VARIANT: Variant = Variant::ONVIF;
 }
 
+#[cfg(feature = "v1_28")]
+#[derive(Default)]
+pub(crate) struct GimiMP4Mux;
+
+#[cfg(feature = "v1_28")]
+#[glib::object_subclass]
+impl ObjectSubclass for GimiMP4Mux {
+    const NAME: &'static str = "GstGimiMP4Mux";
+    type Type = crate::isobmff::GimiMP4Mux;
+    type ParentType = crate::isobmff::MP4Mux;
+}
+
+#[cfg(feature = "v1_28")]
+impl ObjectImpl for GimiMP4Mux {
+    fn constructed(&self) {
+        let obj = self.obj();
+        let mut settings = obj
+            .upcast_ref::<crate::isobmff::MP4Mux>()
+            .imp()
+            .settings
+            .lock()
+            .unwrap();
+        settings.is_gimi = true;
+        settings.with_precision_timestamps = true;
+    }
+
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            vec![
+                glib::ParamSpecOverride::for_class::<crate::isobmff::MP4Mux>(
+                    "tai-precision-timestamps",
+                ),
+            ]
+        });
+        PROPERTIES.as_ref()
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "tai-precision-timestamps" => {
+                if !value.get::<bool>().unwrap() {
+                    gst::error!(
+                        CAT,
+                        imp = self,
+                        "tai-precision-timestamps is always enabled for GIMI"
+                    );
+                }
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "tai-precision-timestamps" => true.to_value(),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+#[cfg(feature = "v1_28")]
+impl GstObjectImpl for GimiMP4Mux {}
+
+#[cfg(feature = "v1_28")]
+impl ElementImpl for GimiMP4Mux {
+    fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
+        static ELEMENT_METADATA: LazyLock<gst::subclass::ElementMetadata> = LazyLock::new(|| {
+            gst::subclass::ElementMetadata::new(
+                "GimiMP4Mux",
+                "Codec/Muxer",
+                "GIMI MP4 muxer",
+                "Sebastian Dröge <sebastian@centricular.com>",
+            )
+        });
+
+        Some(&*ELEMENT_METADATA)
+    }
+
+    fn pad_templates() -> &'static [gst::PadTemplate] {
+        static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
+            let src_pad_template = gst::PadTemplate::new(
+                "src",
+                gst::PadDirection::Src,
+                gst::PadPresence::Always,
+                &gst::Caps::builder("video/quicktime")
+                    .field("variant", "iso")
+                    .build(),
+            )
+            .unwrap();
+
+            let sink_image_pad_template = gst::PadTemplate::with_gtype(
+                "sink_image_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-h265")
+                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // formats that do not use subsampling
+                            // Plus NV12 and NV21 because that works OK with the interleaved planes
+                            gst::List::new([
+                                "IYU2",
+                                "RGB",
+                                "BGR",
+                                "NV12",
+                                "NV21",
+                                "RGBA",
+                                "ARGB",
+                                "ABGR",
+                                "BGRA",
+                                "RGBx",
+                                "BGRx",
+                                "Y444",
+                                "AYUV",
+                                "GRAY8",
+                                "GRAY16_BE",
+                                "GBR",
+                                "RGBP",
+                                "BGRP",
+                                "v308",
+                                "r210",
+                            ]),
+                        )
+                        .field("width", gst::IntRange::new(1, i32::MAX))
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use horizontal subsampling, but not vertical subsampling (4:2:2 and 4:1:1)
+                            gst::List::new(["Y41B", "NV16", "NV61", "Y42B"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use both horizontal and vertical subsampling (4:2:0)
+                            gst::List::new(["I420", "YV12", "YUY2", "YVYU", "UYVY", "VYUY"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field(
+                            "height",
+                            gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
+                        )
+                        .field("interlace-mode", "progressive")
+                        .build(),
+                ]
+                .into_iter()
+                .collect::<gst::Caps>(),
+                crate::isobmff::BaseMP4MuxPad::static_type(),
+            )
+            .unwrap();
+
+            let sink_audio_pad_template = gst::PadTemplate::with_gtype(
+                "sink_audio_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[gst::Structure::builder("audio/mpeg")
+                    .field("mpegversion", 4i32)
+                    .field("stream-format", "raw")
+                    .field("channels", gst::IntRange::new(1, u16::MAX as i32))
+                    .field("rate", gst::IntRange::new(1, i32::MAX))
+                    .build()]
+                .into_iter()
+                .collect::<gst::Caps>(),
+                crate::isobmff::BaseMP4MuxPad::static_type(),
+            )
+            .unwrap();
+
+            let sink_video_pad_template = gst::PadTemplate::with_gtype(
+                "sink_video_%u",
+                gst::PadDirection::Sink,
+                gst::PadPresence::Request,
+                &[
+                    // MISB Class 1/2 motion imagery
+                    gst::Structure::builder("video/x-h265")
+                        .field("stream-format", gst::List::new(["hvc1", "hev1"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .field(
+                            "profile",
+                            gst::List::new(["main-444-12", "main-422-12", "main-10"]),
+                        )
+                        .build(),
+                    gst::Structure::builder("video/x-h264")
+                        .field("stream-format", gst::List::new(["avc", "avc3"]))
+                        .field("alignment", "au")
+                        .field("width", gst::IntRange::new(1, u16::MAX as i32))
+                        .field("height", gst::IntRange::new(1, u16::MAX as i32))
+                        .field(
+                            "profile",
+                            gst::List::new([
+                                "high-4:4:4",
+                                "high-4:2:2",
+                                "high",
+                                "main",
+                                "constrained-baseline",
+                            ]),
+                        )
+                        .build(),
+                    // MISB Class 0 motion imagery
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // formats that do not use subsampling
+                            // Plus NV12 and NV21 because that works OK with the interleaved planes
+                            gst::List::new([
+                                "IYU2",
+                                "RGB",
+                                "BGR",
+                                "NV12",
+                                "NV21",
+                                "RGBA",
+                                "ARGB",
+                                "ABGR",
+                                "BGRA",
+                                "RGBx",
+                                "BGRx",
+                                "Y444",
+                                "AYUV",
+                                "GRAY8",
+                                "GRAY16_BE",
+                                "GBR",
+                                "RGBP",
+                                "BGRP",
+                                "v308",
+                                "r210",
+                            ]),
+                        )
+                        .field("width", gst::IntRange::new(1, i32::MAX))
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use horizontal subsampling, but not vertical subsampling (4:2:2 and 4:1:1)
+                            gst::List::new(["NV16", "NV61", "Y42B"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field("height", gst::IntRange::new(1, i32::MAX))
+                        .field("interlace-mode", "progressive")
+                        .build(),
+                    gst::Structure::builder("video/x-raw")
+                        // TODO: this could be extended to handle gst_video::VideoMeta for non-default stride and plane offsets
+                        .field(
+                            "format",
+                            // Formats that use both horizontal and vertical subsampling (4:2:0)
+                            gst::List::new(["I420", "YV12", "YUY2", "YVYU", "UYVY", "VYUY"]),
+                        )
+                        .field(
+                            "width",
+                            gst::IntRange::with_step(4, i32::MAX.prev_multiple_of(&4), 4),
+                        )
+                        .field(
+                            "height",
+                            gst::IntRange::with_step(2, i32::MAX.prev_multiple_of(&2), 2),
+                        )
+                        .field("interlace-mode", "progressive")
+                        .build(),
+                ]
+                .into_iter()
+                .collect::<gst::Caps>(),
+                crate::isobmff::BaseMP4MuxPad::static_type(),
+            )
+            .unwrap();
+
+            vec![
+                src_pad_template,
+                sink_image_pad_template,
+                sink_audio_pad_template,
+                sink_video_pad_template,
+            ]
+        });
+
+        PAD_TEMPLATES.as_ref()
+    }
+
+    fn request_new_pad(
+        &self,
+        templ: &gst::PadTemplate,
+        name: Option<&str>,
+        caps: Option<&gst::Caps>,
+    ) -> Option<gst::Pad> {
+        let pad = self.parent_request_new_pad(templ, name, caps);
+
+        if let Some(ref pad) = pad
+            && templ.name_template() == "sink_image_%u"
+        {
+            let basepad = pad.downcast_ref::<crate::isobmff::BaseMP4MuxPad>().unwrap();
+            let mut settings = basepad.imp().settings.lock().unwrap();
+
+            settings.image_sequence_mode = true;
+        }
+
+        pad
+    }
+}
+
+#[cfg(feature = "v1_28")]
+impl AggregatorImpl for GimiMP4Mux {}
+
+#[cfg(feature = "v1_28")]
+impl MP4MuxImpl for GimiMP4Mux {
+    const VARIANT: Variant = Variant::ISO;
+}
+
 #[derive(Default, Clone)]
 struct PadSettings {
     trak_timescale: u32,
@@ -2954,29 +3426,34 @@ struct PadSettings {
 }
 
 #[derive(Default)]
-pub(crate) struct MP4MuxPad {
+pub(crate) struct BaseMP4MuxPad {
     settings: Mutex<PadSettings>,
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for MP4MuxPad {
-    const NAME: &'static str = "GstRsMP4MuxPad";
-    type Type = crate::isobmff::MP4MuxPad;
+impl ObjectSubclass for BaseMP4MuxPad {
+    const NAME: &'static str = "GstRsBaseMP4MuxPad";
+    type Type = crate::isobmff::BaseMP4MuxPad;
     type ParentType = gst_base::AggregatorPad;
 }
 
-impl ObjectImpl for MP4MuxPad {
+unsafe impl<T: BaseMP4MuxPadImpl> glib::subclass::types::IsSubclassable<T>
+    for crate::isobmff::BaseMP4MuxPad
+{
+}
+
+pub(crate) trait BaseMP4MuxPadImpl:
+    AggregatorPadImpl + ObjectSubclass<Type: IsA<crate::isobmff::BaseMP4MuxPad>>
+{
+}
+
+impl ObjectImpl for BaseMP4MuxPad {
     fn properties() -> &'static [glib::ParamSpec] {
         static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
             vec![
                 glib::ParamSpecUInt::builder("trak-timescale")
                     .nick("Track Timescale")
                     .blurb("Timescale to use for the track (units per second, 0 is automatic)")
-                    .mutable_ready()
-                    .build(),
-                glib::ParamSpecBoolean::builder("image-sequence")
-                    .nick("Generate image sequence")
-                    .blurb("Generate ISO/IEC 23008-12 image sequence instead of video")
                     .mutable_ready()
                     .build(),
             ]
@@ -2992,11 +3469,6 @@ impl ObjectImpl for MP4MuxPad {
                 settings.trak_timescale = value.get().expect("type checked upstream");
             }
 
-            "image-sequence" => {
-                let mut settings = self.settings.lock().unwrap();
-                settings.image_sequence_mode = value.get().expect("type checked upstream");
-            }
-
             _ => unimplemented!(),
         }
     }
@@ -3008,21 +3480,16 @@ impl ObjectImpl for MP4MuxPad {
                 settings.trak_timescale.to_value()
             }
 
-            "image-sequence" => {
-                let settings = self.settings.lock().unwrap();
-                settings.image_sequence_mode.to_value()
-            }
-
             _ => unimplemented!(),
         }
     }
 }
 
-impl GstObjectImpl for MP4MuxPad {}
+impl GstObjectImpl for BaseMP4MuxPad {}
 
-impl PadImpl for MP4MuxPad {}
+impl PadImpl for BaseMP4MuxPad {}
 
-impl AggregatorPadImpl for MP4MuxPad {
+impl AggregatorPadImpl for BaseMP4MuxPad {
     fn flush(&self, aggregator: &gst_base::Aggregator) -> Result<gst::FlowSuccess, gst::FlowError> {
         let mux = aggregator.downcast_ref::<crate::isobmff::MP4Mux>().unwrap();
         let mut mux_state = mux.imp().state.lock().unwrap();
@@ -3043,6 +3510,74 @@ impl AggregatorPadImpl for MP4MuxPad {
         self.parent_flush(aggregator)
     }
 }
+
+#[derive(Default)]
+pub(crate) struct MP4MuxPad {}
+
+#[glib::object_subclass]
+impl ObjectSubclass for MP4MuxPad {
+    const NAME: &'static str = "GstRsMP4MuxPad";
+    type Type = crate::isobmff::MP4MuxPad;
+    type ParentType = crate::isobmff::BaseMP4MuxPad;
+}
+
+impl ObjectImpl for MP4MuxPad {
+    fn properties() -> &'static [glib::ParamSpec] {
+        static PROPERTIES: LazyLock<Vec<glib::ParamSpec>> = LazyLock::new(|| {
+            vec![
+                glib::ParamSpecBoolean::builder("image-sequence")
+                    .nick("Generate image sequence")
+                    .blurb("Generate ISO/IEC 23008-12 image sequence instead of video")
+                    .mutable_ready()
+                    .build(),
+            ]
+        });
+
+        &PROPERTIES
+    }
+
+    fn set_property(&self, _id: usize, value: &glib::Value, pspec: &glib::ParamSpec) {
+        match pspec.name() {
+            "image-sequence" => {
+                let obj = self.obj();
+                let mut settings = obj
+                    .upcast_ref::<crate::isobmff::BaseMP4MuxPad>()
+                    .imp()
+                    .settings
+                    .lock()
+                    .unwrap();
+                settings.image_sequence_mode = value.get().expect("type checked upstream");
+            }
+
+            _ => unimplemented!(),
+        }
+    }
+
+    fn property(&self, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
+        match pspec.name() {
+            "image-sequence" => {
+                let obj = self.obj();
+                let settings = obj
+                    .upcast_ref::<crate::isobmff::BaseMP4MuxPad>()
+                    .imp()
+                    .settings
+                    .lock()
+                    .unwrap();
+                settings.image_sequence_mode.to_value()
+            }
+
+            _ => unimplemented!(),
+        }
+    }
+}
+
+impl GstObjectImpl for MP4MuxPad {}
+
+impl PadImpl for MP4MuxPad {}
+
+impl AggregatorPadImpl for MP4MuxPad {}
+
+impl BaseMP4MuxPadImpl for MP4MuxPad {}
 
 impl ChildProxyImpl for MP4Mux {
     fn children_count(&self) -> u32 {
@@ -3108,4 +3643,9 @@ fn get_variable_fields_for_media_type(media_type: &str) -> &'static [&'static st
     } else {
         &[]
     }
+}
+
+#[cfg(feature = "v1_28")]
+fn generate_gimi_content_id() -> String {
+    uuid::Uuid::now_v7().urn().to_string()
 }

@@ -12,7 +12,6 @@ use std::sync::LazyLock;
 
 use gst::glib;
 use gst::prelude::*;
-#[cfg(feature = "v1_28")]
 use gst::tags;
 use num_integer::Integer;
 
@@ -83,7 +82,11 @@ glib::wrapper! {
 }
 
 glib::wrapper! {
-    pub(crate) struct MP4MuxPad(ObjectSubclass<crate::isobmff::mp4mux::imp::MP4MuxPad>) @extends gst_base::AggregatorPad, gst::Pad, gst::Object;
+    pub(crate) struct BaseMP4MuxPad(ObjectSubclass<crate::isobmff::mp4mux::imp::BaseMP4MuxPad>) @extends gst_base::AggregatorPad, gst::Pad, gst::Object;
+}
+
+glib::wrapper! {
+    pub(crate) struct MP4MuxPad(ObjectSubclass<crate::isobmff::mp4mux::imp::MP4MuxPad>) @extends BaseMP4MuxPad, gst_base::AggregatorPad, gst::Pad, gst::Object;
 }
 
 glib::wrapper! {
@@ -118,6 +121,11 @@ glib::wrapper! {
     pub(crate) struct ONVIFMP4Mux(ObjectSubclass<crate::isobmff::mp4mux::imp::ONVIFMP4Mux>) @extends MP4Mux, gst_base::Aggregator, gst::Element, gst::Object, @implements gst::ChildProxy;
 }
 
+#[cfg(feature = "v1_28")]
+glib::wrapper! {
+    pub(crate) struct GimiMP4Mux(ObjectSubclass<crate::isobmff::mp4mux::imp::GimiMP4Mux>) @extends MP4Mux, gst_base::Aggregator, gst::Element, gst::Object, @implements gst::ChildProxy;
+}
+
 pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     if !gst::meta::CustomMeta::is_registered("FMP4KeyframeMeta") {
         gst::meta::CustomMeta::register("FMP4KeyframeMeta", &[]);
@@ -131,6 +139,7 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         WriteEdtsMode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
         ChunkMode::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
         MP4Mux::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
+        BaseMP4MuxPad::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
         MP4MuxPad::static_type().mark_as_plugin_api(gst::PluginAPIFlags::empty());
     }
 
@@ -170,11 +179,34 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         gst::Rank::MARGINAL,
         ONVIFMP4Mux::static_type(),
     )?;
+    #[cfg(feature = "v1_28")]
+    gst::Element::register(
+        Some(plugin),
+        "gimimp4mux",
+        gst::Rank::MARGINAL,
+        GimiMP4Mux::static_type(),
+    )?;
 
     #[cfg(feature = "v1_28")]
     {
-        tags::register::<PrecisionClockTypeTag>();
-        tags::register::<PrecisionClockTimeUncertaintyNanosecondsTag>();
+        if !tags::tag_exists(PrecisionClockTypeTag::TAG_NAME) {
+            tags::register::<PrecisionClockTypeTag>();
+        }
+        if !tags::tag_exists(PrecisionClockTimeUncertaintyNanosecondsTag::TAG_NAME) {
+            tags::register::<PrecisionClockTimeUncertaintyNanosecondsTag>();
+        }
+        if !tags::tag_exists(GimiTrackContentIDTag::TAG_NAME) {
+            tags::register::<GimiTrackContentIDTag>();
+        }
+        if !tags::tag_exists(GimiComponentContentIDTag::TAG_NAME) {
+            tags::register::<GimiComponentContentIDTag>();
+        }
+    }
+    if !tags::tag_exists(GimiSecurityMarkingsXMLTag::TAG_NAME) {
+        tags::register::<GimiSecurityMarkingsXMLTag>();
+    }
+    if !tags::tag_exists(GimiSecurityMarkingsContentIDTag::TAG_NAME) {
+        tags::register::<GimiSecurityMarkingsContentIDTag>();
     }
     Ok(())
 }
@@ -184,6 +216,16 @@ pub enum PrecisionClockTimeUncertaintyNanosecondsTag {}
 
 #[cfg(feature = "v1_28")]
 pub enum PrecisionClockTypeTag {}
+
+#[cfg(feature = "v1_28")]
+pub enum GimiTrackContentIDTag {}
+
+#[cfg(feature = "v1_28")]
+pub enum GimiComponentContentIDTag {}
+
+pub enum GimiSecurityMarkingsXMLTag {}
+
+pub enum GimiSecurityMarkingsContentIDTag {}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum DeltaFrames {
@@ -351,7 +393,7 @@ impl Variant {
 }
 
 #[derive(Debug)]
-pub(crate) struct PresentationConfiguration {
+pub(crate) struct PresentationConfiguration<'a> {
     pub(crate) variant: Variant,
     pub(crate) update: bool,
 
@@ -367,9 +409,12 @@ pub(crate) struct PresentationConfiguration {
 
     /// Whether to write edts box
     pub(crate) write_edts: bool,
+
+    /// Optional GIMI Security Markings XML
+    pub(crate) gimi_security_markings_xml: Option<(&'a str, &'a str)>,
 }
 
-impl PresentationConfiguration {
+impl PresentationConfiguration<'_> {
     pub(crate) fn to_timescale(&self) -> u32 {
         if self.movie_timescale > 0 {
             self.movie_timescale
@@ -461,6 +506,14 @@ pub(crate) struct TrackConfiguration {
 
     /// Information needed for creating `chnl` box
     chnl_layout_info: Option<ChnlLayoutInfo>,
+
+    /// GIMI (NGA-0076) Track Content ID
+    #[cfg(feature = "v1_28")]
+    pub(crate) gimi_content_id: Option<String>,
+
+    /// GIMI (NGA-0076) Component Track Content ID
+    #[cfg(feature = "v1_28")]
+    pub(crate) gimi_component_content_id: Vec<String>,
 }
 
 /// Returns the caps for all uncompressed video formats that `isobmff` muxers support.
@@ -734,4 +787,60 @@ pub(crate) struct ChnlLayoutInfo {
     layout_idx: u8, /* Must be u8 for `chnl` box */
     reorder_map: Option<Vec<usize>>,
     omitted_channels_map: u64,
+}
+
+#[cfg(feature = "v1_28")]
+impl<'a> Tag<'a> for GimiTrackContentIDTag {
+    type TagType = &'a str;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-track-content-id");
+}
+
+#[cfg(feature = "v1_28")]
+impl CustomTag<'_> for GimiTrackContentIDTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-track-content-id");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Track ContentID"
+    );
+}
+
+#[cfg(feature = "v1_28")]
+impl<'a> Tag<'a> for GimiComponentContentIDTag {
+    type TagType = gst::Structure;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-component-content-id");
+}
+
+#[cfg(feature = "v1_28")]
+impl CustomTag<'_> for GimiComponentContentIDTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-component-content-id");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Component ContentID"
+    );
+}
+
+impl<'a> Tag<'a> for GimiSecurityMarkingsXMLTag {
+    type TagType = &'a str;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-security-markings-xml");
+}
+
+impl CustomTag<'_> for GimiSecurityMarkingsXMLTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-security-markings-xml");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Security Markings XML"
+    );
+}
+
+impl<'a> Tag<'a> for GimiSecurityMarkingsContentIDTag {
+    type TagType = &'a str;
+    const TAG_NAME: &'static glib::GStr = glib::gstr!("gimi-security-markings-content-id");
+}
+
+impl CustomTag<'_> for GimiSecurityMarkingsContentIDTag {
+    const FLAG: gst::TagFlag = gst::TagFlag::Meta;
+    const NICK: &'static glib::GStr = glib::gstr!("gimi-security-markings-content-id");
+    const DESCRIPTION: &'static glib::GStr = glib::gstr!(
+        "NGA.STND.0076 GEOINT Imagery Media for Intelligence, Surveillance, and Reconnaissance (ISR) (GIMI) Security Markings XML Content ID"
+    );
 }

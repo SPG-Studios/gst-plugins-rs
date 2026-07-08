@@ -4083,6 +4083,10 @@ impl FMP4Mux {
                     tai_clock_info: None,
                     auxiliary_info: BTreeMap::new(),
                     chnl_layout_info: s.chnl_layout_info.clone(),
+                    #[cfg(feature = "v1_28")]
+                    gimi_content_id: None,
+                    #[cfg(feature = "v1_28")]
+                    gimi_component_content_id: vec![],
                 }
             })
             .collect::<Vec<_>>();
@@ -4101,6 +4105,7 @@ impl FMP4Mux {
             write_mehd: settings.write_mehd,
             duration: if at_eos { duration } else { None },
             write_edts,
+            gimi_security_markings_xml: None,
         })
         .map_err(|err| {
             gst::error!(CAT, imp = self, "Failed to create FMP4 header: {}", err);

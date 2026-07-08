@@ -26,6 +26,8 @@ pub(crate) fn create_fmp4_header(cfg: PresentationConfiguration) -> Result<gst::
         cfg.tracks.iter().map(|s| s.caps()),
         false,
         false,
+        false,
+        false,
         &[],
     );
 
@@ -113,6 +115,8 @@ pub(crate) fn create_fmp4_fragment_header(
         let (minor_version, major_brand, mut compatible_brands) = brands_from_variant_and_caps(
             cfg.variant,
             cfg.streams.iter().map(|s| &s.caps),
+            false,
+            false,
             false,
             false,
             &[],

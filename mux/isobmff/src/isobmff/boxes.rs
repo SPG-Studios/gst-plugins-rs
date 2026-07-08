@@ -135,6 +135,8 @@ pub(crate) fn create_moov(
 
     if cfg.variant == Variant::ONVIF {
         write_onvif_metabox(cfg, &mut v)?;
+    } else if cfg.gimi_security_markings_xml.is_some() {
+        write_gimi_metabox(cfg, &mut v)?;
     }
 
     Ok(gst::Buffer::from_mut_slice(v))
@@ -199,6 +201,18 @@ const TKHD_FLAGS_TRACK_ENABLED: u32 = 0x1;
 const TKHD_FLAGS_TRACK_IN_MOVIE: u32 = 0x2;
 const TKHD_FLAGS_TRACK_IN_PREVIEW: u32 = 0x4;
 
+enum ItemInfoEntryType<'a> {
+    Uri(&'a str),
+    Mime(&'a str),
+}
+
+struct ItemInfoEntry<'a> {
+    offset: u32,
+    length: u32,
+    item_type: ItemInfoEntryType<'a>,
+    name: &'a str,
+}
+
 fn write_trak(
     v: &mut Vec<u8>,
     cfg: &PresentationConfiguration,
@@ -214,6 +228,56 @@ fn write_trak(
         TKHD_FLAGS_TRACK_ENABLED | TKHD_FLAGS_TRACK_IN_MOVIE | TKHD_FLAGS_TRACK_IN_PREVIEW,
         |v| write_tkhd(v, cfg, idx, stream, creation_time),
     )?;
+
+    #[cfg(feature = "v1_28")]
+    {
+        let mut meta_entries: Vec<ItemInfoEntry> = vec![];
+        let mut meta_idat: Vec<u8> = vec![];
+
+        if let Some(ref gimi_content_id) = stream.gimi_content_id {
+            meta_entries.push(ItemInfoEntry {
+                offset: meta_idat.len() as u32,
+                item_type: ItemInfoEntryType::Uri("urn:uuid:15beb8e4-944d-5fc6-a3dd-cb5a7e655c73"),
+                length: (gimi_content_id.len() + 1) as u32,
+                name: "TrackContentID",
+            });
+            meta_idat.extend(gimi_content_id.as_bytes());
+            // nul terminated string
+            meta_idat.extend([0]);
+        }
+
+        if !stream.gimi_component_content_id.is_empty() {
+            let offset = meta_idat.len() as u32;
+
+            // Always one sample entry in GIMI
+            meta_idat.extend(1u32.to_be_bytes());
+
+            // Index is therefore always 0 in GIMI
+            meta_idat.extend(0u32.to_be_bytes());
+
+            // Number of components
+            meta_idat.extend((stream.gimi_component_content_id.len() as u32).to_be_bytes());
+
+            for c in stream.gimi_component_content_id.iter() {
+                meta_idat.extend(c.as_bytes());
+                meta_idat.extend([0]);
+            }
+
+            meta_entries.push(ItemInfoEntry {
+                offset,
+                // URN for TrackComponentContentIDList defined by GIMI
+                item_type: ItemInfoEntryType::Uri("urn:uuid:fef58f02-43a6-5aaf-a891-099b1953d1f6"),
+                name: "TrackComponentContentIDList",
+                length: meta_idat.len() as u32 - offset,
+            });
+        }
+
+        if !meta_entries.is_empty() {
+            write_full_box(v, b"meta", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+                write_track_meta(v, &meta_entries, &meta_idat)
+            })?;
+        }
+    }
 
     // TODO: write edts optionally for negative DTS instead of offsetting the DTS
     write_box(v, b"mdia", |v| write_mdia(v, cfg, stream, creation_time))?;
@@ -1157,6 +1221,115 @@ fn write_tkhd(
             v.extend((height << 16).to_be_bytes());
         }
         _ => v.extend([0u8; 2 * 4]),
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "v1_28")]
+fn write_track_meta(
+    v: &mut Vec<u8>,
+    meta_entries: &[ItemInfoEntry],
+    meta_idat: &[u8],
+) -> Result<(), Error> {
+    write_full_box(v, b"hdlr", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+        write_hdlr_box(v, b"null", b"TrackMetadataHandler")
+    })?;
+
+    write_full_box(v, b"iinf", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+        write_iinf(v, meta_entries)
+    })?;
+
+    write_full_box(v, b"iloc", FULL_BOX_VERSION_1, FULL_BOX_FLAGS_NONE, |v| {
+        write_iloc(v, meta_entries)
+    })?;
+
+    write_box(v, b"idat", |v| {
+        v.extend(meta_idat);
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+fn write_iinf(v: &mut Vec<u8>, meta_entries: &[ItemInfoEntry]) -> Result<(), Error> {
+    v.extend((meta_entries.len() as u16).to_be_bytes());
+
+    for (index, entry) in meta_entries.iter().enumerate() {
+        let index: u16 = (index + 1) as u16;
+        write_full_box(v, b"infe", 2, FULL_BOX_FLAGS_NONE, |v| {
+            // item_id, 1 for the first one
+            v.extend(index.to_be_bytes());
+
+            // item_protection, 0 as unprotected
+            v.extend(0u16.to_be_bytes());
+            // item_type
+            match entry.item_type {
+                ItemInfoEntryType::Uri(_) => {
+                    v.extend(b"uri ");
+                }
+                ItemInfoEntryType::Mime(_) => {
+                    v.extend(b"mime");
+                }
+            }
+
+            // item name
+            v.extend(entry.name.as_bytes());
+            v.extend([0u8]);
+
+            match entry.item_type {
+                ItemInfoEntryType::Uri(uri) => {
+                    // URN for the specific entry
+                    v.extend(uri.as_bytes());
+                    // nul termination
+                    v.extend([0u8]);
+                }
+                ItemInfoEntryType::Mime(mime) => {
+                    // URN for the specific entry
+                    v.extend(mime.as_bytes());
+                    // nul termination
+                    v.extend([0u8]);
+                    // No content encoding
+                    v.extend([0u8]);
+                }
+            }
+
+            Ok(())
+        })?;
+    }
+
+    Ok(())
+}
+
+fn write_iloc(v: &mut Vec<u8>, meta_entries: &[ItemInfoEntry]) -> Result<(), Error> {
+    // offset size is 4 (at the start) (4 bits)
+    // length is 4 (the whole box) (4 bits)
+    // base_offset is 0 (a the start (4 bits)
+    // index_size is 0 (construction_method is 1), (4 bits)
+    v.extend([4 << 4 | 4, 0]);
+
+    v.extend((meta_entries.len() as u16).to_be_bytes());
+
+    for (index, entry) in meta_entries.iter().enumerate() {
+        let index: u16 = (index + 1) as u16;
+
+        // item_id = 1
+        v.extend(index.to_be_bytes());
+
+        // construction_method = 1
+        v.extend(1u16.to_be_bytes());
+
+        // data_reference_index == 0, this file
+        v.extend(0u16.to_be_bytes());
+
+        // no base offset
+
+        // extent_count is 1
+        v.extend(1u16.to_be_bytes());
+
+        // offset is 0, length is the string length
+        v.extend(entry.offset.to_be_bytes());
+        v.extend(entry.length.to_be_bytes());
     }
 
     Ok(())
@@ -2443,6 +2616,75 @@ pub(crate) fn write_onvif_metabox(
         })?;
 
         write_cstb(cfg, v)
+    })?;
+    Ok(())
+}
+
+pub(crate) fn write_gimi_metabox(
+    cfg: PresentationConfiguration,
+    v: &mut Vec<u8>,
+) -> Result<(), Error> {
+    write_full_box(v, b"meta", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+        write_full_box(v, b"hdlr", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+            write_hdlr_box(v, b"null", b"MetadataHandler")
+        })?;
+
+        let gimi_security_markings_xml = cfg.gimi_security_markings_xml.unwrap();
+        let meta_entries = &[ItemInfoEntry {
+            offset: 0,
+            item_type: ItemInfoEntryType::Mime("application/nga-gimi-ism+xml"),
+            length: (gimi_security_markings_xml.0.len() + 1) as u32,
+            name: "GimiSecurityMarkingXML",
+        }];
+
+        let mut meta_idat = Vec::new();
+        meta_idat.extend(gimi_security_markings_xml.0.as_bytes());
+        // nul terminated string
+        meta_idat.extend([0]);
+
+        write_full_box(v, b"iinf", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+            write_iinf(v, meta_entries)
+        })?;
+
+        write_full_box(v, b"iloc", FULL_BOX_VERSION_1, FULL_BOX_FLAGS_NONE, |v| {
+            write_iloc(v, meta_entries)
+        })?;
+
+        write_box(v, b"idat", |v| {
+            v.extend(meta_idat);
+            Ok(())
+        })?;
+
+        write_box(v, b"iprp", |v| {
+            write_box(v, b"ipco", |v| {
+                write_box(v, b"uuid", |v| {
+                    v.extend([
+                        0x26, 0x1e, 0xf3, 0x74, 0x1d, 0x97, 0x5b, 0xba, 0xac, 0xbd, 0x9d, 0x2c,
+                        0x8e, 0xa7, 0x35, 0x22,
+                    ]);
+                    v.extend(gimi_security_markings_xml.1.as_bytes());
+                    // nul terminated string
+                    v.extend([0]);
+                    Ok(())
+                })
+            })?;
+            write_full_box(v, b"ipma", FULL_BOX_VERSION_0, FULL_BOX_FLAGS_NONE, |v| {
+                // Entry count
+                v.extend(1u32.to_be_bytes());
+
+                // item ID .. 1 for now, as we have only 1
+                // 16 bits as version==0
+                v.extend(1u16.to_be_bytes());
+                // association_count = 1
+                v.extend(1u8.to_be_bytes());
+                // essential bit == 0, property index is 1
+                v.extend(1u8.to_be_bytes());
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+
+        Ok(())
     })?;
     Ok(())
 }
