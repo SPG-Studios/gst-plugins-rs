@@ -32,6 +32,9 @@ mod yoloxtensordec;
 #[cfg(feature = "v1_28")]
 mod handdetectiontensordec;
 
+#[cfg(feature = "v1_30")]
+mod facedetlitetensordec;
+
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     relationmeta2onvifmeta::register(plugin)?;
     onvifmeta2relationmeta::register(plugin)?;
@@ -51,6 +54,9 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 
     #[cfg(feature = "v1_28")]
     handdetectiontensordec::register(plugin)?;
+
+    #[cfg(feature = "v1_30")]
+    facedetlitetensordec::register(plugin)?;
 
     Ok(())
 }
