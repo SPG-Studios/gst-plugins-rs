@@ -35,21 +35,42 @@
  * - `cleanup-mode` (enum, default: "none"): Determines how .dot files are cleaned up:
  *     - "initial": Removes all existing .dot files from the target folder when the tracer starts
  *     - "automatic": Performs cleanup before each snapshot. If folder-mode is enabled, cleans up .dot files within folders.
- *                    If folder-mode is None, cleans up .dot files directly in the target directory
+ *       If folder-mode is None, cleans up .dot files directly in the target directory
  *     - "none": Never removes any .dot files
  * - `folder-mode` (enum, default: "none"): Controls how .dot files are organized in folders:
  *     - "none": All .dot files are stored directly in the target directory without subfolder organization
  *     - "numbered": Creates a new numbered folder (starting from 0) for each snapshot operation
  *     - "timed": Creates a new folder named with the current timestamp for each snapshot operation
  * - `dots-viewer-websocket-url`: A websocket URL to connect to a dots-viewer server instance,
- *                                allowing the user to snapshot running pipelines from the web
-*                                page. To trigger a snapshot, the user should send a json message
-*                                with the following format:
-*                                ```json
-*                                {
-*                                    "type": "Snapshot"
-*                                }
-*                                ```
+ *   allowing the user to snapshot running pipelines from the web
+ *   page. To trigger a snapshot, the user should send a json message
+ *   with the following format:
+ *   ```json
+ *   {
+ *       "type": "Snapshot",
+ *       "response_mode": "content"  // optional: "paths", "content", or "both"
+ *   }
+ *   ```
+ *   The `response_mode` field is optional:
+ *     - If omitted and `dot-dir` is set: defaults to "paths"
+ *     - If omitted and `dot-dir` is not set: defaults to "content"
+ *     - "paths": Returns file paths (requires dot-dir to be set)
+ *     - "content": Returns dot content directly (no files are written)
+ *     - "both": Returns both paths and content
+ *
+ *                                The tracer responds with a `SnapshotResponse` message:
+ *                                ```json
+ *                                {
+ *                                    "type": "SnapshotResponse",
+ *                                    "pipelines": [
+ *                                        {
+ *                                            "name": "pipeline0",
+ *                                            "path": "/tmp/dots/pipeline-snapshot-pipeline0.dot",  // if paths requested
+ *                                            "dot": "digraph pipeline { ... }"                     // if content requested
+ *                                        }
+ *                                    ]
+ *                                }
+ *                                ```
  *
  * Examples:
  *
@@ -193,10 +214,45 @@ enum DotViewerMessageType {
     Snapshot,
 }
 
+/// Response mode for snapshot requests
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SnapshotResponseMode {
+    /// Return only file paths (requires dot-dir to be set)
+    Paths,
+    /// Return only dot content (no files written)
+    Content,
+    /// Return both paths and content
+    Both,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct DotViewerMessage {
     #[serde(rename = "type")]
     pub type_: DotViewerMessageType,
+    /// Response mode for snapshot (optional, defaults based on dot-dir setting)
+    pub response_mode: Option<SnapshotResponseMode>,
+}
+
+/// Result for a single pipeline snapshot
+#[derive(Debug, Serialize, Deserialize)]
+struct PipelineSnapshotResult {
+    /// Pipeline name
+    pub name: String,
+    /// Path to the dot file (if written)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Dot content (if requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dot: Option<String>,
+}
+
+/// Response message sent after a snapshot
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+struct SnapshotResponse {
+    /// List of pipeline snapshots
+    pub pipelines: Vec<PipelineSnapshotResult>,
 }
 
 #[derive(Debug)]
@@ -480,7 +536,39 @@ impl PipelineSnapshot {
                         DotViewerMessageType::Snapshot => {
                             if let Some(this) = weak_self.upgrade() {
                                 gst::info!(CAT, "Received dot-pipeline request from the WebSocket");
-                                this.snapshot();
+
+                                let response_mode = msg.response_mode;
+                                let results = tokio::task::spawn_blocking(move || {
+                                    this.imp().snapshot_with_response(response_mode)
+                                })
+                                .await
+                                .unwrap_or_else(|e| {
+                                    gst::error!(CAT, "Snapshot task panicked: {}", e);
+                                    Vec::new()
+                                });
+
+                                // Send response back
+                                let response = SnapshotResponse { pipelines: results };
+
+                                match serde_json::to_string(&response) {
+                                    Ok(json) => {
+                                        if let Err(e) = write.send(Message::Text(json.into())).await
+                                        {
+                                            gst::warning!(
+                                                CAT,
+                                                "Failed to send snapshot response: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        gst::error!(
+                                            CAT,
+                                            "Failed to serialize snapshot response: {}",
+                                            e
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -544,47 +632,90 @@ impl PipelineSnapshot {
     }
 
     pub(crate) fn snapshot(&self) {
+        // legacy signal/timer callers don't consume the results
+        let _ = self.snapshot_with_response(None);
+    }
+
+    /// Take a snapshot of all pipelines and optionally return results.
+    ///
+    /// # Arguments
+    /// * `response_mode` - If `None`, defaults to `Paths` if dot-dir is set, otherwise `Content`.
+    ///
+    /// # Returns
+    /// A vector of `PipelineSnapshotResult` containing the requested information.
+    fn snapshot_with_response(
+        &self,
+        response_mode: Option<SnapshotResponseMode>,
+    ) -> Vec<PipelineSnapshotResult> {
         let settings = self.settings.read().unwrap();
 
-        let dot_dir = if let Some(dot_dir) = settings.dot_dir.as_ref() {
-            if !matches!(settings.folder_mode, FolderMode::None) {
-                let dot_dir = match settings.folder_mode {
-                    FolderMode::Numbered => {
-                        let mut state = self.state.lock().unwrap();
-                        let res = state.current_folder;
-                        state.current_folder += 1;
-
-                        format!("{dot_dir}/{res}")
-                    }
-                    FolderMode::Timed => {
-                        let datetime: chrono::DateTime<chrono::Local> = chrono::Local::now();
-                        format!("{dot_dir}/{}", datetime.format("%Y-%m-%d %H:%M:%S"))
-                    }
-                    _ => unreachable!(),
-                };
-
-                if let Err(err) = std::fs::create_dir_all(&dot_dir) {
-                    gst::warning!(
-                        CAT,
-                        imp = self,
-                        "Failed to create folder {}: {}",
-                        dot_dir,
-                        err
-                    );
-                    return;
-                }
-
-                dot_dir
+        // Determine effective response mode:
+        // - If explicitly specified, use it
+        // - If dot-dir is set, default to Paths
+        // - Otherwise, default to Content
+        let effective_mode = response_mode.unwrap_or_else(|| {
+            if settings.dot_dir.is_some() {
+                SnapshotResponseMode::Paths
             } else {
-                dot_dir.clone()
+                SnapshotResponseMode::Content
+            }
+        });
+
+        let wants_paths = effective_mode == SnapshotResponseMode::Paths
+            || effective_mode == SnapshotResponseMode::Both;
+        let wants_content = effective_mode == SnapshotResponseMode::Content
+            || effective_mode == SnapshotResponseMode::Both;
+
+        // Determine dot_dir for file writing (only needed if we want paths)
+        let dot_dir = if wants_paths {
+            if let Some(dot_dir) = settings.dot_dir.as_ref() {
+                if !matches!(settings.folder_mode, FolderMode::None) {
+                    let dot_dir = match settings.folder_mode {
+                        FolderMode::Numbered => {
+                            let mut state = self.state.lock().unwrap();
+                            let res = state.current_folder;
+                            state.current_folder += 1;
+
+                            format!("{dot_dir}/{res}")
+                        }
+                        FolderMode::Timed => {
+                            let datetime: chrono::DateTime<chrono::Local> = chrono::Local::now();
+                            format!("{dot_dir}/{}", datetime.format("%Y-%m-%d %H:%M:%S"))
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    if let Err(err) = std::fs::create_dir_all(&dot_dir) {
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "Failed to create folder {}: {}",
+                            dot_dir,
+                            err
+                        );
+                        return Vec::new();
+                    }
+
+                    Some(dot_dir)
+                } else {
+                    Some(dot_dir.clone())
+                }
+            } else {
+                gst::info!(
+                    CAT,
+                    imp = self,
+                    "No dot-dir set, paths will not be available"
+                );
+                None
             }
         } else {
-            gst::info!(CAT, imp = self, "No dot-dir set, not dumping pipelines");
-            return;
+            None
         };
 
-        if matches!(settings.cleanup_mode, CleanupMode::Automatic) {
-            self.cleanup_dots(&Some(&dot_dir), false);
+        if let Some(ref dir) = dot_dir
+            && matches!(settings.cleanup_mode, CleanupMode::Automatic)
+        {
+            self.cleanup_dots(&Some(dir), false);
         }
 
         let ts = if settings.dot_ts {
@@ -616,29 +747,55 @@ impl PipelineSnapshot {
                 .collect::<Vec<_>>()
         };
 
+        let mut results = Vec::new();
+
         for pipeline in pipelines.into_iter() {
             let pipeline = pipeline.downcast::<gst::Pipeline>().unwrap();
-            gst::debug!(CAT, imp = self, "dump {}", pipeline.name());
+            let pipeline_name = pipeline.name().to_string();
+            gst::debug!(CAT, imp = self, "dump {}", pipeline_name);
 
-            let pipeline_ptr = if settings.dot_pipeline_ptr {
+            let pipeline_ptr_str = if settings.dot_pipeline_ptr {
                 let pipeline_ptr: *const gst::ffi::GstPipeline = pipeline.to_glib_none().0;
-
                 format!("-{pipeline_ptr:?}")
             } else {
                 "".to_string()
             };
-            let dot_path = format!(
-                "{dot_dir}/{ts}{}{}{pipeline_ptr}.dot",
-                settings.dot_prefix.as_ref().map_or("", |s| s.as_str()),
-                pipeline.name(),
-            );
 
+            // Generate dot data
             let data = pipeline.debug_to_dot_data(gst::DebugGraphDetails::all());
 
-            if let Err(e) = self.write_dot_file_atomically(Path::new(&dot_path), data.as_bytes()) {
-                gst::warning!(CAT, imp = self, "Failed to write {}: {}", dot_path, e);
+            let mut result = PipelineSnapshotResult {
+                name: pipeline_name.clone(),
+                path: None,
+                dot: None,
+            };
+
+            // Write file if we have a dot_dir and want paths
+            if let Some(ref dir) = dot_dir {
+                let dot_path = format!(
+                    "{dir}/{ts}{}{}{pipeline_ptr_str}.dot",
+                    settings.dot_prefix.as_ref().map_or("", |s| s.as_str()),
+                    pipeline_name,
+                );
+
+                if let Err(e) =
+                    self.write_dot_file_atomically(Path::new(&dot_path), data.as_bytes())
+                {
+                    gst::warning!(CAT, imp = self, "Failed to write {}: {}", dot_path, e);
+                } else {
+                    result.path = Some(dot_path);
+                }
             }
+
+            // Include content if requested
+            if wants_content {
+                result.dot = Some(data.into());
+            }
+
+            results.push(result);
         }
+
+        results
     }
 
     fn write_dot_file_atomically(&self, path: &Path, data: &[u8]) -> std::io::Result<()> {
