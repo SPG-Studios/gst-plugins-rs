@@ -75,6 +75,7 @@ const DEFAULT_CONGESTION_CONTROL: WebRTCSinkCongestionControl =
 const DEFAULT_DO_FEC: bool = true;
 const DEFAULT_DO_RETRANSMISSION: bool = true;
 const DEFAULT_DO_CLOCK_SIGNALLING: bool = false;
+const DEFAULT_ICE_CONSENT_FRESHNESS: bool = true;
 const DEFAULT_ENABLE_DATA_CHANNEL_NAVIGATION: bool = false;
 const DEFAULT_ENABLE_CONTROL_DATA_CHANNEL: bool = false;
 const DEFAULT_ICE_TRANSPORT_POLICY: WebRTCICETransportPolicy = WebRTCICETransportPolicy::All;
@@ -116,6 +117,7 @@ struct Settings {
     do_fec: bool,
     do_retransmission: bool,
     do_clock_signalling: bool,
+    ice_consent_freshness: bool,
     enable_data_channel_navigation: bool,
     enable_control_data_channel: bool,
     meta: Option<gst::Structure>,
@@ -559,6 +561,7 @@ impl Default for Settings {
             do_fec: DEFAULT_DO_FEC,
             do_retransmission: DEFAULT_DO_RETRANSMISSION,
             do_clock_signalling: DEFAULT_DO_CLOCK_SIGNALLING,
+            ice_consent_freshness: DEFAULT_ICE_CONSENT_FRESHNESS,
             enable_data_channel_navigation: DEFAULT_ENABLE_DATA_CHANNEL_NAVIGATION,
             enable_control_data_channel: DEFAULT_ENABLE_CONTROL_DATA_CHANNEL,
             meta: None,
@@ -3249,12 +3252,24 @@ impl BaseWebRTCSink {
             peer_id,
         );
 
-        let webrtcbin = make_element("webrtcbin", Some(&format!("webrtcbin-{session_id}")))
-            .map_err(|err| WebRTCSinkError::SessionPipelineError {
-                session_id: session_id.clone(),
-                peer_id: peer_id.clone(),
-                details: err.to_string(),
-            })?;
+        let webrtcbin = {
+            let mut builder =
+                gst::ElementFactory::make("webrtcbin").name(format!("webrtcbin-{session_id}"));
+            // `ice-consent-freshness` is a construct-only property only available on a
+            // webrtcbin built with consent-freshness support (upstream MR !11865 /
+            // downstream patch). Only set it when disabling, so stock-gstreamer builds
+            // keep working (webrtcbin defaults to consent freshness enabled anyway).
+            if !settings.ice_consent_freshness {
+                builder = builder.property("ice-consent-freshness", false);
+            }
+            builder
+                .build()
+                .map_err(|err| WebRTCSinkError::SessionPipelineError {
+                    session_id: session_id.clone(),
+                    peer_id: peer_id.clone(),
+                    details: err.to_string(),
+                })?
+        };
 
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
         webrtcbin.set_property("ice-transport-policy", settings.ice_transport_policy);
@@ -5318,6 +5333,22 @@ impl ObjectImpl for BaseWebRTCSink {
                     .mutable_ready()
                     .build(),
                 /**
+                 * GstBaseWebRTCSink:ice-consent-freshness:
+                 *
+                 * Whether the ICE agent of each session's webrtcbin should perform
+                 * consent freshness checks (RFC 7675). Some peers (e.g. AWS KVS) keep
+                 * the connection alive with binding indications but do not answer
+                 * consent requests, which otherwise tears the session down after ~60s;
+                 * disable this for such peers. Applied to webrtcbin at construction, so
+                 * it only affects sessions created after the value is set.
+                 */
+                glib::ParamSpecBoolean::builder("ice-consent-freshness")
+                    .nick("ICE consent freshness")
+                    .blurb("Whether webrtcbin's ICE agent should perform consent freshness checks (RFC 7675)")
+                    .default_value(DEFAULT_ICE_CONSENT_FRESHNESS)
+                    .mutable_ready()
+                    .build(),
+                /**
                  * GstBaseWebRTCSink:enable-data-channel-navigation:
                  *
                  * Enable navigation events through a dedicated WebRTCDataChannel.
@@ -5540,6 +5571,10 @@ impl ObjectImpl for BaseWebRTCSink {
                 let mut settings = self.settings.lock().unwrap();
                 settings.do_clock_signalling = value.get::<bool>().expect("type checked upstream");
             }
+            "ice-consent-freshness" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_consent_freshness = value.get::<bool>().expect("type checked upstream");
+            }
             "enable-data-channel-navigation" => {
                 let mut settings = self.settings.lock().unwrap();
                 settings.enable_data_channel_navigation =
@@ -5680,6 +5715,10 @@ impl ObjectImpl for BaseWebRTCSink {
             "do-clock-signalling" => {
                 let settings = self.settings.lock().unwrap();
                 settings.do_clock_signalling.to_value()
+            }
+            "ice-consent-freshness" => {
+                let settings = self.settings.lock().unwrap();
+                settings.ice_consent_freshness.to_value()
             }
             "enable-data-channel-navigation" => {
                 let settings = self.settings.lock().unwrap();
