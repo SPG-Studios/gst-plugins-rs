@@ -846,21 +846,20 @@ impl SignallableImpl for Signaller {
         let state = self.state.lock().unwrap();
         let session_id = session_id.to_string();
         if let Some(mut sender) = state.websocket_sender.clone() {
-            RUNTIME.spawn(glib::clone!(
-                #[to_owned(rename_to = this)]
-                self,
-                async move {
-                    if let Err(err) = sender
-                        .send(p::IncomingMessage::EndSession(p::EndSessionMessage {
-                            session_id,
-                        }))
-                        .await
-                    {
-                        this.obj()
-                            .emit_by_name::<()>("error", &[&format!("Error: {err}")]);
-                    }
+            RUNTIME.block_on(async move {
+                if let Err(err) = sender
+                    .send(p::IncomingMessage::EndSession(p::EndSessionMessage {
+                        session_id,
+                    }))
+                    .await
+                {
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "Failed to queue EndSession on shutdown: {err}"
+                    );
                 }
-            ));
+            })
         }
     }
 
@@ -874,21 +873,20 @@ impl SignallableImpl for Signaller {
         let state = self.state.lock().unwrap();
         let session_id = session_id.to_string();
         if let Some(mut sender) = state.websocket_sender.clone() {
-            RUNTIME.spawn(glib::clone!(
-                #[to_owned(rename_to = this)]
-                self,
-                async move {
-                    if let Err(err) = sender
-                        .send(p::IncomingMessage::EndSessionV1_1(
-                            p::EndSessionMessageV1_1 { session_id, error },
-                        ))
-                        .await
-                    {
-                        this.obj()
-                            .emit_by_name::<()>("error", &[&format!("Error: {err}")]);
-                    }
+            RUNTIME.block_on(async move {
+                if let Err(err) = sender
+                    .send(p::IncomingMessage::EndSessionV1_1(
+                        p::EndSessionMessageV1_1 { session_id, error },
+                    ))
+                    .await
+                {
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "Failed to queue EndSession on shutdown: {err}"
+                    );
                 }
-            ));
+            });
         }
     }
 }
