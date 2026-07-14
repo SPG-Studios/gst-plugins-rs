@@ -1751,7 +1751,7 @@ impl RtpRecv {
         gst::trace!(CAT, obj = pad, "id {id}: {list:?}");
 
         let mut state = self.state.lock().unwrap();
-        let Some(session) = state.mut_session_by_id(id) else {
+        let Some(mut session) = state.mut_session_by_id(id) else {
             return Err(gst::FlowError::Error);
         };
 
@@ -1780,6 +1780,7 @@ impl RtpRecv {
         > = Default::default();
         let mut split_bufferlist = false;
         let mut previous_recv_src_pad = None;
+
         let list_mut = list.make_mut();
 
         for buffer in list_mut.drain(..) {
@@ -1795,7 +1796,15 @@ impl RtpRecv {
                     ssrc_collision.push(ssrc);
                 }
                 RecvRtpBuffer::IsRtcp(buffer) => {
+                    drop(state);
+
                     Self::rtcp_sink_chain(self, pad, id, buffer)?;
+
+                    state = self.state.lock().unwrap();
+                    let Some(session_temp) = state.mut_session_by_id(id) else {
+                        return Err(gst::FlowError::Error);
+                    };
+                    session = session_temp;
                 }
                 RecvRtpBuffer::Drop => (),
                 RecvRtpBuffer::Forward((buffer, recv_src_pad)) => {
