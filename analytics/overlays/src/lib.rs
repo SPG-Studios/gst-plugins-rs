@@ -14,6 +14,7 @@
  */
 use gst::glib;
 
+mod autobin;
 mod color;
 mod coordination;
 mod geometry;
@@ -25,9 +26,13 @@ mod keypointsoverlay;
 mod keypointsoverlaygl;
 mod lifecycle;
 mod meta_transform;
+mod keypointsoverlaybin;
 mod objectdetectionoverlay;
+mod objectdetectionoverlaybin;
 #[cfg(feature = "gl")]
 mod objectdetectionoverlaygl;
+mod overlaycompositorbin;
+mod segmentationoverlaybin;
 mod overlay_intent;
 mod overlaycompositor;
 #[cfg(feature = "gl")]
@@ -53,6 +58,10 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     segmentationoverlay::register(plugin)?;
     keypointsoverlay::register(plugin)?;
     overlaycompositor::register(plugin)?;
+    objectdetectionoverlaybin::register(plugin)?;
+    keypointsoverlaybin::register(plugin)?;
+    segmentationoverlaybin::register(plugin)?;
+    overlaycompositorbin::register(plugin)?;
     #[cfg(feature = "gl")]
     objectdetectionoverlaygl::register(plugin)?;
     #[cfg(feature = "gl")]
