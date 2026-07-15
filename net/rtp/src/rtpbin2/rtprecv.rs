@@ -1774,13 +1774,15 @@ impl RtpRecv {
         let mut items_to_pre_push: smallvec::SmallVec<[HeldRecvItem; 4]> =
             smallvec::SmallVec::with_capacity(list.len() + 2);
         let mut held_buffers: smallvec::SmallVec<[HeldRecvBuffer; 4]> = Default::default();
-        // recv src pads for retained buffers, in case we end up needing to split the list
-        let mut recv_src_pads = RtpRecvSrcPads::default();
+        // list of (recv src pad, forward buffer), in case we end up needing to split the list
+        let mut forward_buffers: smallvec::SmallVec<
+            [(RtpRecvSrcPad, gst::Buffer); SRC_PAD_SMALL_VEC_CAPACITY],
+        > = Default::default();
         let mut split_bufferlist = false;
         let mut previous_recv_src_pad = None;
         let list_mut = list.make_mut();
-        let mut ret = Ok(());
-        list_mut.foreach_mut(|buffer, _i| {
+
+        for buffer in list_mut.drain(..) {
             match self.handle_buffer_locked(
                 pad,
                 session,
@@ -1788,24 +1790,16 @@ impl RtpRecv {
                 arrival_time,
                 &mut items_to_pre_push,
                 &mut held_buffers,
-            ) {
-                Ok(RecvRtpBuffer::SsrcCollision(ssrc)) => {
+            )? {
+                RecvRtpBuffer::SsrcCollision(ssrc) => {
                     ssrc_collision.push(ssrc);
-                    ControlFlow::Continue(None)
                 }
-                Ok(RecvRtpBuffer::IsRtcp(buffer)) => {
-                    match Self::rtcp_sink_chain(self, pad, id, buffer) {
-                        Ok(_buf) => ControlFlow::Continue(None),
-                        Err(e) => {
-                            ret = Err(e);
-                            ControlFlow::Break(None)
-                        }
-                    }
+                RecvRtpBuffer::IsRtcp(buffer) => {
+                    Self::rtcp_sink_chain(self, pad, id, buffer)?;
                 }
-                Ok(RecvRtpBuffer::Drop) => ControlFlow::Continue(None),
-                Ok(RecvRtpBuffer::Forward((buffer, recv_src_pad))) => {
-                    // if all the buffers do not end up in the same jitterbuffer, then we need to
-                    // split
+                RecvRtpBuffer::Drop => (),
+                RecvRtpBuffer::Forward((buffer, recv_src_pad)) => {
+                    // if all the buffers do not end up in the same jitterbuffer, then we need to split
                     if !split_bufferlist
                         && previous_recv_src_pad
                             .as_ref()
@@ -1815,17 +1809,12 @@ impl RtpRecv {
                     {
                         split_bufferlist = true;
                     }
-                    recv_src_pads.push(recv_src_pad.clone());
+                    forward_buffers.push((recv_src_pad.clone(), buffer));
                     previous_recv_src_pad = Some(recv_src_pad);
-                    ControlFlow::Continue(Some(buffer))
-                }
-                Err(e) => {
-                    ret = Err(e);
-                    ControlFlow::Break(None)
                 }
             }
-        });
-        ret?;
+        }
+
         session
             .recv_store
             .extend(held_buffers.into_iter().map(HeldRecvItem::Buffer));
@@ -1833,45 +1822,27 @@ impl RtpRecv {
         self.handle_ssrc_collision(session, ssrc_collision)?;
         state = self.handle_push_jitterbuffer(state, id, items_to_pre_push)?;
         if split_bufferlist {
-            assert!(!list_mut.is_empty());
-
-            // this abomination is to work around passing state through handle_push_jitterbuffer
-            // inside a closure
-            let mut maybe_state = Some(state);
-            let mut recv_src_pad_iter = recv_src_pads.drain(..);
-            list_mut.foreach_mut({
-                let maybe_state = &mut maybe_state;
-                |buffer, _i| match self.handle_push_jitterbuffer(
-                    maybe_state.take().unwrap(),
+            for (recv_src_pad, buffer) in forward_buffers.drain(..) {
+                state = self.handle_push_jitterbuffer(
+                    state,
                     id,
                     [HeldRecvItem::Buffer(HeldRecvBuffer {
                         hold_id: None,
                         arrival_time: arrival_time.instant,
                         buffer,
-                        recv_src_pad: recv_src_pad_iter
-                            .next()
-                            .expect("pushed recv_src_pad for each retained buffers"),
+                        recv_src_pad,
                     })],
-                ) {
-                    Ok(state) => {
-                        *maybe_state = Some(state);
-                        ControlFlow::Continue(None)
-                    }
-                    Err(e) => {
-                        ret = Err(e);
-                        ControlFlow::Break(None)
-                    }
-                }
-            });
-            ret?;
-            state = maybe_state.expect("no errors => maybe_state restored");
-        } else if !list.is_empty() {
+                )?;
+            }
+        } else if !forward_buffers.is_empty() {
             state = self.handle_push_jitterbuffer(
                 state,
                 id,
                 [HeldRecvItem::BufferList(HeldRecvBufferList {
                     arrival_time: arrival_time.instant,
-                    list,
+                    list: gst::BufferList::from_iter(
+                        forward_buffers.drain(..).map(|(_, buffer)| buffer),
+                    ),
                     recv_src_pad: previous_recv_src_pad.unwrap(),
                 })],
             )?;
