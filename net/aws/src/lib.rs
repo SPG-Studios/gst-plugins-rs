@@ -14,6 +14,7 @@
  */
 use gst::glib;
 
+mod comprehend;
 mod polly;
 mod s3arn;
 mod s3hlssink;
@@ -29,6 +30,7 @@ mod translate;
 pub use transcriber::AwsTranscriberResultStability;
 
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
+    comprehend::register(plugin)?;
     s3sink::register(plugin)?;
     s3src::register(plugin)?;
     transcribe_parse::register(plugin)?;
@@ -40,6 +42,10 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 
     if !gst::meta::CustomMeta::is_registered("AWSTranscribeItemMeta") {
         gst::meta::CustomMeta::register("AWSTranscribeItemMeta", &[]);
+    }
+
+    if !gst::meta::CustomMeta::is_registered("AWSComprehendMeta") {
+        gst::meta::CustomMeta::register("AWSComprehendMeta", &[]);
     }
 
     Ok(())
