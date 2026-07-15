@@ -34,6 +34,7 @@ mod ac3;
 mod amr;
 mod av1;
 mod jpeg;
+mod jxsv;
 mod klv;
 mod linear_audio;
 mod mp2t;
@@ -79,6 +80,9 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 
     jpeg::depay::register(plugin)?;
     jpeg::pay::register(plugin)?;
+
+    jxsv::depay::register(plugin)?;
+    jxsv::pay::register(plugin)?;
 
     klv::depay::register(plugin)?;
     klv::pay::register(plugin)?;
