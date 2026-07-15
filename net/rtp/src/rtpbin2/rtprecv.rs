@@ -1361,6 +1361,45 @@ impl RtpRecv {
         Ok(gst::FlowSuccess::Ok)
     }
 
+    // Small helper function for pushing a buffer list as a single buffer
+    // if there's only one buffer, or as a full list otherwise, and updating the
+    // flow combiner accordingly.
+    fn push_list<'a>(
+        &'a self,
+        state: MutexGuard<'a, State>,
+        flow_combiner: Arc<Mutex<gst_base::UniqueFlowCombiner>>,
+        recv_src_pad: &RtpRecvSrcPad,
+        buf_list: gst::BufferList,
+    ) -> Result<MutexGuard<'a, State>, gst::FlowError> {
+        drop(state);
+
+        let res = if buf_list.len() == 1 {
+            let buffer = buf_list.get_owned(0).unwrap();
+            drop(buf_list);
+            let res = recv_src_pad.pad.push(buffer);
+            gst::trace!(
+                CAT,
+                obj = recv_src_pad.pad,
+                "Pushed buffer, flow ret {res:?}"
+            );
+            res
+        } else {
+            let res = recv_src_pad.pad.push_list(buf_list);
+            gst::trace!(
+                CAT,
+                obj = recv_src_pad.pad,
+                "Pushed buffer list, flow ret {res:?}"
+            );
+            res
+        };
+        flow_combiner
+            .lock()
+            .unwrap()
+            .update_pad_flow(&recv_src_pad.pad, res)?;
+
+        Ok(self.state.lock().unwrap())
+    }
+
     fn handle_push_jitterbuffer<'a>(
         &'a self,
         mut state: MutexGuard<'a, State>,
@@ -1490,50 +1529,18 @@ impl RtpRecv {
                     // FIXME: Should block if too many packets are stored here because the source pad task
                     // is blocked
 
+                    // honor lock ordering
+                    drop(state);
                     let _src_pad_permit = rtpbin2::get_or_init_runtime()
                         .expect("initialized in change_state()")
                         .block_on(list.recv_src_pad.semaphore.acquire());
+                    state = self.state.lock().unwrap();
 
                     let mut jb_store = list.recv_src_pad.jitter_buffer_store.lock().unwrap();
 
                     // Collect all buffers with the same PTS in a new list to push them
                     // all downstream in one go.
                     let mut new_list = None;
-
-                    // Small internal helper function for pushing a buffer list as a single buffer
-                    // if there's only one buffer, or as a full list otherwise, and updating the
-                    // flow combiner accordingly.
-                    fn push_list(
-                        flow_combiner: Arc<Mutex<gst_base::UniqueFlowCombiner>>,
-                        recv_src_pad: &RtpRecvSrcPad,
-                        buf_list: gst::BufferList,
-                    ) -> Result<(), gst::FlowError> {
-                        let res = if buf_list.len() == 1 {
-                            let buffer = buf_list.get_owned(0).unwrap();
-                            drop(buf_list);
-                            let res = recv_src_pad.pad.push(buffer);
-                            gst::trace!(
-                                CAT,
-                                obj = recv_src_pad.pad,
-                                "Pushed buffer, flow ret {res:?}"
-                            );
-                            res
-                        } else {
-                            let res = recv_src_pad.pad.push_list(buf_list);
-                            gst::trace!(
-                                CAT,
-                                obj = recv_src_pad.pad,
-                                "Pushed buffer list, flow ret {res:?}"
-                            );
-                            res
-                        };
-                        flow_combiner
-                            .lock()
-                            .unwrap()
-                            .update_pad_flow(&recv_src_pad.pad, res)?;
-
-                        Ok(())
-                    }
 
                     let buf_list = list.list.make_mut();
                     for mut buffer in buf_list.drain(..) {
@@ -1595,11 +1602,13 @@ impl RtpRecv {
                                         }
                                         Some((_pts, old_list)) => {
                                             let flow_combiner = session.recv_flow_combiner.clone();
-                                            drop(state);
 
-                                            push_list(flow_combiner, &list.recv_src_pad, old_list)?;
-
-                                            state = self.state.lock().unwrap();
+                                            state = self.push_list(
+                                                state,
+                                                flow_combiner,
+                                                &list.recv_src_pad,
+                                                old_list,
+                                            )?;
 
                                             let new_pts = buffer.pts();
                                             let mut list = gst::BufferList::new();
@@ -1618,11 +1627,12 @@ impl RtpRecv {
                                     Option::zip(new_list.take(), state.session_by_id(id))
                                 {
                                     let flow_combiner = session.recv_flow_combiner.clone();
-                                    drop(state);
-
-                                    push_list(flow_combiner, &list.recv_src_pad, new_list)?;
-
-                                    state = self.state.lock().unwrap();
+                                    state = self.push_list(
+                                        state,
+                                        flow_combiner,
+                                        &list.recv_src_pad,
+                                        new_list,
+                                    )?;
                                 }
 
                                 jb_store.store.insert(id, JitterBufferItem::Packet(buffer));
@@ -1653,11 +1663,8 @@ impl RtpRecv {
                         Option::zip(new_list, state.session_by_id(id))
                     {
                         let flow_combiner = session.recv_flow_combiner.clone();
-                        drop(state);
-
-                        push_list(flow_combiner, &list.recv_src_pad, new_list)?;
-
-                        state = self.state.lock().unwrap();
+                        state =
+                            self.push_list(state, flow_combiner, &list.recv_src_pad, new_list)?;
                     }
                 }
             }
