@@ -22,24 +22,35 @@ mod geometry;
 mod glsupport;
 pub mod hooks;
 mod keypointsoverlay;
+mod keypointsoverlaybin;
 #[cfg(feature = "gl")]
 mod keypointsoverlaygl;
 mod lifecycle;
 mod meta_transform;
-mod keypointsoverlaybin;
 mod objectdetectionoverlay;
 mod objectdetectionoverlaybin;
 #[cfg(feature = "gl")]
 mod objectdetectionoverlaygl;
-mod overlaycompositorbin;
-mod segmentationoverlaybin;
 mod overlay_intent;
 mod overlaycompositor;
+mod overlaycompositorbin;
 #[cfg(feature = "gl")]
 mod overlaycompositorgl;
 mod placement;
 mod render;
+mod segbackgroundblur;
+mod segbackgroundblurbin;
+#[cfg(feature = "gl")]
+mod segbackgroundblurgl;
+mod segbackgroundimage;
+mod segbackgroundimagebin;
+#[cfg(feature = "gl")]
+mod segbackgroundimagegl;
+mod segmaskalpha;
+#[cfg(feature = "gl")]
+mod segmaskalphagl;
 mod segmentationoverlay;
+mod segmentationoverlaybin;
 #[cfg(feature = "gl")]
 mod segmentationoverlaygl;
 
@@ -58,6 +69,11 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     segmentationoverlay::register(plugin)?;
     keypointsoverlay::register(plugin)?;
     overlaycompositor::register(plugin)?;
+    segmaskalpha::register(plugin)?;
+    segbackgroundblur::register(plugin)?;
+    segbackgroundblurbin::register(plugin)?;
+    segbackgroundimage::register(plugin)?;
+    segbackgroundimagebin::register(plugin)?;
     objectdetectionoverlaybin::register(plugin)?;
     keypointsoverlaybin::register(plugin)?;
     segmentationoverlaybin::register(plugin)?;
@@ -70,6 +86,12 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     keypointsoverlaygl::register(plugin)?;
     #[cfg(feature = "gl")]
     overlaycompositorgl::register(plugin)?;
+    #[cfg(feature = "gl")]
+    segmaskalphagl::register(plugin)?;
+    #[cfg(feature = "gl")]
+    segbackgroundblurgl::register(plugin)?;
+    #[cfg(feature = "gl")]
+    segbackgroundimagegl::register(plugin)?;
     Ok(())
 }
 

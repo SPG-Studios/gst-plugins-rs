@@ -274,8 +274,7 @@ impl AutoOverlayBin {
         #[cfg(not(feature = "gl"))]
         {
             let factory = self.inner.cpu_factory;
-            if let Err(err) =
-                install_child(obj, &self.inner, &self.sinkpad, &self.srcpad, factory)
+            if let Err(err) = install_child(obj, &self.inner, &self.sinkpad, &self.srcpad, factory)
             {
                 gst::element_error!(
                     obj,
@@ -337,7 +336,8 @@ impl AutoOverlayBin {
     }
 
     /// Forward a property set to the active child, caching it so a child built
-    /// later is configured consistently.
+    /// later is configured consistently. A property the active child does not have
+    /// (the CPU and GL twins need not share every property) is only cached.
     pub fn set_property(&self, name: &str, value: &glib::Value) {
         // SAFETY: only properties this bin installed reach here, and every one is
         // a `Send` scalar type (bool/int/uint/uint64/double/string).
@@ -348,15 +348,19 @@ impl AutoOverlayBin {
             .unwrap()
             .set_value(name, send_value);
 
-        if let Some(child) = self.inner.child.lock().unwrap().as_ref() {
+        if let Some(child) = self.inner.child.lock().unwrap().as_ref()
+            && child.find_property(name).is_some()
+        {
             child.set_property_from_value(name, value);
         }
     }
 
-    /// Read a property from the active child, or the override/default cache if no
-    /// child exists yet.
+    /// Read a property from the active child (when it has it), else from the
+    /// override/default cache.
     pub fn property(&self, name: &str) -> glib::Value {
-        if let Some(child) = self.inner.child.lock().unwrap().as_ref() {
+        if let Some(child) = self.inner.child.lock().unwrap().as_ref()
+            && child.find_property(name).is_some()
+        {
             return child.property_value(name);
         }
         if let Ok(value) = self.inner.overrides.lock().unwrap().value(name) {
