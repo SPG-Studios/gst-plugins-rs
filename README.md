@@ -285,6 +285,8 @@ You will find the following plugins in this repository:
       - `rtpvrawdepay2`: Depayload a Raw Uncompressed Video Stream from RTP packets (RFC 4175).
       - `rtpvrawpay2`: Payload a Raw Uncompressed Video Stream into RTP packets (RFC 4175).
 
+      - `rtph266pay` / `rtph266depay`: RTP (de)payloader for the H.266 (VVC) video codec.
+
     - `rtsp`:
       - `rtspsrc2`: New Rust implementation of a Real Time Streaming Protocol (RTSP) (RFC 2326, 7826) source element.
 

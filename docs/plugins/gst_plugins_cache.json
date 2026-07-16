@@ -14478,6 +14478,112 @@
                 },
                 "rank": "none"
             },
+            "rtph266depay": {
+                "author": "Sanil Raut <sr1990003@gmail.com>",
+                "description": "Depayload H266 (VVC) from RTP packets (RFC 9328)",
+                "hierarchy": [
+                    "GstRtpH266Depay",
+                    "GstRtpBaseDepay2",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Codec/Depayloader/Network/RTP",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "application/x-rtp:\n          media: video\n     clock-rate: 90000\n  encoding-name: H266\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "video/x-h266:\n  stream-format: byte-stream\n      alignment: au\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "properties": {
+                    "request-keyframe": {
+                        "blurb": "Request a new keyframe upstream when packet loss is detected",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    },
+                    "wait-for-keyframe": {
+                        "blurb": "Wait for the next keyframe after packet loss",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "false",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "gboolean",
+                        "writable": true
+                    }
+                },
+                "rank": "primary"
+            },
+            "rtph266pay": {
+                "author": "Sanil Raut <sr1990003@gmail.com>",
+                "description": "Payload H266 (VVC) as RTP packets (RFC 9328)",
+                "hierarchy": [
+                    "GstRtpH266Pay",
+                    "GstRtpBasePay2",
+                    "GstElement",
+                    "GstObject",
+                    "GInitiallyUnowned",
+                    "GObject"
+                ],
+                "klass": "Codec/Payloader/Network/RTP",
+                "pad-templates": {
+                    "sink": {
+                        "caps": "video/x-h266:\n  stream-format: byte-stream\n      alignment: au\n",
+                        "direction": "sink",
+                        "presence": "always"
+                    },
+                    "src": {
+                        "caps": "application/x-rtp:\n          media: video\n     clock-rate: 90000\n  encoding-name: H266\n",
+                        "direction": "src",
+                        "presence": "always"
+                    }
+                },
+                "properties": {
+                    "aggregate-mode": {
+                        "blurb": "Whether and how to aggregate NAL units into Aggregation Packets",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "none (0)",
+                        "mutable": "ready",
+                        "readable": true,
+                        "type": "GstRtpH266PayAggregateMode",
+                        "writable": true
+                    },
+                    "config-interval": {
+                        "blurb": "Re-insert VPS/SPS/PPS ahead of keyframes (in seconds); 0 = only when present in-stream, -1 = with every keyframe",
+                        "conditionally-available": false,
+                        "construct": false,
+                        "construct-only": false,
+                        "controllable": false,
+                        "default": "0",
+                        "max": "3600",
+                        "min": "-1",
+                        "mutable": "playing",
+                        "readable": true,
+                        "type": "gint",
+                        "writable": true
+                    }
+                },
+                "rank": "primary"
+            },
             "rtpjpegdepay2": {
                 "author": "Sebastian Dröge <sebastian@centricular.com>",
                 "description": "Depayload a JPEG Video stream from RTP packets (RFC 2435)",
@@ -16257,6 +16363,26 @@
                         "desc": "Use linear regression slope",
                         "name": "linear-regression",
                         "value": "1"
+                    }
+                ]
+            },
+            "GstRtpH266PayAggregateMode": {
+                "kind": "enum",
+                "values": [
+                    {
+                        "desc": "Do not aggregate NAL units",
+                        "name": "none",
+                        "value": "0"
+                    },
+                    {
+                        "desc": "Aggregate non-VCL NAL units (no latency added)",
+                        "name": "zero-latency",
+                        "value": "1"
+                    },
+                    {
+                        "desc": "Aggregate as many NAL units as the MTU allows",
+                        "name": "max",
+                        "value": "2"
                     }
                 ]
             },
