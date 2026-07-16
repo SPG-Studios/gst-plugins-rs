@@ -284,6 +284,128 @@ pub fn parse_redirect_location(
     }
 }
 
+/// Apply UDP-port-range and UDP-only constraints to the ICE agent
+/// backing a freshly created `webrtcbin`.
+///
+/// * `min_rtp_port` / `max_rtp_port`: when greater than 0, the matching
+///   property is forwarded to the underlying `GstWebRTCNice` ICE agent so
+///   that libnice only binds host candidate sockets inside that range.
+///   A value of 0 is treated as "leave the libnice default in place".
+/// * `udp_only`: when `true`, three things are done on the ICE agent to
+///   guarantee that only UDP sockets end up bound:
+///
+///   1. `GstWebRTCICE::ice-tcp` is set to `false` (and `ice-udp` to
+///      `true`), which — via the proxy setter in `GstWebRTCNice` — also
+///      sets `use_ice_tcp = FALSE` on the inner `NiceAgent`. This
+///      prevents libnice from gathering TCP host candidates (including
+///      RFC 6544 TCP simultaneous-open, whose sockets always use
+///      ephemeral ports and are therefore not covered by the UDP port
+///      range above).
+///   2. `NiceAgent::ice-tcp` is also written directly, as a
+///      belt-and-suspenders measure for builds where the `GstWebRTCICE`
+///      proxy path is not sufficient.
+///   3. `NiceAgent::upnp` is set to `false`. libnice's UPnP support
+///      opens per-interface SSDP UDP sockets (on port 1900) and a
+///      TCP LISTEN socket on an ephemeral port per interface for GENA
+///      callbacks. Those TCP LISTEN sockets are **not** ICE-TCP
+///      candidates, so they are not suppressed by disabling `ice-tcp`;
+///      the only way to keep them from being opened is to disable
+///      UPnP on the agent.
+///
+/// This function is intentionally tolerant of older GStreamer versions:
+/// missing properties are logged at debug level and the function returns
+/// without panicking.
+pub fn configure_ice_agent(
+    webrtcbin: &gst::Element,
+    min_rtp_port: u32,
+    max_rtp_port: u32,
+    udp_only: bool,
+) {
+    if min_rtp_port == 0 && max_rtp_port == 0 && !udp_only {
+        return;
+    }
+
+    gst::info!(
+        CAT,
+        obj = webrtcbin,
+        "Configuring ICE agent: min-rtp-port={} max-rtp-port={} udp_only={}",
+        min_rtp_port,
+        max_rtp_port,
+        udp_only,
+    );
+
+    if !webrtcbin.has_property("ice-agent") {
+        gst::warning!(
+            CAT,
+            obj = webrtcbin,
+            "webrtcbin does not expose 'ice-agent', cannot configure ICE port range / udp-only"
+        );
+        return;
+    }
+
+    let ice_agent = webrtcbin.property::<gst::Object>("ice-agent");
+
+    if min_rtp_port > 0 {
+        if ice_agent.has_property_with_type("min-rtp-port", u32::static_type()) {
+            ice_agent.set_property("min-rtp-port", min_rtp_port);
+        } else {
+            gst::warning!(
+                CAT,
+                obj = webrtcbin,
+                "ICE agent does not expose 'min-rtp-port', cannot restrict minimum port"
+            );
+        }
+    }
+
+    if max_rtp_port > 0 {
+        if ice_agent.has_property_with_type("max-rtp-port", u32::static_type()) {
+            ice_agent.set_property("max-rtp-port", max_rtp_port);
+        } else {
+            gst::warning!(
+                CAT,
+                obj = webrtcbin,
+                "ICE agent does not expose 'max-rtp-port', cannot restrict maximum port"
+            );
+        }
+    }
+
+    if udp_only {
+        // Preferred path: GstWebRTCNice exposes "ice-tcp" (and
+        // "ice-udp") as boolean properties. The proxy setter inside
+        // GstWebRTCNice forwards them to the inner NiceAgent, and
+        // libnice's own setter accepts `ice-tcp = false` as long as
+        // `ice-udp` is TRUE at the time of the write.
+        if ice_agent.has_property_with_type("ice-tcp", bool::static_type()) {
+            ice_agent.set_property("ice-tcp", false);
+        } else {
+            gst::warning!(
+                CAT,
+                obj = webrtcbin,
+                "ICE agent does not expose 'ice-tcp'"
+            );
+        }
+        if ice_agent.has_property_with_type("ice-udp", bool::static_type()) {
+            ice_agent.set_property("ice-udp", true);
+        }
+
+        // Belt-and-suspenders: also set ice-tcp directly on the inner
+        // NiceAgent (some builds only propagate one of the two paths).
+        // At the same time, turn off libnice's UPnP helper: UPnP opens
+        // per-interface SSDP UDP sockets and a TCP LISTEN socket for
+        // GENA callbacks that are NOT ICE-TCP candidates and are
+        // therefore not suppressed by `ice-tcp = false`.
+        if ice_agent.has_property("agent") {
+            let nice_agent = ice_agent.property::<glib::Object>("agent");
+            if nice_agent.has_property_with_type("ice-tcp", bool::static_type()) {
+                nice_agent.set_property("ice-tcp", false);
+            }
+            if nice_agent.has_property_with_type("upnp", bool::static_type()) {
+                nice_agent.set_property("upnp", false);
+            }
+        }
+    }
+}
+
 #[cfg(any(feature = "whip", feature = "whep"))]
 pub fn build_reqwest_client(pol: Policy) -> reqwest::Client {
     let client_builder = reqwest::Client::builder();

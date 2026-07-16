@@ -11,6 +11,7 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -26,11 +27,69 @@ struct Peer {
 struct State {
     tx: Option<mpsc::Sender<(String, Option<Utf8Bytes>)>>,
     peers: HashMap<String, Peer>,
+    /// Per-peer local socket IP (the address the peer connected to). Used to
+    /// rewrite ICE/SDP IPs in outgoing messages when `rewrite_internal_ip` is
+    /// configured.
+    peer_local_ips: HashMap<String, IpAddr>,
+    /// When set, outgoing ICE candidates and SDP payloads are scanned for this
+    /// IP (in string form) and replaced with the destination peer's
+    /// `peer_local_ips` entry. Enables NAT / multi-homed traversal without an
+    /// external proxy.
+    rewrite_internal_ip: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct Server {
     state: Arc<Mutex<State>>,
+}
+
+/// Rewrite ICE candidate and SDP IP occurrences inside an outgoing
+/// signalling JSON message.
+///
+/// Looks for the well-known protocol fields:
+///   - `ice.candidate`              (PeerMessageInner::Ice)
+///   - `sdp.sdp`                    (PeerMessageInner::Sdp, both Offer and Answer)
+///   - top-level `offer`            (OutgoingMessage::StartSession.offer)
+///
+/// Returns `Some(rewritten_json)` if any field was modified, otherwise `None`.
+/// Operating on `serde_json::Value` keeps the function independent of the
+/// concrete `OutgoingMessage` type so `Server::spawn` can stay generic over `O`.
+fn rewrite_ice_sdp_in_json(msg_str: &str, internal: &str, external: &str) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(msg_str).ok()?;
+    let obj = value.as_object_mut()?;
+    let mut modified = false;
+
+    if let Some(ice) = obj.get_mut("ice").and_then(|v| v.as_object_mut())
+        && let Some(c) = ice.get("candidate").and_then(|c| c.as_str())
+        && c.contains(internal)
+    {
+        let replaced = c.replace(internal, external);
+        ice.insert("candidate".into(), serde_json::Value::String(replaced));
+        modified = true;
+    }
+
+    if let Some(sdp) = obj.get_mut("sdp").and_then(|v| v.as_object_mut())
+        && let Some(s) = sdp.get("sdp").and_then(|s| s.as_str())
+        && s.contains(internal)
+    {
+        let replaced = s.replace(internal, external);
+        sdp.insert("sdp".into(), serde_json::Value::String(replaced));
+        modified = true;
+    }
+
+    if let Some(s) = obj.get("offer").and_then(|s| s.as_str())
+        && s.contains(internal)
+    {
+        let replaced = s.replace(internal, external);
+        obj.insert("offer".into(), serde_json::Value::String(replaced));
+        modified = true;
+    }
+
+    if modified {
+        serde_json::to_string(&value).ok()
+    } else {
+        None
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -71,21 +130,40 @@ impl Server {
         let state = Arc::new(Mutex::new(State {
             tx: Some(tx),
             peers: HashMap::new(),
+            peer_local_ips: HashMap::new(),
+            rewrite_internal_ip: None,
         }));
 
         let state_clone = state.clone();
         task::spawn(async move {
             while let Some((peer_id, msg)) = handler.next().await {
+                let (sender, local_ip, rewrite_internal_ip) = {
+                    let mut state = state_clone.lock().unwrap();
+                    let sender = state.peers.get_mut(&peer_id).map(|p| p.sender.clone());
+                    let local_ip = state.peer_local_ips.get(&peer_id).copied();
+                    let rewrite_internal_ip = state.rewrite_internal_ip.clone();
+                    (sender, local_ip, rewrite_internal_ip)
+                };
+
                 match serde_json::to_string(&msg) {
-                    Ok(msg_str) => {
-                        let sender = {
-                            let mut state = state_clone.lock().unwrap();
-                            if let Some(peer) = state.peers.get_mut(&peer_id) {
-                                Some(peer.sender.clone())
-                            } else {
-                                None
+                    Ok(mut msg_str) => {
+                        if let (Some(internal), Some(external_ip)) =
+                            (&rewrite_internal_ip, local_ip)
+                        {
+                            let external = external_ip.to_string();
+                            if external != *internal && msg_str.contains(internal.as_str()) {
+                                if let Some(new_str) =
+                                    rewrite_ice_sdp_in_json(&msg_str, internal, &external)
+                                {
+                                    info!(
+                                        peer_id = %peer_id,
+                                        "Rewrote ICE/SDP IP {} -> {} in outgoing message",
+                                        internal, external
+                                    );
+                                    msg_str = new_str;
+                                }
                             }
-                        };
+                        }
 
                         if let Some(mut sender) = sender {
                             trace!("Sending {}", msg_str);
@@ -102,9 +180,27 @@ impl Server {
         Self { state }
     }
 
+    /// Enable per-connection ICE/SDP IP rewriting.
+    ///
+    /// When `internal_ip` is `Some`, any occurrence of that IP (as a string) in
+    /// outgoing ICE candidates and SDP payloads is replaced with the local
+    /// socket address that the destination peer connected to (captured via
+    /// [`Self::accept_async_with_local_addr`]). This makes ICE work in
+    /// multi-homed / NAT setups where the producer advertises an internal
+    /// address that consumers on another network cannot route to.
+    pub fn with_rewrite_ip(self, internal_ip: Option<IpAddr>) -> Self {
+        self.state.lock().unwrap().rewrite_internal_ip = internal_ip.map(|ip| ip.to_string());
+        self
+    }
+
     #[instrument(level = "debug", skip(state))]
     fn remove_peer(state: Arc<Mutex<State>>, peer_id: &str) {
-        if let Some(mut peer) = state.lock().unwrap().peers.remove(peer_id) {
+        let removed = {
+            let mut state = state.lock().unwrap();
+            state.peer_local_ips.remove(peer_id);
+            state.peers.remove(peer_id)
+        };
+        if let Some(mut peer) = removed {
             let peer_id = peer_id.to_string();
             task::spawn(async move {
                 peer.sender.close_channel();
@@ -127,6 +223,23 @@ impl Server {
         &mut self,
         stream: S,
         callback: C,
+    ) -> Result<String, ServerError> {
+        self.accept_hdr_async_with_local_addr(stream, callback, None)
+            .await
+    }
+
+    /// Same as [`Self::accept_hdr_async`] but additionally records the local
+    /// socket IP that the peer connected to. The recorded IP is used by the
+    /// optional ICE/SDP rewriter (see [`Self::with_rewrite_ip`]).
+    #[instrument(level = "debug", skip(self, stream, callback))]
+    pub async fn accept_hdr_async_with_local_addr<
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        C: Callback + Unpin,
+    >(
+        &mut self,
+        stream: S,
+        callback: C,
+        local_addr: Option<IpAddr>,
     ) -> Result<String, ServerError> {
         let ws = match async_tungstenite::tokio::accept_hdr_async(stream, callback).await {
             Ok(ws) => ws,
@@ -232,14 +345,20 @@ impl Server {
             Self::remove_peer(state_clone, &this_id_clone);
         });
 
-        self.state.lock().unwrap().peers.insert(
-            this_id.clone(),
-            Peer {
-                receive_task_handle,
-                send_task_handle,
-                sender: websocket_sender,
-            },
-        );
+        {
+            let mut state = self.state.lock().unwrap();
+            state.peers.insert(
+                this_id.clone(),
+                Peer {
+                    receive_task_handle,
+                    send_task_handle,
+                    sender: websocket_sender,
+                },
+            );
+            if let Some(ip) = local_addr {
+                state.peer_local_ips.insert(this_id.clone(), ip);
+            }
+        }
 
         Ok(this_id)
     }
@@ -250,5 +369,155 @@ impl Server {
         stream: S,
     ) -> Result<String, ServerError> {
         self.accept_hdr_async(stream, NoCallback).await
+    }
+
+    /// Same as [`Self::accept_async`] but additionally records the local
+    /// socket IP that the peer connected to (for the ICE/SDP rewriter).
+    #[instrument(level = "debug", skip(self, stream))]
+    pub async fn accept_async_with_local_addr<
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    >(
+        &mut self,
+        stream: S,
+        local_addr: Option<IpAddr>,
+    ) -> Result<String, ServerError> {
+        self.accept_hdr_async_with_local_addr(stream, NoCallback, local_addr)
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_ice_sdp_in_json;
+    use serde_json::json;
+
+    fn parse(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).expect("rewriter produced valid JSON")
+    }
+
+    #[test]
+    fn rewrites_ice_candidate() {
+        let input = json!({
+            "type": "peer",
+            "sessionId": "abc",
+            "ice": {
+                "candidate": "candidate:1 1 UDP 2113937151 192.168.2.3 50000 typ host",
+                "sdpMLineIndex": 0,
+            },
+        })
+        .to_string();
+
+        let out = rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").expect("rewritten");
+        let v = parse(&out);
+        assert_eq!(
+            v["ice"]["candidate"],
+            "candidate:1 1 UDP 2113937151 10.0.0.5 50000 typ host"
+        );
+        assert_eq!(v["ice"]["sdpMLineIndex"], 0);
+        assert_eq!(v["type"], "peer");
+    }
+
+    #[test]
+    fn rewrites_sdp_offer() {
+        let input = json!({
+            "type": "peer",
+            "sessionId": "abc",
+            "sdp": {
+                "type": "offer",
+                "sdp": "v=0\r\no=- 0 0 IN IP4 192.168.2.3\r\nc=IN IP4 192.168.2.3\r\n",
+            },
+        })
+        .to_string();
+
+        let out = rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").expect("rewritten");
+        let v = parse(&out);
+        let sdp_text = v["sdp"]["sdp"].as_str().unwrap();
+        assert!(sdp_text.contains("c=IN IP4 10.0.0.5"));
+        assert!(!sdp_text.contains("192.168.2.3"));
+        assert_eq!(v["sdp"]["type"], "offer");
+    }
+
+    #[test]
+    fn rewrites_sdp_answer() {
+        let input = json!({
+            "type": "peer",
+            "sessionId": "abc",
+            "sdp": {
+                "type": "answer",
+                "sdp": "c=IN IP4 192.168.2.3",
+            },
+        })
+        .to_string();
+
+        let out = rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").expect("rewritten");
+        let v = parse(&out);
+        assert_eq!(v["sdp"]["sdp"], "c=IN IP4 10.0.0.5");
+        assert_eq!(v["sdp"]["type"], "answer");
+    }
+
+    #[test]
+    fn rewrites_start_session_offer() {
+        let input = json!({
+            "type": "startSession",
+            "peerId": "consumer",
+            "sessionId": "abc",
+            "offer": "c=IN IP4 192.168.2.3",
+        })
+        .to_string();
+
+        let out = rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").expect("rewritten");
+        let v = parse(&out);
+        assert_eq!(v["offer"], "c=IN IP4 10.0.0.5");
+    }
+
+    #[test]
+    fn no_rewrite_when_internal_ip_absent() {
+        let input = json!({
+            "type": "peer",
+            "sessionId": "abc",
+            "ice": {
+                "candidate": "candidate:1 1 UDP 2113937151 10.0.0.7 50000 typ host",
+                "sdpMLineIndex": 0,
+            },
+        })
+        .to_string();
+
+        assert!(rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").is_none());
+    }
+
+    #[test]
+    fn no_rewrite_for_unrelated_message() {
+        let input = json!({
+            "type": "welcome",
+            "peerId": "abc",
+        })
+        .to_string();
+        assert!(rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").is_none());
+    }
+
+    #[test]
+    fn does_not_touch_unrelated_fields_containing_ip() {
+        let input = json!({
+            "type": "peer",
+            "sessionId": "192.168.2.3",
+            "ice": {
+                "candidate": "candidate:1 1 UDP 2113937151 192.168.2.3 50000 typ host",
+                "sdpMLineIndex": 0,
+            },
+        })
+        .to_string();
+
+        let out = rewrite_ice_sdp_in_json(&input, "192.168.2.3", "10.0.0.5").expect("rewritten");
+        let v = parse(&out);
+        assert_eq!(v["sessionId"], "192.168.2.3");
+        assert_eq!(
+            v["ice"]["candidate"],
+            "candidate:1 1 UDP 2113937151 10.0.0.5 50000 typ host"
+        );
+    }
+
+    #[test]
+    fn invalid_json_returns_none() {
+        assert!(rewrite_ice_sdp_in_json("not json", "192.168.2.3", "10.0.0.5").is_none());
     }
 }

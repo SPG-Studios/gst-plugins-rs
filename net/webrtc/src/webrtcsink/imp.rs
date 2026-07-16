@@ -2,7 +2,7 @@
 
 use crate::utils::{
     CONTROL_DATA_CHANNEL_LABEL, Codec, Codecs, H264_PROFILES_COMPAT, INPUT_DATA_CHANNEL_LABEL,
-    NavigationEvent, cleanup_codec_caps, has_raw_caps, make_element,
+    NavigationEvent, cleanup_codec_caps, configure_ice_agent, has_raw_caps, make_element,
 };
 use anyhow::Context;
 use gst::glib;
@@ -78,6 +78,11 @@ const DEFAULT_DO_CLOCK_SIGNALLING: bool = false;
 const DEFAULT_ENABLE_DATA_CHANNEL_NAVIGATION: bool = false;
 const DEFAULT_ENABLE_CONTROL_DATA_CHANNEL: bool = false;
 const DEFAULT_ICE_TRANSPORT_POLICY: WebRTCICETransportPolicy = WebRTCICETransportPolicy::All;
+/// 0 means "leave the libnice/webrtcbin default in place".
+const DEFAULT_ICE_MIN_RTP_PORT: u32 = 0;
+/// 0 means "leave the libnice/webrtcbin default in place".
+const DEFAULT_ICE_MAX_RTP_PORT: u32 = 0;
+const DEFAULT_ICE_UDP_ONLY: bool = false;
 const DEFAULT_START_BITRATE: u32 = 2048000;
 #[cfg(feature = "web_server")]
 const DEFAULT_RUN_WEB_SERVER: bool = false;
@@ -120,6 +125,9 @@ struct Settings {
     enable_control_data_channel: bool,
     meta: Option<gst::Structure>,
     ice_transport_policy: WebRTCICETransportPolicy,
+    ice_min_rtp_port: u32,
+    ice_max_rtp_port: u32,
+    ice_udp_only: bool,
     signaller: Signallable,
     #[cfg(feature = "web_server")]
     run_web_server: bool,
@@ -563,6 +571,9 @@ impl Default for Settings {
             enable_control_data_channel: DEFAULT_ENABLE_CONTROL_DATA_CHANNEL,
             meta: None,
             ice_transport_policy: DEFAULT_ICE_TRANSPORT_POLICY,
+            ice_min_rtp_port: DEFAULT_ICE_MIN_RTP_PORT,
+            ice_max_rtp_port: DEFAULT_ICE_MAX_RTP_PORT,
+            ice_udp_only: DEFAULT_ICE_UDP_ONLY,
             signaller: signaller.upcast(),
             #[cfg(feature = "web_server")]
             run_web_server: DEFAULT_RUN_WEB_SERVER,
@@ -3259,6 +3270,13 @@ impl BaseWebRTCSink {
         webrtcbin.set_property_from_str("bundle-policy", "max-bundle");
         webrtcbin.set_property("ice-transport-policy", settings.ice_transport_policy);
 
+        configure_ice_agent(
+            &webrtcbin,
+            settings.ice_min_rtp_port,
+            settings.ice_max_rtp_port,
+            settings.ice_udp_only,
+        );
+
         if let Some(stun_server) = settings.stun_server.as_ref() {
             webrtcbin.set_property("stun-server", stun_server);
         }
@@ -5352,6 +5370,54 @@ impl ObjectImpl for BaseWebRTCSink {
                     .blurb("The policy to apply for ICE transport")
                     .mutable_ready()
                     .build(),
+                /**
+                 * GstBaseWebRTCSink:ice-min-rtp-port:
+                 *
+                 * Minimum UDP port for host ICE candidates gathered by libnice
+                 * via `webrtcbin`'s ICE agent. The value 0 means "leave the
+                 * underlying default in place".
+                 *
+                 * When set together with #GstBaseWebRTCSink:ice-max-rtp-port it
+                 * constrains libnice to only bind sockets in the given range,
+                 * which is the only way to make the matching
+                 * `--min-rtp-port`/`--max-rtp-port` filter on the signalling
+                 * server actually let candidates through.
+                 */
+                glib::ParamSpecUInt::builder("ice-min-rtp-port")
+                    .nick("ICE minimum RTP port")
+                    .blurb("Minimum UDP port for host ICE candidates (0 = no override)")
+                    .minimum(0)
+                    .maximum(u16::MAX as u32)
+                    .default_value(DEFAULT_ICE_MIN_RTP_PORT)
+                    .mutable_ready()
+                    .build(),
+                /**
+                 * GstBaseWebRTCSink:ice-max-rtp-port:
+                 *
+                 * Maximum UDP port for host ICE candidates gathered by libnice
+                 * via `webrtcbin`'s ICE agent. The value 0 means "leave the
+                 * underlying default in place".
+                 */
+                glib::ParamSpecUInt::builder("ice-max-rtp-port")
+                    .nick("ICE maximum RTP port")
+                    .blurb("Maximum UDP port for host ICE candidates (0 = no override)")
+                    .minimum(0)
+                    .maximum(u16::MAX as u32)
+                    .default_value(DEFAULT_ICE_MAX_RTP_PORT)
+                    .mutable_ready()
+                    .build(),
+                /**
+                 * GstBaseWebRTCSink:ice-udp-only:
+                 *
+                 * When TRUE, disable TCP candidate gathering in libnice so the
+                 * ICE agent only produces UDP candidates.
+                 */
+                glib::ParamSpecBoolean::builder("ice-udp-only")
+                    .nick("ICE UDP only")
+                    .blurb("If true, disable TCP candidate gathering at the libnice level")
+                    .default_value(DEFAULT_ICE_UDP_ONLY)
+                    .mutable_ready()
+                    .build(),
                 glib::ParamSpecObject::builder::<Signallable>("signaller")
                     .flags(glib::ParamFlags::READWRITE | gst::PARAM_FLAG_MUTABLE_READY)
                     .blurb("The Signallable object to use to handle WebRTC Signalling")
@@ -5562,6 +5628,18 @@ impl ObjectImpl for BaseWebRTCSink {
                     .get::<WebRTCICETransportPolicy>()
                     .expect("type checked upstream");
             }
+            "ice-min-rtp-port" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_min_rtp_port = value.get::<u32>().expect("type checked upstream");
+            }
+            "ice-max-rtp-port" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_max_rtp_port = value.get::<u32>().expect("type checked upstream");
+            }
+            "ice-udp-only" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_udp_only = value.get::<bool>().expect("type checked upstream");
+            }
             "signaller" => {
                 self.set_signaller(value.get().unwrap()).unwrap();
             }
@@ -5697,6 +5775,18 @@ impl ObjectImpl for BaseWebRTCSink {
             "ice-transport-policy" => {
                 let settings = self.settings.lock().unwrap();
                 settings.ice_transport_policy.to_value()
+            }
+            "ice-min-rtp-port" => {
+                let settings = self.settings.lock().unwrap();
+                settings.ice_min_rtp_port.to_value()
+            }
+            "ice-max-rtp-port" => {
+                let settings = self.settings.lock().unwrap();
+                settings.ice_max_rtp_port.to_value()
+            }
+            "ice-udp-only" => {
+                let settings = self.settings.lock().unwrap();
+                settings.ice_udp_only.to_value()
             }
             "signaller" => self.settings.lock().unwrap().signaller.to_value(),
             #[cfg(feature = "web_server")]
