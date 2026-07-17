@@ -5461,6 +5461,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-plugin-overlays"
+version = "0.16.0-alpha"
+dependencies = [
+ "glib",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-analytics",
+ "gstreamer-app",
+ "gstreamer-base",
+ "gstreamer-check",
+ "gstreamer-gl",
+ "gstreamer-video",
+ "png",
+ "skia-safe",
+]
+
+[[package]]
 name = "gst-plugin-png"
 version = "0.16.0-alpha"
 dependencies = [

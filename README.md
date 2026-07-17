@@ -63,6 +63,7 @@ You will find the following plugins in this repository:
       - `analyticscombiner`: Analytics combiner / batcher element
       - `analyticssplitter`: Analytics batch splitter element
       - `handdetectiontensordec`: Tensor decoder for hand detection tensors.
+      - `handlandmarktensordec`: Tensor decoder for hand landmark tensors with keypoint visibility metadata attachment.
       - `onvifmeta2relationmeta`: Convert ONVIF metadata to relation metas
       - `relationmeta2onvifmeta`: Convert relation metadata to ONVIF metas
       - `yoloxtensordec`: Tensor decoder for YOLOX tensors.
@@ -219,6 +220,14 @@ You will find the following plugins in this repository:
       - `onvifmetadataparse`: Parses ONVIF Timed XML Metadata.
       - `rtponvifmetadatadepay`: ONVIF metadata RTP depayloader.
       - `rtponvifmetadatapay`: ONVIF metadata RTP payloader.
+
+    - `overlays`: A few elements to overlay based on metadata.
+      - `odoverlay`: An object detection overlay including bounding boxes and
+        labels.
+      - `segoverlay`: A segmentation mask overlay used with segmentation mask
+        decoders.
+      - `keypointsoverlay`: A keypoints overlay used with hand landmark tensor
+        decoder.
 
     - `quinn`: Transfer data over the network using QUIC
       - `quinnquicdemux`: Demultiplexes multiple streams and datagram for QUIC

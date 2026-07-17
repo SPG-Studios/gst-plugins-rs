@@ -1,0 +1,57 @@
+[package]
+name = "gst-plugin-overlays"
+version.workspace = true
+authors = ["Jeremy Whiting <jeremy.whiting@collabora.com>"]
+repository.workspace = true
+license = "MPL-2.0"
+description = "GStreamer Rust Overlay Elements Plugin"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "gstoverlays"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+gst.workspace = true
+gst-base.workspace = true
+# v1_28 for the matrix meta-transform clipper used by meta_transform.rs.
+gst-video = { workspace = true, features = ["v1_28"] }
+gst-analytics = { workspace = true, features = ["v1_30"] }
+glib.workspace = true
+skia = { package = "skia-safe", version = "0.99" }
+# GL hardware-accelerated overlay elements (feature "gl").
+gst-gl = { workspace = true, optional = true }
+
+[build-dependencies]
+gst-plugin-version-helper.workspace = true
+
+[dev-dependencies]
+gst-app.workspace = true
+# v1_16 for Harness::add_propose_allocation_meta (composition-attach test).
+gst-check = { workspace = true, features = ["v1_16"] }
+# Encoding/decoding golden reference images (see tests/golden.rs).
+png = "0.18"
+
+[features]
+static = []
+capi = []
+doc = []
+# GL hardware-accelerated overlay elements, rendering with skia's GPU (Ganesh)
+# backend on GstGL textures. Pulls a GL-enabled skia build.
+gl = ["dep:gst-gl", "skia/gl", "skia/egl"]
+
+[package.metadata.capi]
+min_version = "0.9.21"
+
+[package.metadata.capi.header]
+enabled = false
+
+[package.metadata.capi.library]
+install_subdir = "gstreamer-1.0"
+versioning = false
+import_library = false
+
+[package.metadata.capi.pkg_config]
+requires_private = "gstreamer-1.0, gstreamer-base-1.0, gstreamer-video-1.0, gobject-2.0, glib-2.0, gmodule-2.0"
