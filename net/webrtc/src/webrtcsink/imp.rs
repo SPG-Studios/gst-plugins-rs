@@ -2975,6 +2975,9 @@ impl BaseWebRTCSink {
 
                 codec.set_pt(payload);
                 for (user_caps, codecs_and_caps) in ordered_codecs_and_caps.iter_mut() {
+                    if encoding_name == "OPUS" || encoding_name == "MULTIOPUS" {
+                        gst::error!(CAT, "codec caps: {}, user_caps: {}", codec.caps, user_caps);
+                    }
                     if codec.caps.is_subset(user_caps) {
                         if encoding_name == "H264" && s.get("level-asymmetry-allowed") == Ok("1") {
                             s.remove_field("profile-level-id");
