@@ -904,8 +904,20 @@ fn can_leak(mut caps: gst::Caps) -> gst::Caps {
 
 pub static AUDIO_CAPS: LazyLock<gst::Caps> =
     LazyLock::new(|| can_leak(gst::Caps::new_empty_simple("audio/x-raw")));
-pub static OPUS_CAPS: LazyLock<gst::Caps> =
-    LazyLock::new(|| can_leak(gst::Caps::new_empty_simple("audio/x-opus")));
+pub static OPUS_CAPS: LazyLock<gst::Caps> = LazyLock::new(|| {
+    can_leak(gst::Caps::from(
+        gst::Structure::builder("audio/x-opus")
+            .field("channel-mapping-family", 0)
+            .build(),
+    ))
+});
+pub static MULTIOPUS_CAPS: LazyLock<gst::Caps> = LazyLock::new(|| {
+    can_leak(gst::Caps::from(
+        gst::Structure::builder("audio/x-opus")
+            .field("channel-mapping-family", 1)
+            .build(),
+    ))
+});
 
 pub static VIDEO_CAPS: LazyLock<gst::Caps> = LazyLock::new(|| {
     can_leak(
@@ -1025,6 +1037,15 @@ static CODECS: LazyLock<Codecs> = LazyLock::new(|| {
             "OPUS",
             gst::StreamType::AUDIO,
             &OPUS_CAPS,
+            &decoders,
+            &depayloaders,
+            &encoders,
+            &payloaders,
+        ),
+        Codec::new(
+            "MULTIOPUS",
+            gst::StreamType::AUDIO,
+            &MULTIOPUS_CAPS,
             &decoders,
             &depayloaders,
             &encoders,
