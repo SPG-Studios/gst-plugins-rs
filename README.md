@@ -112,6 +112,9 @@ You will find the following plugins in this repository:
 
     - `whisper`:
       - `whispertranscriber`: Speech to text transcription using [whisper-cpp](github.com/ggml-org/whisper.cpp/)
+    - `st337depay`:
+      - `st337depay`: SMPTE ST 337 depayloader
+
 
 
   * `generic`

@@ -19,6 +19,7 @@ members = [
     "audio/speechmatics",
     "audio/spotify",
     "audio/whisper",
+    "audio/st337depay",
 
     "generic/file",
     "generic/compress",

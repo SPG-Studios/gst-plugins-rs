@@ -1,0 +1,33 @@
+[package]
+name = "gst-plugin-st337depay"
+version.workspace = true
+authors = ["Pablo García <pgarcia@fluendo.com>"]
+repository.workspace = true
+license = "MPL-2.0"
+description = "GStreamer Rust SMPTE ST-337 Depayloader Plugin"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gst = { workspace = true, features = ["v1_20"] }
+gst-base = { workspace = true, features = ["v1_20"] }
+gst-audio = { workspace = true, features = ["v1_20"] }
+bitstream-io = "4"
+
+[lib]
+name = "gstrsaudiost337"
+path = "src/mod.rs"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+static = []
+capi = []
+doc = ["gst/v1_18"]
+
+[dev-dependencies]
+gst-check = { workspace = true, features = ["v1_18"] }
+gst-app.workspace = true
+
+[build-dependencies]
+gst-plugin-version-helper.workspace = true
+
