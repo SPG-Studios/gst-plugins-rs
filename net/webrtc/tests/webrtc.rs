@@ -27,6 +27,18 @@ fn init() {
     });
 }
 
+#[test]
+#[file_serial(webrtctest)]
+fn test_g711_codec_clock_rates() {
+    init();
+
+    let pcma = gstrswebrtc::utils::Codecs::find("PCMA").expect("PCMA codec");
+    assert_eq!(pcma.clock_rate(), Some(8000));
+
+    let pcmu = gstrswebrtc::utils::Codecs::find("PCMU").expect("PCMU codec");
+    assert_eq!(pcmu.clock_rate(), Some(8000));
+}
+
 fn run_webrtc_producer(pipeline_str: &str, signaller_server_port: u16) -> gst::Pipeline {
     let pipeline = gst::parse::launch(pipeline_str)
         .expect("producer pipeline")

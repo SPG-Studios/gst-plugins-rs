@@ -913,6 +913,10 @@ pub static AUDIO_CAPS: LazyLock<gst::Caps> =
     LazyLock::new(|| can_leak(gst::Caps::new_empty_simple("audio/x-raw")));
 pub static OPUS_CAPS: LazyLock<gst::Caps> =
     LazyLock::new(|| can_leak(gst::Caps::new_empty_simple("audio/x-opus")));
+pub static PCMA_CAPS: LazyLock<gst::Caps> =
+    LazyLock::new(|| can_leak(gst::Caps::new_empty_simple("audio/x-alaw")));
+pub static PCMU_CAPS: LazyLock<gst::Caps> =
+    LazyLock::new(|| can_leak(gst::Caps::new_empty_simple("audio/x-mulaw")));
 
 pub static VIDEO_CAPS: LazyLock<gst::Caps> = LazyLock::new(|| {
     can_leak(
@@ -1037,6 +1041,32 @@ static CODECS: LazyLock<Codecs> = LazyLock::new(|| {
             &encoders,
             &payloaders,
         ),
+        {
+            let mut codec = Codec::new(
+                "PCMA",
+                gst::StreamType::AUDIO,
+                &PCMA_CAPS,
+                &decoders,
+                &depayloaders,
+                &encoders,
+                &payloaders,
+            );
+            codec.clock_rate = Some(8000);
+            codec
+        },
+        {
+            let mut codec = Codec::new(
+                "PCMU",
+                gst::StreamType::AUDIO,
+                &PCMU_CAPS,
+                &decoders,
+                &depayloaders,
+                &encoders,
+                &payloaders,
+            );
+            codec.clock_rate = Some(8000);
+            codec
+        },
         Codec::new_raw("L24", gst::StreamType::AUDIO, &depayloaders, &payloaders),
         Codec::new_raw("L16", gst::StreamType::AUDIO, &depayloaders, &payloaders),
         Codec::new_raw("L8", gst::StreamType::AUDIO, &depayloaders, &payloaders),
