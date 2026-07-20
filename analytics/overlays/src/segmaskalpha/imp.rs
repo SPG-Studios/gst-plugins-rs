@@ -221,17 +221,17 @@ impl VideoFilterImpl for SegMaskAlpha {
         let frame_w = frame.width() as usize;
         let frame_h = frame.height() as usize;
 
-        let alpha = {
-            let mut state = self.state.lock().unwrap();
-            build_frame_alpha(
-                &mut state,
-                settings.selected_types.as_deref(),
-                settings.feather,
-                frame.buffer(),
-                frame_w,
-                frame_h,
-            )
-        };
+        // Hold the state lock across the write so the borrowed alpha scratch
+        // buffer (reused across frames, owned by `state`) stays valid.
+        let mut state = self.state.lock().unwrap();
+        let alpha = build_frame_alpha(
+            &mut state,
+            settings.selected_types.as_deref(),
+            settings.feather,
+            frame.buffer(),
+            frame_w,
+            frame_h,
+        );
 
         // No analytics meta: leave the frame's alpha as it arrived.
         let Some(alpha) = alpha else {

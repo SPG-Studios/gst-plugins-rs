@@ -160,7 +160,7 @@ impl BaseTransformImpl for SegMaskAlphaGl {
         if w > 0 && h > 0 {
             let settings = self.settings.lock().unwrap().clone();
             let mut state = self.state.lock().unwrap();
-            if let Some(mut alpha) = build_frame_alpha(
+            if let Some(alpha) = build_frame_alpha(
                 &mut state,
                 settings.selected_types.as_deref(),
                 settings.feather,
@@ -179,7 +179,7 @@ impl BaseTransformImpl for SegMaskAlphaGl {
                     skia::AlphaType::Unpremul,
                     None,
                 );
-                let data = skia::Data::new_copy(&alpha);
+                let data = skia::Data::new_copy(&*alpha);
                 image = skia::images::raster_from_data(&info, data, w as usize);
             }
         }

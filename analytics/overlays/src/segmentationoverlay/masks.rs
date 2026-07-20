@@ -89,6 +89,12 @@ pub(crate) struct State {
     selected_types_source: Option<String>,
     selected_type_quarks: Option<Vec<glib::Quark>>,
     mask_filter_cache: Option<MaskFilterCache>,
+    /// Reusable full-frame scratch buffers for the `segmaskalpha` alpha builder
+    /// ([`crate::segmaskalpha::alpha::build_frame_alpha`]), kept across frames to
+    /// avoid reallocating a frame-sized buffer every frame. Unused by the
+    /// segmentation overlay itself.
+    pub(crate) alpha_scratch: Vec<u8>,
+    pub(crate) blur_scratch: Vec<u8>,
 }
 
 impl State {

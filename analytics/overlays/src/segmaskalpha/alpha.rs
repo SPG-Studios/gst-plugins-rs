@@ -44,14 +44,17 @@ fn sample_bilinear(map: &[u8], w: usize, h: usize, sx: f32, sy: f32) -> u8 {
 }
 
 /// Separable box blur of `alpha` (a `w`×`h` map) with the given radius; two
-/// passes (horizontal then vertical) of a moving average.
-fn box_blur(alpha: &mut [u8], w: usize, h: usize, radius: usize) {
+/// passes (horizontal then vertical) of a moving average. `tmp` is a reusable
+/// scratch buffer (resized to `alpha.len()`) so the blur allocates nothing per
+/// call.
+fn box_blur(alpha: &mut [u8], tmp: &mut Vec<u8>, w: usize, h: usize, radius: usize) {
     if radius == 0 {
         return;
     }
     let window = (radius * 2 + 1) as u32;
 
-    let mut tmp = vec![0u8; alpha.len()];
+    tmp.clear();
+    tmp.resize(alpha.len(), 0);
     for y in 0..h {
         let row = &alpha[y * w..y * w + w];
         let mut sum: u32 = 0;
@@ -86,23 +89,30 @@ fn box_blur(alpha: &mut [u8], w: usize, h: usize, radius: usize) {
 }
 
 /// Build a full-frame alpha map (255 = object, 0 = background) from every
-/// segmentation mask on `buffer`. Returns `None` when there is no analytics meta
-/// so the caller can leave the frame's alpha as it arrived. `state` carries the
-/// shared `selected-types` class-filter cache.
-pub(crate) fn build_frame_alpha(
-    state: &mut State,
+/// segmentation mask on `buffer`, into `state`'s reusable scratch buffer.
+/// Returns a borrow of that buffer, or `None` when there is no analytics meta (or
+/// no usable mask) so the caller can leave the frame's alpha as it arrived.
+/// `state` also carries the shared `selected-types` class-filter cache.
+///
+/// The full-frame alpha and blur-temp buffers are reused across frames (held in
+/// `state`), so a per-frame call allocates only the small native-resolution
+/// object map.
+pub(crate) fn build_frame_alpha<'s>(
+    state: &'s mut State,
     selected_types: Option<&str>,
     feather: u32,
     buffer: &gst::BufferRef,
     frame_w: usize,
     frame_h: usize,
-) -> Option<Vec<u8>> {
+) -> Option<&'s mut [u8]> {
     update_selected_type_cache(state, selected_types);
     let selected_types = state.selected_type_quarks();
 
     let meta = buffer.meta::<AnalyticsRelationMeta>()?;
 
-    let mut alpha = vec![0u8; frame_w * frame_h];
+    // Reuse the frame-sized scratch buffer, cleared to background.
+    state.alpha_scratch.clear();
+    state.alpha_scratch.resize(frame_w * frame_h, 0);
     let mut any = false;
 
     for seg_mtd in meta.iter::<AnalyticsSegmentationMtd>() {
@@ -138,18 +148,21 @@ pub(crate) fn build_frame_alpha(
         };
         let mask_stride = mask_frame.plane_stride()[0].unsigned_abs() as usize;
 
+        // Compute the class filter (borrows `state`) and release it before
+        // borrowing the scratch buffer below.
         let cls_mtd = related_classification(&meta, &seg_mtd);
         let mask_filter = cached_mask_filter(state, cls_mtd.as_ref(), selected_types.as_deref());
+        let mask_filter = mask_filter.as_deref();
 
         // Native binary object map: 255 where the mask value is non-zero and
-        // passes the class filter, else 0.
+        // passes the class filter, else 0. This is small (native mask resolution)
+        // so it is not worth caching across frames.
         let mut objmap = vec![0u8; mask_w * mask_h];
         for y in 0..mask_h {
             let row = &mask_data[y * mask_stride..y * mask_stride + mask_w];
             for x in 0..mask_w {
                 let value = row[x] as usize;
                 let allowed = mask_filter
-                    .as_deref()
                     .map(|filter| value < filter.len() && filter[value])
                     .unwrap_or(true);
                 if value != 0 && allowed {
@@ -167,6 +180,7 @@ pub(crate) fn build_frame_alpha(
         let end_x = (ofx + dst_w as i32).min(frame_w as i32);
         let end_y = (ofy + dst_h as i32).min(frame_h as i32);
 
+        let alpha = &mut state.alpha_scratch;
         for fy in start_y..end_y {
             let sy = (fy - ofy) as f32 * scale_y;
             for fx in start_x..end_x {
@@ -184,8 +198,14 @@ pub(crate) fn build_frame_alpha(
     }
 
     if feather > 0 {
-        box_blur(&mut alpha, frame_w, frame_h, feather as usize);
+        box_blur(
+            &mut state.alpha_scratch,
+            &mut state.blur_scratch,
+            frame_w,
+            frame_h,
+            feather as usize,
+        );
     }
 
-    Some(alpha)
+    Some(&mut state.alpha_scratch)
 }

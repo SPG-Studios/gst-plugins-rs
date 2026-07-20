@@ -139,8 +139,10 @@ struct BBox {
     h: i32,
 }
 
-fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
-    let text_width = measure_label_text_width(text);
+/// Rect for a label of the given pre-measured pixel width, anchored bottom-left
+/// (the box-label convention); `anchor_y` is the baseline. Callers measure the
+/// text once and pass the width, so a label is never re-measured.
+fn label_rect(anchor_x: i32, anchor_y: i32, text_width: i32) -> Rect {
     Rect::from_xywh(
         anchor_x,
         anchor_y.saturating_sub(LABEL_LAYOUT_HEIGHT),
@@ -149,16 +151,21 @@ fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
     )
 }
 
+#[cfg(test)]
+fn estimate_label_rect(anchor_x: i32, anchor_y: i32, text: &str) -> Rect {
+    label_rect(anchor_x, anchor_y, measure_label_text_width(text))
+}
+
 fn place_od_label(
     registry: &mut OccupiedRegionRegistry,
     bbox: BBox,
-    text: &str,
+    text_width: i32,
     preferred_x: i32,
     preferred_y: i32,
 ) -> Option<LabelPlacement> {
-    let default = estimate_label_rect(preferred_x, preferred_y, text);
+    let default = label_rect(preferred_x, preferred_y, text_width);
     let box_rect = Rect::from_xywh(bbox.x, bbox.y, bbox.w, bbox.h);
-    let candidates = box_label_candidates(box_rect, measure_label_text_width(text));
+    let candidates = box_label_candidates(box_rect, text_width);
 
     place_label(registry, default, &candidates)
 }
@@ -211,11 +218,13 @@ pub(crate) fn analytics_to_overlay(
         settings.priority,
     );
 
-    // A label deferred to the second pass.
+    // A label deferred to the second pass. `text_width` is measured once here so
+    // neither placement, candidate sizing, nor the deferred intent re-measures.
     struct PendingLabel {
         bbox: BBox,
         box_rect: Rect,
         text: String,
+        text_width: i32,
         preferred_x: i32,
         preferred_y: i32,
     }
@@ -276,10 +285,13 @@ pub(crate) fn analytics_to_overlay(
         });
 
         if settings.draw_labels {
+            let text = label_text_with_related(&meta, &od_mtd);
+            let text_width = measure_label_text_width(&text);
             pending_labels.push(PendingLabel {
                 bbox,
                 box_rect,
-                text: label_text_with_related(&meta, &od_mtd),
+                text,
+                text_width,
                 preferred_x: location.x,
                 preferred_y: location.y,
             });
@@ -296,10 +308,13 @@ pub(crate) fn analytics_to_overlay(
                 .saturating_add(location.h)
                 .saturating_add(LABEL_LAYOUT_HEIGHT)
                 .saturating_add(LABEL_LAYOUT_GAP);
+            let text = tracking_label_text(tracking_id);
+            let text_width = measure_label_text_width(&text);
             pending_labels.push(PendingLabel {
                 bbox,
                 box_rect,
-                text: tracking_label_text(tracking_id),
+                text,
+                text_width,
                 preferred_x: location.x,
                 preferred_y: default_baseline,
             });
@@ -312,7 +327,7 @@ pub(crate) fn analytics_to_overlay(
     if settings.defer_labels {
         for job in pending_labels {
             deferred.push(LabelIntent {
-                preferred: estimate_label_rect(job.preferred_x, job.preferred_y, &job.text),
+                preferred: label_rect(job.preferred_x, job.preferred_y, job.text_width),
                 anchor: job.box_rect,
                 text: job.text,
                 color: settings.labels_color,
@@ -326,7 +341,7 @@ pub(crate) fn analytics_to_overlay(
             if let Some(placement) = place_od_label(
                 &mut occupied,
                 job.bbox,
-                &job.text,
+                job.text_width,
                 job.preferred_x,
                 job.preferred_y,
             ) {
@@ -789,8 +804,14 @@ mod tests {
         let default = estimate_label_rect(20, 20, "person (c=0.90)");
         occupied.reserve_highlight(default);
 
-        let placement = place_od_label(&mut occupied, bbox, "person (c=0.90)", 20, 20)
-            .expect("expected a fallback placement");
+        let placement = place_od_label(
+            &mut occupied,
+            bbox,
+            measure_label_text_width("person (c=0.90)"),
+            20,
+            20,
+        )
+        .expect("expected a fallback placement");
 
         assert_ne!(placement.rect, default);
         assert!(placement.displaced);
@@ -809,8 +830,14 @@ mod tests {
 
         occupied.reserve_highlight(estimate_label_rect(20, 20, "person (c=0.90)"));
 
-        let placement = place_od_label(&mut occupied, bbox, "person (c=0.90)", 20, 20)
-            .expect("expected a placement");
+        let placement = place_od_label(
+            &mut occupied,
+            bbox,
+            measure_label_text_width("person (c=0.90)"),
+            20,
+            20,
+        )
+        .expect("expected a placement");
         push_od_label(
             &mut commands,
             placement,
@@ -834,8 +861,14 @@ mod tests {
             h: 20,
         };
 
-        let placement = place_od_label(&mut occupied, bbox, "person (c=0.90)", 20, 20)
-            .expect("expected a placement");
+        let placement = place_od_label(
+            &mut occupied,
+            bbox,
+            measure_label_text_width("person (c=0.90)"),
+            20,
+            20,
+        )
+        .expect("expected a placement");
         assert!(!placement.displaced);
         push_od_label(
             &mut commands,

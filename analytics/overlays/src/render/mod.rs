@@ -149,15 +149,28 @@ pub(crate) fn make_label_font() -> skia::Font {
     font
 }
 
+thread_local! {
+    /// Per-thread cached label font. Building a `Font` and measuring with it
+    /// happens several times per label (layout, candidate sizing, claim bounds,
+    /// drawing); the font is immutable for our use, so one instance is reused
+    /// across all of them on a given thread. The `LABEL_TYPEFACE` it wraps is
+    /// already shared process-wide.
+    static LABEL_FONT: skia::Font = make_label_font();
+}
+
+/// Run `f` with the cached label font.
+pub(crate) fn with_label_font<R>(f: impl FnOnce(&skia::Font) -> R) -> R {
+    LABEL_FONT.with(|font| f(font))
+}
+
 fn measure_text_width_with_stroke(text: &str, stroke_width: f32) -> i32 {
-    let font = make_label_font();
     let mut paint = skia::Paint::default();
     paint.set_style(skia::paint::Style::Stroke);
     paint.set_stroke_width(stroke_width);
 
-    let (_, bounds) = font.measure_str(text, Some(&paint));
+    let width = with_label_font(|font| font.measure_str(text, Some(&paint)).1.width());
     let outline = label_outline_offset(LABEL_FONT_SIZE);
-    (bounds.width() + outline * 2.0).ceil().max(1.0) as i32
+    (width + outline * 2.0).ceil().max(1.0) as i32
 }
 
 pub(crate) fn measure_label_text_width(text: &str) -> i32 {
@@ -198,7 +211,7 @@ fn draw_outlined_label(
 /// list renders identically on a CPU raster surface (the in-place path) or a GPU
 /// surface (the GL elements), so both share this single implementation.
 pub(crate) fn replay_commands(canvas: &skia::Canvas, commands: &[DrawCommand]) {
-    let font = make_label_font();
+    let font = with_label_font(|font| font.clone());
     let outline_ofs = label_outline_offset(LABEL_FONT_SIZE);
 
     for command in commands {
