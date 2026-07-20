@@ -392,22 +392,25 @@ pub(crate) fn render_mask_canvas(
     let canvas_stride = canvas_frame.plane_stride()[0].unsigned_abs() as usize;
     let canvas_data = canvas_frame.plane_data_mut(0).ok()?;
 
-    for y in 0..canvas_h as usize {
-        let src_y = (y * mask_h) / canvas_h as usize;
+    let canvas_w = canvas_w as usize;
+    let canvas_h = canvas_h as usize;
+    for y in 0..canvas_h {
+        let src_y = (y * mask_h) / canvas_h;
         let src_row = &mask_data[src_y * mask_stride..src_y * mask_stride + mask_w];
-        let dst_row =
-            &mut canvas_data[y * canvas_stride..y * canvas_stride + (canvas_w as usize * 4)];
+        let dst_row = &mut canvas_data[y * canvas_stride..y * canvas_stride + canvas_w * 4];
 
-        for x in 0..canvas_w as usize {
-            let src_x = (x * mask_w) / canvas_w as usize;
+        // Nearest-neighbour source column `floor(x * mask_w / canvas_w)` computed
+        // incrementally via an accumulator, avoiding an integer divide per output
+        // pixel (this is W×H divides/frame on the CPU blend path otherwise).
+        let mut src_x = 0usize;
+        let mut acc = 0usize;
+        for dst_px in dst_row.chunks_exact_mut(4) {
             let value = src_row[src_x] as usize;
             let allowed = mask_filter
                 .map(|filter| value < filter.len() && filter[value])
                 .unwrap_or(true);
-            let visible = value != 0 && allowed;
 
-            let dst_px = &mut dst_row[x * 4..x * 4 + 4];
-            if visible {
+            if value != 0 && allowed {
                 if let Some(rgb) = color_for_segment(value) {
                     write_premultiplied_bgra(dst_px, rgb, MASK_ALPHA);
                 } else {
@@ -415,6 +418,12 @@ pub(crate) fn render_mask_canvas(
                 }
             } else {
                 dst_px.copy_from_slice(&[0, 0, 0, 0]);
+            }
+
+            acc += mask_w;
+            while acc >= canvas_w {
+                src_x += 1;
+                acc -= canvas_w;
             }
         }
     }

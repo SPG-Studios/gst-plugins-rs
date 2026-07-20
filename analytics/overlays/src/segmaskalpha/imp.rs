@@ -240,13 +240,14 @@ impl VideoFilterImpl for SegMaskAlpha {
 
         let stride = frame.plane_stride()[0].unsigned_abs() as usize;
         let data = frame.plane_data_mut(0).map_err(|_| gst::FlowError::Error)?;
-        let invert = settings.invert;
+        // Invert is a whole-frame toggle: fold it into a XOR mask computed once
+        // (`255 - a == a ^ 0xFF` for u8) so the write loop has no per-pixel branch.
+        let xor = if settings.invert { 0xFFu8 } else { 0 };
 
-        for y in 0..frame_h {
+        for (y, alpha_row) in alpha.chunks_exact(frame_w).enumerate() {
             let row = &mut data[y * stride..y * stride + frame_w * 4];
-            for x in 0..frame_w {
-                let a = alpha[y * frame_w + x];
-                row[x * 4 + offset] = if invert { 255 - a } else { a };
+            for (px, &a) in row.chunks_exact_mut(4).zip(alpha_row) {
+                px[offset] = a ^ xor;
             }
         }
 
