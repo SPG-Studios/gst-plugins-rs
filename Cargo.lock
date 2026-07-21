@@ -5567,10 +5567,12 @@ dependencies = [
  "byte-slice-cast",
  "chrono",
  "clap",
+ "ctrlc",
  "env_logger",
  "futures",
  "gio",
  "glib",
+ "gst-plugin-udp",
  "gst-plugin-version-helper",
  "gstreamer",
  "gstreamer-app",
@@ -5586,6 +5588,7 @@ dependencies = [
  "rand 0.10.1",
  "rtcp-types",
  "rtp-types",
+ "sdp-types 0.1.8 (git+https://github.com/fengalin/sdp-types?branch=builders-add-missing-if-some-setters)",
  "slab",
  "smallvec",
  "thiserror 2.0.18",
@@ -5622,7 +5625,7 @@ dependencies = [
  "rtsp-types",
  "rustls-pki-types",
  "rustls-platform-verifier 0.7.0",
- "sdp-types",
+ "sdp-types 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "sha2 0.11.0",
  "socket2 0.6.4",
  "thiserror 2.0.18",
@@ -6077,7 +6080,7 @@ dependencies = [
  "openssl",
  "rand 0.9.4",
  "rustls 0.23.41",
- "sdp-types",
+ "sdp-types 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
  "serde_derive",
  "serde_json",
@@ -10872,6 +10875,17 @@ checksum = "9bb6c636ace20de73fb9536017f9ef069b258308a6c341a4aaf3d2fd11afc570"
 dependencies = [
  "bstr",
  "fallible-iterator",
+]
+
+[[package]]
+name = "sdp-types"
+version = "0.1.8"
+source = "git+https://github.com/fengalin/sdp-types?branch=builders-add-missing-if-some-setters#a95d5593fbff8ba82386715bdd17338976c699b7"
+dependencies = [
+ "bstr",
+ "fallible-iterator",
+ "hex",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
