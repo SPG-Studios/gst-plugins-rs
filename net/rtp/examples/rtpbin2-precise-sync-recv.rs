@@ -19,6 +19,25 @@
 /// cargo r --example rtpbin2-precise-sync-recv -- < combined_audio_streams.sdp
 /// ````
 ///
+/// ### Declaring the local (system) clock as being synced to a ref. clock
+///
+/// If the system clock is known to be sync to a reference clock, it is more accurate
+/// to sync to this clock instead of using a GStreamer Ntp / Ptp clock.
+///
+/// ````
+/// cargo r --example rtpbin2-precise-sync-recv -- \
+///     --local-refclk ntp=pool.ntp.org \
+///         < combined_audio_streams.sdp
+/// ````
+///
+/// or
+///
+/// ````
+/// cargo r --example rtpbin2-precise-sync-recv -- \
+///     --local-refclk ptp=IEEE1588-2008:00-00-00-00-00-00-00-2A:1 \
+///         < combined_audio_streams.sdp
+/// ````
+///
 /// [RFC7273]: https://www.rfc-editor.org/rfc/rfc7273.html
 // SPDX-License-Identifier: MPL-2.0
 use anyhow::{Context, bail};
@@ -48,6 +67,12 @@ pub struct Args {
 
     #[clap(long, help = "Disable audio visualizer")]
     pub disable_visualizer: bool,
+
+    #[clap(
+        long,
+        help = "Which clock the local (system) clock is synchronized to. E.g. 'ntp=pool.ntp.org'"
+    )]
+    pub local_refclk: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,12 +160,30 @@ impl Clock {
 
     fn sync_and_add(
         self,
+        args: &Args,
         clock_map: &mut gst::Structure,
         caps_builder: gst::caps::Builder<gst::caps::NoFeature>,
     ) -> anyhow::Result<gst::caps::Builder<gst::caps::NoFeature>> {
         let refclk_str = self.refclk.to_string();
         if !clock_map.has_field(&refclk_str) {
-            clock_map.set(&refclk_str, self.get_synced()?);
+            if args
+                .local_refclk
+                .as_ref()
+                .is_some_and(|local_refclk| local_refclk == &refclk_str)
+            {
+                // system clock is synchronized to this refclk
+                // => use it instead of a GStreamer Ntp or Ptp clock which is likely less accurate
+                eprintln!("Using local (system) clock for {}", self.refclk);
+                clock_map.set(
+                    &refclk_str,
+                    glib::Object::builder::<gst::SystemClock>()
+                        .property("clock-type", gst::ClockType::Realtime)
+                        .build()
+                        .upcast::<gst::Clock>(),
+                );
+            } else {
+                clock_map.set(&refclk_str, self.get_synced()?);
+            }
         }
         let mediaclk_str_opt = self.mediaclk.map(|mediaclk| mediaclk.to_string());
         let caps_builder = if let Some(ssrc) = self.ssrc {
@@ -158,6 +201,7 @@ impl Clock {
 }
 
 fn prepare_expected_medias(
+    args: &Args,
     pipeline: &gst::Pipeline,
     inbound_funnel: &gst::Element,
     rtprecv: &gst::Element,
@@ -240,7 +284,7 @@ fn prepare_expected_medias(
             };
         // a media-level clock takes precedence over a session-level clock
         if let Some(clock) = media_level_clk.or(session_level_clock.clone()) {
-            caps_builder = clock.sync_and_add(&mut clock_map, caps_builder)?;
+            caps_builder = clock.sync_and_add(args, &mut clock_map, caps_builder)?;
         }
 
         // a source-level clock takes precedence over a media-level clock
@@ -293,7 +337,7 @@ fn prepare_expected_medias(
         }
 
         for ssrc_clock in ssrc_clocks.into_values() {
-            caps_builder = ssrc_clock.sync_and_add(&mut clock_map, caps_builder)?;
+            caps_builder = ssrc_clock.sync_and_add(args, &mut clock_map, caps_builder)?;
         }
 
         pt_map.set(rtpmap.payload_type.to_string(), caps_builder.build());
@@ -611,6 +655,7 @@ fn initialise_pipeline(
         .unwrap();
 
     prepare_expected_medias(
+        &args,
         &pipeline,
         &inbound_funnel,
         &rtprecv,

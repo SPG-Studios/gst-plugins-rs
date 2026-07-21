@@ -26,6 +26,25 @@
 ///         < audio_stream_ntp.sdp > combined_audio_streams.sdp
 /// ````
 ///
+/// ### Declaring the local (system) clock as being synced to a ref. clock
+///
+/// If the system clock is known to be sync to a reference clock, it is more accurate
+/// to sync to this clock instead of using a GStreamer Ntp / Ptp clock.
+///
+/// ````
+/// cargo r --example rtpbin2-precise-sync-send -- \
+///     local --refclk ntp=pool.ntp.org \
+///         > audio_stream_ntp.sdp
+/// ````
+///
+/// or
+///
+/// ````
+/// cargo r --example rtpbin2-precise-sync-send -- \
+///     local --refclk ptp=IEEE1588-2008:00-00-00-00-00-00-00-2A:1 \
+///         > audio_stream_ntp.sdp
+/// ````
+///
 /// [RFC7273]: https://www.rfc-editor.org/rfc/rfc7273.html
 // SPDX-License-Identifier: MPL-2.0
 use anyhow::{Context, bail};
@@ -39,6 +58,11 @@ use std::str::FromStr;
 use std::sync::mpsc;
 
 pub use sdp_types::{MediaClockSource, ReferenceClock};
+
+// FIXME move these to gst
+#[path = "../src/rtpbin2/time.rs"]
+mod time;
+use time::{UNIX_TIME_TO_UTC_OFFSET_SECONDS, UTC_TO_TAI_LEAP_SECONDS};
 
 const RTP_ID: &str = "rtp-id";
 
@@ -112,8 +136,17 @@ pub struct Args {
     pub expect_sdp: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct TimeReference {
+    /// Clock selected by the command line argument
+    clock: gst::Clock,
+    /// Time offset between this clock and the target reference clock
+    /// (zero execept for local (system) clock representing a different clock)
+    offset: gst::ClockTime,
+}
+
 pub trait Rfc7273Clock {
-    fn get_reference_clock(&self) -> anyhow::Result<gst::Clock>;
+    fn get_time_reference(&self) -> anyhow::Result<TimeReference>;
 
     fn get_clock_signalling(
         &self,
@@ -135,11 +168,11 @@ pub enum Clock {
 }
 
 impl Rfc7273Clock for Clock {
-    fn get_reference_clock(&self) -> anyhow::Result<gst::Clock> {
+    fn get_time_reference(&self) -> anyhow::Result<TimeReference> {
         match self {
-            Self::Local(system) => system.get_reference_clock(),
-            Self::Ntp(ntp) => ntp.get_reference_clock(),
-            Self::Ptp(ptp) => ptp.get_reference_clock(),
+            Self::Local(system) => system.get_time_reference(),
+            Self::Ntp(ntp) => ntp.get_time_reference(),
+            Self::Ptp(ptp) => ptp.get_time_reference(),
         }
     }
 
@@ -166,7 +199,7 @@ pub struct NtpClock {
 }
 
 impl Rfc7273Clock for NtpClock {
-    fn get_reference_clock(&self) -> anyhow::Result<gst::Clock> {
+    fn get_time_reference(&self) -> anyhow::Result<TimeReference> {
         let clock = gst_net::NtpClock::new(
             None,
             &self.ntp_server,
@@ -185,7 +218,10 @@ impl Rfc7273Clock for NtpClock {
             now.nseconds() % *gst::ClockTime::SECOND
         );
 
-        Ok(clock.upcast())
+        Ok(TimeReference {
+            clock: clock.upcast(),
+            offset: gst::ClockTime::ZERO,
+        })
     }
 
     fn get_clock_signalling(
@@ -210,7 +246,7 @@ pub struct PtpClock {
 }
 
 impl Rfc7273Clock for PtpClock {
-    fn get_reference_clock(&self) -> anyhow::Result<gst::Clock> {
+    fn get_time_reference(&self) -> anyhow::Result<TimeReference> {
         gst_net::PtpClock::init(None, &[])?;
         let clock = gst_net::PtpClock::new(None, self.ptp_domain as _)?;
 
@@ -218,14 +254,10 @@ impl Rfc7273Clock for PtpClock {
             .wait_for_sync(5.seconds())
             .with_context(|| format!("Syncing to {self:?}"))?;
 
-        let now = clock.time();
-        eprintln!(
-            "Synced to {self:?}: now {now} ({}.{})",
-            now.seconds(),
-            now.nseconds() % *gst::ClockTime::SECOND
-        );
-
-        Ok(clock.upcast())
+        Ok(TimeReference {
+            clock: clock.upcast(),
+            offset: gst::ClockTime::ZERO,
+        })
     }
 
     fn get_clock_signalling(
@@ -233,7 +265,8 @@ impl Rfc7273Clock for PtpClock {
         rtp_timestamp_offset: u32,
     ) -> anyhow::Result<(ReferenceClock, MediaClockSource)> {
         let gmid = self
-            .get_reference_clock()?
+            .get_time_reference()?
+            .clock
             .property::<u64>("grandmaster-clock-id");
 
         Ok((
@@ -247,16 +280,44 @@ impl Rfc7273Clock for PtpClock {
 
 #[derive(clap::Args, Clone, Debug, Default)]
 #[clap(about = "Local (system) Clock")]
-pub struct LocalClock;
+pub struct LocalClock {
+    #[clap(
+        long,
+        help = "Which clock the local (system) clock is synchronized to. E.g. 'ntp=pool.ntp.org'"
+    )]
+    pub refclk: Option<String>,
+}
 
 impl Rfc7273Clock for LocalClock {
-    fn get_reference_clock(&self) -> anyhow::Result<gst::Clock> {
+    fn get_time_reference(&self) -> anyhow::Result<TimeReference> {
+        let time_offset = if let Some(ref refclk) = self.refclk {
+            match sdp_types::ReferenceClock::from_str(refclk)
+                .context("local clock synchronized refclk")?
+            {
+                sdp_types::ReferenceClock::Local => gst::ClockTime::ZERO,
+                sdp_types::ReferenceClock::Ntp(_) => {
+                    gst::ClockTime::from_seconds(UNIX_TIME_TO_UTC_OFFSET_SECONDS)
+                }
+                sdp_types::ReferenceClock::Ptp(_) => {
+                    gst::ClockTime::from_seconds(*UTC_TO_TAI_LEAP_SECONDS)
+                }
+                other => {
+                    bail!("local clock declared as synchronized to unsupported refclk {other:?}")
+                }
+            }
+        } else {
+            gst::ClockTime::ZERO
+        };
+
         let clock = glib::Object::builder::<gst::SystemClock>()
             // produce time relatively to epoch
             .property("clock-type", gst::ClockType::Realtime)
             .build();
 
-        Ok(clock.upcast())
+        Ok(TimeReference {
+            clock: clock.upcast(),
+            offset: time_offset,
+        })
     }
 
     fn get_clock_signalling(
@@ -264,7 +325,11 @@ impl Rfc7273Clock for LocalClock {
         rtp_timestamp_offset: u32,
     ) -> anyhow::Result<(ReferenceClock, MediaClockSource)> {
         Ok((
-            sdp_types::ReferenceClock::Local,
+            if let Some(ref refclk) = self.refclk {
+                sdp_types::ReferenceClock::from_str(refclk).context("local clock refclk")?
+            } else {
+                sdp_types::ReferenceClock::Local
+            },
             sdp_types::Direct::with_offset(rtp_timestamp_offset).into(),
         ))
     }
@@ -272,6 +337,7 @@ impl Rfc7273Clock for LocalClock {
 
 fn print_sdp(
     args: &Args,
+    ref_clock_base_time: gst::ClockTime,
     mut sdp: sdp_types::Session,
     sdes: gst::Structure,
     payloader: &gst::Element,
@@ -304,7 +370,11 @@ fn print_sdp(
 
     let (refclk, mediaclk) = args
         .clock
-        .get_clock_signalling(get_rtptime_at_reference_clock_epoch(payloader, AUDIO_RATE))
+        .get_clock_signalling(get_rtptime_at_reference_clock_epoch(
+            payloader,
+            ref_clock_base_time,
+            clock_rate,
+        ))
         .context("getting clock ref and source")?;
 
     let mut matching_media_rtpmap = None;
@@ -387,15 +457,18 @@ fn print_sdp(
     Ok(())
 }
 
-fn get_rtptime_at_reference_clock_epoch(payloader: &gst::Element, clock_rate: u32) -> u32 {
+fn get_rtptime_at_reference_clock_epoch(
+    payloader: &gst::Element,
+    ref_clock_base_time: gst::ClockTime,
+    clock_rate: u32,
+) -> u32 {
     let stats = payloader.property::<gst::Structure>("stats");
     let payloader_offset = stats
         .get::<u32>("timestamp-offset")
         .expect("valid payloader stats");
     eprintln!("payloader offset {payloader_offset}");
 
-    let base_time = payloader.base_time().expect("known at this stage");
-    let base_time_rtptime = base_time_to_rtptime(base_time, clock_rate);
+    let base_time_rtptime = base_time_to_rtptime(ref_clock_base_time, clock_rate);
     let rtptime_at_epoch = payloader_offset.wrapping_sub(base_time_rtptime);
     eprintln!("RTP time at reference clock epoch {rtptime_at_epoch}");
 
@@ -672,7 +745,7 @@ fn main() -> anyhow::Result<()> {
     let _guard = main_context.acquire().unwrap();
     let loop_ = glib::MainLoop::new(None, false);
 
-    let clock = args.clock.get_reference_clock()?;
+    let time_reference = args.clock.get_time_reference()?;
 
     let (caps_sender, caps_receiver) = mpsc::channel();
     let pipeline = initialise_pipeline(&args, &loop_, caps_sender)?;
@@ -685,66 +758,73 @@ fn main() -> anyhow::Result<()> {
     payloader
         .static_pad("src")
         .unwrap()
-        .add_probe(gst::PadProbeType::BUFFER, move |pad, info| {
-            let Some(gst::PadProbeData::Buffer(ref buf)) = info.data else {
-                unreachable!();
-            };
-            let elem = pad.parent_element().unwrap();
-            let clock = elem.clock().unwrap();
-            let now = clock.time();
+        .add_probe(gst::PadProbeType::BUFFER, {
+            let time_ref_offset = time_reference.offset;
+            move |pad, info| {
+                let Some(gst::PadProbeData::Buffer(ref buf)) = info.data else {
+                    unreachable!();
+                };
+                let elem = pad.parent_element().unwrap();
+                let clock = elem.clock().unwrap();
+                let now = clock.time();
 
-            let base_time = elem.base_time().expect("available at this stage");
-            let evt = pad.sticky_event::<gst::event::Segment>(0).unwrap();
-            let gst::EventView::Segment(evt) = evt.view() else {
-                unreachable!();
-            };
-            let segment = evt
-                .segment()
-                .downcast_ref::<gst::format::Time>()
-                .expect("audiotestsrc");
-            let running_time = segment.to_running_time(buf.pts()).unwrap();
-            let reference_time = base_time + running_time;
+                let base_time = elem.base_time().expect("available at this stage");
+                let evt = pad.sticky_event::<gst::event::Segment>(0).unwrap();
+                let gst::EventView::Segment(evt) = evt.view() else {
+                    unreachable!();
+                };
+                let segment = evt
+                    .segment()
+                    .downcast_ref::<gst::format::Time>()
+                    .expect("audiotestsrc");
+                let running_time = segment.to_running_time(buf.pts()).unwrap();
+                let reference_time = base_time + running_time + time_ref_offset;
 
-            let (seqnum, packet_rtptime) = {
-                let buf_mapped = buf.map_readable().unwrap();
-                let packet = rtp_types::RtpPacket::parse(buf_mapped.as_slice()).unwrap();
-                (packet.sequence_number(), packet.timestamp())
-            };
+                let (seqnum, packet_rtptime) = {
+                    let buf_mapped = buf.map_readable().unwrap();
+                    let packet = rtp_types::RtpPacket::parse(buf_mapped.as_slice()).unwrap();
+                    (packet.sequence_number(), packet.timestamp())
+                };
 
-            eprintln!(
-                "{now}: first RTP packet seqnum {seqnum}, RTP time {packet_rtptime}, \
-                 reference_time {reference_time} ({}.{}), running time {running_time} ({}.{}), \
-                 base_time {base_time} ({}.{})",
-                reference_time.seconds(),
-                reference_time.nseconds() % *gst::ClockTime::SECOND,
-                running_time.seconds(),
-                running_time.nseconds() % *gst::ClockTime::SECOND,
-                base_time.seconds(),
-                base_time.nseconds() % *gst::ClockTime::SECOND,
-            );
+                eprintln!(
+                    "{now}: first RTP packet seqnum {seqnum}, RTP time {packet_rtptime}, \
+                     reference_time {reference_time} ({}.{}), running time {running_time} ({}.{}), \
+                     base_time {base_time} ({}.{})",
+                    reference_time.seconds(),
+                    reference_time.nseconds() % *gst::ClockTime::SECOND,
+                    running_time.seconds(),
+                    running_time.nseconds() % *gst::ClockTime::SECOND,
+                    base_time.seconds(),
+                    base_time.nseconds() % *gst::ClockTime::SECOND,
+                );
 
-            gst::PadProbeReturn::Remove
+                gst::PadProbeReturn::Remove
+            }
         });
 
     pipeline
         .set_state(gst::State::Ready)
         .context("setting pipeline to Ready")?;
 
-    pipeline.use_clock(Some(&clock));
+    pipeline.use_clock(Some(&time_reference.clock));
 
-    let base_time = clock.time();
+    // set the base_time for the pipeline
+    // including possible a time offset to match the target reference clock
+    let base_time = time_reference.clock.time();
     pipeline.set_base_time(base_time);
     // tell the pipeline not to re-calculate base_time
     pipeline.set_start_time(gst::ClockTime::NONE);
 
+    let ref_clock_base_time = base_time + time_reference.offset;
+
     if args.align_for_offset_0 {
         // RtpBasePay2 subclasses can only set their timestamp-offset in state <= Ready
-        let base_time_rtptime = base_time_to_rtptime(base_time, AUDIO_RATE);
+        let ref_clock_base_time_rtptime = base_time_to_rtptime(ref_clock_base_time, AUDIO_RATE);
         eprintln!(
-            "Forcing timestamp-offset to {base_time_rtptime} for {}",
+            "Forcing timestamp-offset to {ref_clock_base_time_rtptime} for {}",
             payloader.name()
         );
-        payloader.set_property("timestamp-offset", base_time_rtptime as i64);
+        payloader.set_property("timestamp-offset", ref_clock_base_time_rtptime as i64);
     }
 
     // Start streaming
@@ -754,10 +834,17 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("Playing");
     eprintln!(
-        "Reference base time {base_time} ({}.{})",
-        base_time.seconds(),
-        base_time.nseconds() % *gst::ClockTime::SECOND,
+        "Reference clock base time {ref_clock_base_time} ({}.{})",
+        ref_clock_base_time.seconds(),
+        ref_clock_base_time.nseconds() % *gst::ClockTime::SECOND
     );
+    if !time_reference.offset.is_zero() {
+        eprintln!(
+            "Actual clock base time {base_time} ({}.{})",
+            base_time.seconds(),
+            base_time.nseconds() % *gst::ClockTime::SECOND
+        );
+    }
 
     // we only expect one stream here, othewise we would collect them all
     let (payloader, caps) = caps_receiver.recv().expect("payloader still alive");
@@ -768,6 +855,7 @@ fn main() -> anyhow::Result<()> {
         .emit_by_name::<gst::glib::Object>("get-session", &[&args.session_id]);
     if let Err(err) = print_sdp(
         &args,
+        ref_clock_base_time,
         sdp,
         session.property::<gst::Structure>("sdes"),
         &payloader,
