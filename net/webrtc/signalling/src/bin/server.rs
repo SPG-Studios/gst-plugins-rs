@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use anyhow::Error;
+use anyhow::{Error, bail};
 use clap::Parser;
-use gst_plugin_webrtc_signalling::handlers::Handler;
+use gst_plugin_webrtc_signalling::handlers::{Handler, IceFilterConfig};
 use gst_plugin_webrtc_signalling::server::{Server, ServerError};
+use std::net::IpAddr;
 use std::time::Duration;
-use tokio::{net::TcpListener, task};
+use tokio::{net::TcpListener, net::TcpStream, task};
 use tracing::{info, warn};
 use tracing_subscriber::prelude::*;
 
@@ -30,6 +31,40 @@ struct Args {
     /// Private key to use
     #[clap(short, long)]
     key: Option<String>,
+    /// Drop forwarded ICE candidates whose UDP port is below this value
+    /// (inclusive bound).
+    #[clap(long)]
+    min_rtp_port: Option<u16>,
+    /// Drop forwarded ICE candidates whose UDP port is above this value
+    /// (inclusive bound).
+    #[clap(long)]
+    max_rtp_port: Option<u16>,
+    /// Drop forwarded ICE candidates that do not use UDP as transport
+    /// (i.e. TCP host/relay candidates).
+    #[clap(long, default_value_t = false)]
+    udp_only: bool,
+    /// Enable NAT / multi-homed traversal: occurrences of this internal IP in
+    /// outgoing ICE candidates and SDP payloads are rewritten to the local
+    /// socket address each peer connected to. Useful when the producer
+    /// advertises a private address (e.g. behind a NAT, or on a different
+    /// subnet) that consumers cannot route to.
+    #[clap(
+        long = "multi-homed-traversal",
+        alias = "rewrite-ice-ip",
+        value_name = "INTERNAL_IP"
+    )]
+    multi_homed_traversal: Option<IpAddr>,
+}
+
+/// Best-effort local IP of a freshly-accepted TCP connection. Returns the
+/// IPv4 form for IPv4-mapped IPv6 addresses so the string matches plain
+/// IPv4 ICE candidates.
+fn local_ip_of(stream: &TcpStream) -> Option<IpAddr> {
+    let ip = stream.local_addr().ok()?.ip();
+    Some(match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    })
 }
 
 fn initialize_logging(envvar_name: &str) -> Result<(), Error> {
@@ -54,9 +89,33 @@ fn initialize_logging(envvar_name: &str) -> Result<(), Error> {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
-    let server = Server::spawn(Handler::new);
+
+    let ice_filter = IceFilterConfig {
+        min_port: args.min_rtp_port,
+        max_port: args.max_rtp_port,
+        udp_only: args.udp_only,
+    };
+    if let Err(err) = ice_filter.validate() {
+        bail!(err);
+    }
 
     initialize_logging("WEBRTCSINK_SIGNALLING_SERVER_LOG")?;
+
+    if ice_filter.is_active() {
+        info!(
+            "ICE candidate filtering enabled: udp_only={}, min_rtp_port={:?}, max_rtp_port={:?}",
+            ice_filter.udp_only, ice_filter.min_port, ice_filter.max_port,
+        );
+    }
+    if let Some(ip) = args.multi_homed_traversal {
+        info!(
+            "Multi-homed traversal enabled: rewriting {} in outgoing ICE/SDP to each peer's local socket IP",
+            ip
+        );
+    }
+
+    let server = Server::spawn(move |stream| Handler::with_filter(stream, ice_filter))
+        .with_rewrite_ip(args.multi_homed_traversal);
 
     let addr = format!("{}:{}", args.host, args.port);
 
@@ -73,14 +132,22 @@ async fn main() -> Result<(), Error> {
 
     while let Ok((stream, address)) = listener.accept().await {
         let mut server_clone = server.clone();
-        info!("Accepting connection from {}", address);
+        let local_ip = local_ip_of(&stream);
+        info!(
+            "Accepting connection from {} (local {:?})",
+            address, local_ip
+        );
 
         match acceptor.clone() {
             Some(acceptor) => {
                 tokio::spawn(async move {
                     match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await
                     {
-                        Ok(Ok(stream)) => server_clone.accept_async(stream).await,
+                        Ok(Ok(stream)) => {
+                            server_clone
+                                .accept_async_with_local_addr(stream, local_ip)
+                                .await
+                        }
                         Ok(Err(err)) => {
                             warn!("Failed to accept TLS connection from {}: {}", address, err);
                             Err(ServerError::TLSHandshake(err))
@@ -93,7 +160,11 @@ async fn main() -> Result<(), Error> {
                 });
             }
             _ => {
-                task::spawn(async move { server_clone.accept_async(stream).await });
+                task::spawn(async move {
+                    server_clone
+                        .accept_async_with_local_addr(stream, local_ip)
+                        .await
+                });
             }
         }
     }

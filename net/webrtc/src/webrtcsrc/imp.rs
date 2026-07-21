@@ -26,6 +26,9 @@ const DEFAULT_STUN_SERVER: Option<&str> = Some("stun://stun.l.google.com:19302")
 const DEFAULT_ENABLE_DATA_CHANNEL_NAVIGATION: bool = false;
 const DEFAULT_ENABLE_CONTROL_DATA_CHANNEL: bool = false;
 const DEFAULT_DO_RETRANSMISSION: bool = true;
+const DEFAULT_ICE_MIN_RTP_PORT: u32 = 0;
+const DEFAULT_ICE_MAX_RTP_PORT: u32 = 0;
+const DEFAULT_ICE_UDP_ONLY: bool = false;
 const AUDIO_REQUEST_PAD_NAME_PREFIX: &str = "req_audio_";
 const VIDEO_REQUEST_PAD_NAME_PREFIX: &str = "req_video_";
 
@@ -47,6 +50,9 @@ struct Settings {
     enable_data_channel_navigation: bool,
     enable_control_data_channel: bool,
     do_retransmission: bool,
+    ice_min_rtp_port: u32,
+    ice_max_rtp_port: u32,
+    ice_udp_only: bool,
 }
 
 #[derive(Default)]
@@ -155,6 +161,48 @@ impl ObjectImpl for BaseWebRTCSrc {
                    .default_value(DEFAULT_DO_RETRANSMISSION)
                    .mutable_ready()
                    .build(),
+               /**
+                * GstBaseWebRTCSrc:ice-min-rtp-port:
+                *
+                * Minimum UDP port for host ICE candidates gathered by libnice
+                * via `webrtcbin`'s ICE agent. The value 0 means "leave the
+                * underlying default in place".
+                */
+               glib::ParamSpecUInt::builder("ice-min-rtp-port")
+                   .nick("ICE minimum RTP port")
+                   .blurb("Minimum UDP port for host ICE candidates (0 = no override)")
+                   .minimum(0)
+                   .maximum(u16::MAX as u32)
+                   .default_value(DEFAULT_ICE_MIN_RTP_PORT)
+                   .mutable_ready()
+                   .build(),
+               /**
+                * GstBaseWebRTCSrc:ice-max-rtp-port:
+                *
+                * Maximum UDP port for host ICE candidates gathered by libnice
+                * via `webrtcbin`'s ICE agent. The value 0 means "leave the
+                * underlying default in place".
+                */
+               glib::ParamSpecUInt::builder("ice-max-rtp-port")
+                   .nick("ICE maximum RTP port")
+                   .blurb("Maximum UDP port for host ICE candidates (0 = no override)")
+                   .minimum(0)
+                   .maximum(u16::MAX as u32)
+                   .default_value(DEFAULT_ICE_MAX_RTP_PORT)
+                   .mutable_ready()
+                   .build(),
+               /**
+                * GstBaseWebRTCSrc:ice-udp-only:
+                *
+                * When TRUE, disable TCP candidate gathering in libnice so the
+                * ICE agent only produces UDP candidates.
+                */
+               glib::ParamSpecBoolean::builder("ice-udp-only")
+                   .nick("ICE UDP only")
+                   .blurb("If true, disable TCP candidate gathering at the libnice level")
+                   .default_value(DEFAULT_ICE_UDP_ONLY)
+                   .mutable_ready()
+                   .build(),
             ]
         });
 
@@ -221,6 +269,18 @@ impl ObjectImpl for BaseWebRTCSrc {
                 let mut settings = self.settings.lock().unwrap();
                 settings.do_retransmission = value.get::<bool>().unwrap();
             }
+            "ice-min-rtp-port" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_min_rtp_port = value.get::<u32>().expect("type checked upstream");
+            }
+            "ice-max-rtp-port" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_max_rtp_port = value.get::<u32>().expect("type checked upstream");
+            }
+            "ice-udp-only" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.ice_udp_only = value.get::<bool>().expect("type checked upstream");
+            }
             _ => unimplemented!(),
         }
     }
@@ -258,6 +318,9 @@ impl ObjectImpl for BaseWebRTCSrc {
                 settings.enable_control_data_channel.to_value()
             }
             "do-retransmission" => self.settings.lock().unwrap().do_retransmission.to_value(),
+            "ice-min-rtp-port" => self.settings.lock().unwrap().ice_min_rtp_port.to_value(),
+            "ice-max-rtp-port" => self.settings.lock().unwrap().ice_max_rtp_port.to_value(),
+            "ice-udp-only" => self.settings.lock().unwrap().ice_udp_only.to_value(),
             name => panic!("{name} getter not implemented"),
         }
     }
@@ -327,6 +390,9 @@ impl Default for Settings {
             enable_data_channel_navigation: DEFAULT_ENABLE_DATA_CHANNEL_NAVIGATION,
             enable_control_data_channel: DEFAULT_ENABLE_CONTROL_DATA_CHANNEL,
             do_retransmission: DEFAULT_DO_RETRANSMISSION,
+            ice_min_rtp_port: DEFAULT_ICE_MIN_RTP_PORT,
+            ice_max_rtp_port: DEFAULT_ICE_MAX_RTP_PORT,
+            ice_udp_only: DEFAULT_ICE_UDP_ONLY,
         }
     }
 }
@@ -2034,6 +2100,13 @@ impl BaseWebRTCSrc {
             for turn_server in settings.turn_servers.iter() {
                 webrtcbin.emit_by_name::<bool>("add-turn-server", &[&turn_server]);
             }
+
+            utils::configure_ice_agent(
+                webrtcbin.upcast_ref(),
+                settings.ice_min_rtp_port,
+                settings.ice_max_rtp_port,
+                settings.ice_udp_only,
+            );
         }
 
         let bin = gst::Bin::new();

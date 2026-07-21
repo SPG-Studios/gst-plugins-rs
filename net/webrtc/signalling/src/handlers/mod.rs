@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod ice_filter;
+
+pub use ice_filter::IceFilterConfig;
+
 use anyhow::{Context, bail};
 use anyhow::{Error, anyhow};
 use futures::prelude::*;
@@ -51,14 +55,26 @@ pin_project! {
         sessions: HashMap<String, Session>,
         consumer_sessions: HashMap<String, HashSet<String>>,
         producer_sessions: HashMap<String, HashSet<String>>,
+        ice_filter: IceFilterConfig,
     }
 }
 
 impl Handler {
     #[instrument(level = "debug", skip(stream))]
-    /// Create a handler
+    /// Create a handler with no ICE candidate filtering.
     pub fn new(
         stream: Pin<Box<dyn Stream<Item = (String, Option<p::IncomingMessage>)> + Send>>,
+    ) -> Self {
+        Self::with_filter(stream, IceFilterConfig::default())
+    }
+
+    /// Create a handler that filters forwarded ICE candidates (both
+    /// trickled candidates and `a=candidate:` lines embedded in SDPs)
+    /// according to `ice_filter`.
+    #[instrument(level = "debug", skip(stream))]
+    pub fn with_filter(
+        stream: Pin<Box<dyn Stream<Item = (String, Option<p::IncomingMessage>)> + Send>>,
+        ice_filter: IceFilterConfig,
     ) -> Self {
         Self {
             stream,
@@ -67,6 +83,7 @@ impl Handler {
             sessions: Default::default(),
             consumer_sessions: Default::default(),
             producer_sessions: Default::default(),
+            ice_filter,
         }
     }
 
@@ -139,15 +156,61 @@ impl Handler {
             );
         }
 
+        let Some(peer_message) = self.apply_ice_filter(peer_id, peermsg.peer_message.clone()) else {
+            return Ok(());
+        };
+
         self.items.push_back((
             session.other_peer_id(peer_id)?.to_owned(),
             p::OutgoingMessage::Peer(p::PeerMessage {
                 session_id: session_id.to_string(),
-                peer_message: peermsg.peer_message.clone(),
+                peer_message,
             }),
         ));
 
         Ok(())
+    }
+
+    /// Apply the ICE filter to a peer message. Returns `None` when the
+    /// message should be dropped entirely (e.g. a single trickled
+    /// candidate that does not match the filter), or `Some(message)`
+    /// with the (possibly rewritten) message to forward.
+    fn apply_ice_filter(
+        &self,
+        peer_id: &str,
+        message: p::PeerMessageInner,
+    ) -> Option<p::PeerMessageInner> {
+        if !self.ice_filter.is_active() {
+            return Some(message);
+        }
+
+        match message {
+            p::PeerMessageInner::Ice {
+                candidate,
+                sdp_m_line_index,
+            } => {
+                if ice_filter::candidate_passes_filter(&candidate, &self.ice_filter) {
+                    Some(p::PeerMessageInner::Ice {
+                        candidate,
+                        sdp_m_line_index,
+                    })
+                } else {
+                    info!(
+                        peer_id,
+                        "Dropping ICE candidate that violates filter: {candidate}"
+                    );
+                    None
+                }
+            }
+            p::PeerMessageInner::Sdp(p::SdpMessage::Offer { sdp }) => {
+                let sdp = ice_filter::filter_sdp(&sdp, &self.ice_filter);
+                Some(p::PeerMessageInner::Sdp(p::SdpMessage::Offer { sdp }))
+            }
+            p::PeerMessageInner::Sdp(p::SdpMessage::Answer { sdp }) => {
+                let sdp = ice_filter::filter_sdp(&sdp, &self.ice_filter);
+                Some(p::PeerMessageInner::Sdp(p::SdpMessage::Answer { sdp }))
+            }
+        }
     }
 
     fn stop_producer(&mut self, peer_id: &str) {
